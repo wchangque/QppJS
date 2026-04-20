@@ -4,13 +4,13 @@
 
 ## 1. 下一阶段
 
-- 下一阶段：Phase 0：项目骨架与实验环境
+- 下一阶段：Phase 1：Lexer + Parser + AST
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 
 ## 2. 阶段目标
 
-建立一套适合长期学习与持续迭代的最小工程基础，让后续 lexer / parser / runtime 工作有稳定落点。
+在已具备构建、测试、CLI、错误模型、Value 与调试输出基础设施的前提下，进入前端实现阶段，先完成最小 lexer、parser 与 AST 骨架，为后续 AST Interpreter 打基础。
 
 ## 3. 进入前提
 
@@ -19,112 +19,126 @@
 - 参考仓库与研究方向
 - agent team 协作方式
 - 路线图与状态文档体系
+- Phase 0 的目录骨架
+- 顶层 CMake 骨架
+- GoogleTest 测试基线
+- 最小 CLI 程序入口
+- 第一版 `Error` 与 `Value`
+- `debug` 输出入口
 
-因此可以正式进入工程搭建阶段。
+因此可以从工程搭建阶段进入前端实现阶段。
 
 ## 4. 本阶段任务分解
 
-### 0.1 建立最小目录结构
+### 1.1 实现 Tokenizer 基础结构
 目标：
-- 创建 `src/`、`tests/`、`include/` 基础布局
-- 先只建立空骨架，不急于填充所有模块
+- 定义 token 类型
+- 支持位置信息记录
+- 明确输入流与输出 token 序列接口
 
 建议结果：
-- `src/main/`
-- `src/runtime/`
-- `src/lexer/`
-- `src/parser/`
-- `include/qppjs/`
-- `tests/unit/`
-- `tests/integration/`
+- `src/frontend/lexer/` 中有 tokenizer 主体结构
+- `include/qppjs/frontend/lexer/` 中有最小公开声明
+- token 带有基础 source location
 
-### 0.2 建立最小构建链路
+### 1.2 支持基础词法元素
 目标：
-- 选定初版构建方式
-- 让空工程可以成功构建
+- 支持标识符、关键字、数字字面量、字符串字面量、标点与基础操作符
+- 处理空白、换行与注释
 
 建议：
-- 初版使用 CMake
-- 先让一个最小可执行文件编译通过
+- 先覆盖最小 JS 子集
+- 每增加一类 token 都配套单测
 
-### 0.6 建立测试基线
+### 1.3 设计 AST 节点体系
 目标：
-- 让测试命令尽早可跑
-- 为后续 parser/runtime 演进打基础
+- 建立 `Program`、`Statement`、`Expression` 等最小节点骨架
+- 保持结构清晰，不提前优化表示
 
 建议：
-- 先接入一个轻量测试框架
-- 至少能运行一个 smoke test
+- 先聚焦 literal / identifier / unary / binary / variable declaration / block
+- 节点设计应便于后续 dump 与解释执行
 
-### 0.3 建立最小 CLI
+### 1.4 实现表达式解析
 目标：
-- 提供第一个可以运行的程序入口
+- 处理基础运算符优先级与结合性
+- 选定 Pratt parser 或递归下降策略
 
 建议：
-- 先支持 `qppjs "1+2"` 这类最小命令行输入
-- 第一版可以只打印收到的源码或参数
+- 先支持 literal、identifier、括号、基础 unary/binary expression
+- 优先让简单表达式稳定可测
 
-### 0.4 设计错误处理基础结构
+### 1.5 实现语句解析
 目标：
-- 统一错误表示，避免后续 parser/runtime 各写一套
+- 支持 expression statement、`let`、block、`if / else`、`while`
 
 建议：
-- 先区分语法错误、运行时错误、内部错误
-- 第一版只要结构清晰，不追求复杂封装
+- 先从 expression statement 与 `let` 开始
+- 逐步增加 block 与控制流
 
-### 0.5 设计第一版 Value
+### 1.6 实现 AST dump
 目标：
-- 给后续 interpreter/object/function 提供基础值表示
+- 提供文本形式 AST 输出
+- 复用现有 `debug` 输出入口
 
 建议：
-- 支持 `undefined`、`null`、`bool`、`number`、`string`、`object`
-- 初版偏简单实现，不做优化版表示
+- 输出格式优先清晰稳定
+- 方便测试断言与人工检查
 
-### 0.7 建立调试输出入口
+### 1.7 建立 parser 错误报告
 目标：
-- 为早期 lexer/parser 调试预留接口
+- 提供基础语法错误
+- 带位置信息
+- 输出最小可读错误信息
 
 建议：
-- 预留 `dump_tokens` / `dump_ast` 风格的输出入口
+- 尽量复用现有 `Error` 结构
+- 与 CLI/debug 输出路径保持一致
 
 ## 5. 建议执行顺序
 
 建议严格按以下顺序推进：
-1. 0.1 建立最小目录结构
-2. 0.2 建立最小构建链路
-3. 0.6 建立测试基线
-4. 0.3 建立最小 CLI
-5. 0.4 设计错误处理基础结构
-6. 0.5 设计第一版 Value
-7. 0.7 建立调试输出入口
+1. 1.1 实现 Tokenizer 基础结构
+2. 1.2 支持基础词法元素
+3. 1.3 设计 AST 节点体系
+4. 1.4 实现表达式解析
+5. 1.5 实现语句解析
+6. 1.6 实现 AST dump
+7. 1.7 建立 parser 错误报告
 
 原因：
-- 先让工程能建、能测，再做具体结构设计
-- 这样后面每加一小步都可验证
+- 先打通 token 流，再建立 AST 与 parser
+- 先有正确结构，再补调试输出与错误细节
+- 每一步都可以继续复用当前 CMake、GoogleTest、CLI 与 debug 基础设施
 
 ## 6. 验证方式
 
+本阶段开始前，已可使用以下真实验证路径：
+- `cmake -S . -B build`
+- `cmake --build build`
+- `ctest --test-dir build --output-on-failure`
+
 本阶段完成后，应至少能验证：
-- 项目可成功构建
-- 最小可执行程序可运行
-- 测试命令可执行
-- 基础错误类型与 Value 结构可编译通过
+- 能把最小 JS 子集稳定切分为 token
+- 能把基础表达式与语句解析为 AST
+- 可输出 AST dump
+- 语法错误可报告基础位置信息
 
 ## 7. 暂不处理内容
 
 本阶段不进入：
-- 词法分析实现
-- AST 节点实现
-- 解释执行
+- AST Interpreter
 - 对象模型
+- 函数调用语义
 - VM
 - GC
+- test262 接入
 
 ## 8. 退出条件
 
-满足以下条件即可进入 Phase 1：
-- `src/`、`tests/`、`include/` 目录骨架已建立
-- 构建系统可用
-- 测试框架可用
-- 最小 CLI 可运行
-- 有第一版 `Error` 与 `Value` 基础结构
+满足以下条件即可进入 Phase 2：
+- 最小 lexer 可用
+- 基础 parser 可用
+- AST 节点骨架稳定
+- AST dump 可用
+- 基础语法错误可报告
