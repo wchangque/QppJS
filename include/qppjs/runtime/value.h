@@ -6,8 +6,13 @@
 
 namespace qppjs {
 
+enum class ObjectKind {
+    kOrdinary,
+};
+
 struct Object {
     virtual ~Object() = default;
+    virtual ObjectKind object_kind() const = 0;
 };
 
 using ObjectPtr = std::shared_ptr<Object>;

@@ -3,8 +3,10 @@
 #include "qppjs/frontend/lexer.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <sstream>
 #include <string>
 
 namespace qppjs {
@@ -171,6 +173,20 @@ static double parse_number_text(std::string_view text) {
     }
 }
 
+// 将 double 格式化为属性键字符串，与 to_string_val 对 Number 的整数化逻辑保持一致
+static std::string number_to_property_key(double n) {
+    if (std::isnan(n)) return "NaN";
+    if (std::isinf(n)) return n > 0 ? "Infinity" : "-Infinity";
+    if (n == static_cast<double>(static_cast<long long>(n)) && std::abs(n) < 1e15) {
+        std::ostringstream oss;
+        oss << static_cast<long long>(n);
+        return oss.str();
+    }
+    std::ostringstream oss;
+    oss << n;
+    return oss.str();
+}
+
 // ---- 错误构造辅助 ----
 
 static Error make_parse_error(std::string_view source, const Token& tok, std::string_view msg) {
@@ -198,6 +214,9 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const BinaryExpression& n) { return n.range; },
                               [](const LogicalExpression& n) { return n.range; },
                               [](const AssignmentExpression& n) { return n.range; },
+                              [](const ObjectExpression& n) { return n.range; },
+                              [](const MemberExpression& n) { return n.range; },
+                              [](const MemberAssignmentExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -296,6 +315,9 @@ struct Parser {
             case TokenKind::Slash:
             case TokenKind::Percent:
                 return 14;
+            case TokenKind::Dot:
+            case TokenKind::LBracket:
+                return 18;
             default:
                 return 0;
         }
@@ -367,6 +389,56 @@ struct Parser {
                 return ParseResult<ExprNode>::Ok(ExprNode{
                         UnaryExpression{UnaryOp::Void, std::make_unique<ExprNode>(std::move(operand.value())), r}});
             }
+            case TokenKind::LBrace: {
+                // 对象字面量 { key: value, ... }
+                uint32_t start = tok.range.offset;
+                std::vector<ObjectProperty> props;
+                while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
+                    std::string key;
+                    uint32_t key_start = cur.range.offset;
+                    if (cur.kind == TokenKind::Ident) {
+                        key = std::string(token_text(cur));
+                        advance();
+                    } else if (cur.kind == TokenKind::String) {
+                        key = decode_string(token_text(cur));
+                        advance();
+                    } else if (cur.kind == TokenKind::Number) {
+                        double num_val = parse_number_text(token_text(cur));
+                        key = number_to_property_key(num_val);
+                        advance();
+                    } else {
+                        return ParseResult<ExprNode>::Err(
+                                make_parse_error(source, cur, "expected property key"));
+                    }
+                    if (cur.kind != TokenKind::Colon) {
+                        return ParseResult<ExprNode>::Err(
+                                make_parse_error(source, cur, "expected ':' after property key"));
+                    }
+                    advance();  // 消费 :
+                    // parse_expr(1) 在 Comma（lbp=0）处停止
+                    auto val = parse_expr(1);
+                    if (!val.ok()) return val;
+                    uint32_t prop_end = range_end(expr_range(val.value()));
+                    ObjectProperty prop;
+                    prop.key = key;
+                    prop.value = std::make_unique<ExprNode>(std::move(val.value()));
+                    prop.range = span(key_start, prop_end);
+                    props.push_back(std::move(prop));
+                    if (cur.kind == TokenKind::Comma) {
+                        advance();  // 消费 ,
+                    } else {
+                        break;
+                    }
+                }
+                if (cur.kind != TokenKind::RBrace) {
+                    return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, cur, "expected '}'"));
+                }
+                uint32_t end = range_end(cur.range);
+                advance();  // 消费 }
+                return ParseResult<ExprNode>::Ok(
+                        ExprNode{ObjectExpression{std::move(props), span(start, end)}});
+            }
             default:
                 return ParseResult<ExprNode>::Err(make_parse_error(
                         source, tok,
@@ -379,44 +451,101 @@ struct Parser {
         auto kind = op_tok.kind;
         int bp = lbp(kind);
 
-        // 赋值：右结合，检查左侧是 Identifier
+        // 成员访问：obj.prop
+        if (kind == TokenKind::Dot) {
+            if (cur.kind != TokenKind::Ident) {
+                return ParseResult<ExprNode>::Err(
+                        make_parse_error(source, cur, "expected property name after '.'"));
+            }
+            std::string prop_name = std::string(token_text(cur));
+            SourceRange prop_range = cur.range;
+            uint32_t end = range_end(cur.range);
+            advance();
+            ExprNode prop_node{StringLiteral{prop_name, prop_range}};
+            uint32_t obj_start = expr_range(left).offset;
+            return ParseResult<ExprNode>::Ok(ExprNode{MemberExpression{
+                    std::make_unique<ExprNode>(std::move(left)),
+                    std::make_unique<ExprNode>(std::move(prop_node)),
+                    false,
+                    span(obj_start, end)}});
+        }
+
+        // 成员访问：obj[expr]
+        if (kind == TokenKind::LBracket) {
+            auto prop = parse_expr(0);
+            if (!prop.ok()) return prop;
+            if (cur.kind != TokenKind::RBracket) {
+                return ParseResult<ExprNode>::Err(
+                        make_parse_error(source, cur, "expected ']'"));
+            }
+            uint32_t end = range_end(cur.range);
+            advance();  // 消费 ]
+            uint32_t obj_start = expr_range(left).offset;
+            return ParseResult<ExprNode>::Ok(ExprNode{MemberExpression{
+                    std::make_unique<ExprNode>(std::move(left)),
+                    std::make_unique<ExprNode>(std::move(prop.value())),
+                    true,
+                    span(obj_start, end)}});
+        }
+
+        // 赋值：右结合，检查左侧是 Identifier 或 MemberExpression
         if (kind == TokenKind::Eq || kind == TokenKind::PlusEq || kind == TokenKind::MinusEq ||
             kind == TokenKind::StarEq || kind == TokenKind::SlashEq || kind == TokenKind::PercentEq) {
-            // Early Error：左侧必须是 Identifier
-            if (!std::holds_alternative<Identifier>(left.v)) {
-                return ParseResult<ExprNode>::Err(
-                        make_parse_error(source, op_tok, "invalid left-hand side in assignment"));
+            if (std::holds_alternative<Identifier>(left.v)) {
+                std::string target = std::get<Identifier>(left.v).name;
+                uint32_t left_start = std::get<Identifier>(left.v).range.offset;
+                auto right = parse_expr(bp - 1);  // 右结合
+                if (!right.ok()) return right;
+                AssignOp aop;
+                switch (kind) {
+                    case TokenKind::Eq:
+                        aop = AssignOp::Assign;
+                        break;
+                    case TokenKind::PlusEq:
+                        aop = AssignOp::AddAssign;
+                        break;
+                    case TokenKind::MinusEq:
+                        aop = AssignOp::SubAssign;
+                        break;
+                    case TokenKind::StarEq:
+                        aop = AssignOp::MulAssign;
+                        break;
+                    case TokenKind::SlashEq:
+                        aop = AssignOp::DivAssign;
+                        break;
+                    case TokenKind::PercentEq:
+                        aop = AssignOp::ModAssign;
+                        break;
+                    default:
+                        aop = AssignOp::Assign;
+                        break;
+                }
+                auto asgn_r = span(left_start, range_end(expr_range(right.value())));
+                return ParseResult<ExprNode>::Ok(ExprNode{AssignmentExpression{
+                        aop, std::move(target), std::make_unique<ExprNode>(std::move(right.value())), asgn_r}});
             }
-            std::string target = std::get<Identifier>(left.v).name;
-            auto right = parse_expr(bp - 1);  // 右结合
-            if (!right.ok()) return right;
-            AssignOp aop;
-            switch (kind) {
-                case TokenKind::Eq:
-                    aop = AssignOp::Assign;
-                    break;
-                case TokenKind::PlusEq:
-                    aop = AssignOp::AddAssign;
-                    break;
-                case TokenKind::MinusEq:
-                    aop = AssignOp::SubAssign;
-                    break;
-                case TokenKind::StarEq:
-                    aop = AssignOp::MulAssign;
-                    break;
-                case TokenKind::SlashEq:
-                    aop = AssignOp::DivAssign;
-                    break;
-                case TokenKind::PercentEq:
-                    aop = AssignOp::ModAssign;
-                    break;
-                default:
-                    aop = AssignOp::Assign;
-                    break;
+            if (std::holds_alternative<MemberExpression>(left.v)) {
+                if (kind != TokenKind::Eq) {
+                    return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, op_tok, "compound assignment to member not supported"));
+                }
+                auto& mem = std::get<MemberExpression>(left.v);
+                uint32_t left_start = mem.range.offset;
+                bool computed = mem.computed;
+                auto obj_ptr = std::move(mem.object);
+                auto prop_ptr = std::move(mem.property);
+                auto right = parse_expr(bp - 1);  // 右结合
+                if (!right.ok()) return right;
+                auto mae_r = span(left_start, range_end(expr_range(right.value())));
+                return ParseResult<ExprNode>::Ok(ExprNode{MemberAssignmentExpression{
+                        std::move(obj_ptr),
+                        std::move(prop_ptr),
+                        computed,
+                        std::make_unique<ExprNode>(std::move(right.value())),
+                        mae_r}});
             }
-            auto asgn_r = span(std::get<Identifier>(left.v).range.offset, range_end(expr_range(right.value())));
-            return ParseResult<ExprNode>::Ok(ExprNode{AssignmentExpression{
-                    aop, std::move(target), std::make_unique<ExprNode>(std::move(right.value())), asgn_r}});
+            return ParseResult<ExprNode>::Err(
+                    make_parse_error(source, op_tok, "invalid left-hand side in assignment"));
         }
 
         // || 和 &&：LogicalExpression

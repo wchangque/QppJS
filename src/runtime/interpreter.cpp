@@ -4,6 +4,7 @@
 #include "qppjs/frontend/ast.h"
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/environment.h"
+#include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/value.h"
 
 #include <cassert>
@@ -360,6 +361,9 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const BinaryExpression& e) { return eval_binary(e); },
             [this](const LogicalExpression& e) { return eval_logical(e); },
             [this](const AssignmentExpression& e) { return eval_assignment(e); },
+            [this](const ObjectExpression& e) { return eval_object_expr(e); },
+            [this](const MemberExpression& e) { return eval_member_expr(e); },
+            [this](const MemberAssignmentExpression& e) { return eval_member_assign(e); },
         },
         expr.v);
 }
@@ -804,6 +808,79 @@ EvalResult Interpreter::eval_assignment(const AssignmentExpression& expr) {
         return set_result;
     }
     return EvalResult::ok(new_val);
+}
+
+EvalResult Interpreter::eval_object_expr(const ObjectExpression& expr) {
+    auto obj = std::make_shared<JSObject>();
+    for (const auto& prop : expr.properties) {
+        auto val = eval_expr(*prop.value);
+        if (!val.is_ok()) {
+            return val;
+        }
+        obj->set_property(prop.key, val.value());
+    }
+    return EvalResult::ok(Value::object(obj));
+}
+
+EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
+    auto obj_result = eval_expr(*expr.object);
+    if (!obj_result.is_ok()) {
+        return obj_result;
+    }
+    const Value& obj_val = obj_result.value();
+
+    if (obj_val.is_undefined() || obj_val.is_null()) {
+        return EvalResult::err(Error(ErrorKind::Runtime,
+                "TypeError: Cannot read properties of " + to_string_val(obj_val)));
+    }
+
+    // 非对象：Phase 3 返回 undefined（Phase 5 补原始值包装）
+    if (!obj_val.is_object()) {
+        return EvalResult::ok(Value::undefined());
+    }
+
+    auto key_result = eval_expr(*expr.property);
+    if (!key_result.is_ok()) {
+        return key_result;
+    }
+    std::string key = to_string_val(key_result.value());
+
+    assert(obj_val.as_object()->object_kind() == ObjectKind::kOrdinary);
+    auto* js_obj = static_cast<JSObject*>(obj_val.as_object().get());
+    return EvalResult::ok(js_obj->get_property(key));
+}
+
+EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& expr) {
+    auto obj_result = eval_expr(*expr.object);
+    if (!obj_result.is_ok()) {
+        return obj_result;
+    }
+    const Value& obj_val = obj_result.value();
+
+    if (obj_val.is_undefined() || obj_val.is_null()) {
+        return EvalResult::err(Error(ErrorKind::Runtime,
+                "TypeError: Cannot set properties of " + to_string_val(obj_val)));
+    }
+    if (!obj_val.is_object()) {
+        return EvalResult::err(Error(ErrorKind::Runtime,
+                "TypeError: Cannot set properties of non-object"));
+    }
+
+    auto key_result = eval_expr(*expr.property);
+    if (!key_result.is_ok()) {
+        return key_result;
+    }
+    std::string key = to_string_val(key_result.value());
+
+    auto val_result = eval_expr(*expr.value);
+    if (!val_result.is_ok()) {
+        return val_result;
+    }
+
+    assert(obj_val.as_object()->object_kind() == ObjectKind::kOrdinary);
+    auto* js_obj = static_cast<JSObject*>(obj_val.as_object().get());
+    js_obj->set_property(key, val_result.value());
+    return EvalResult::ok(val_result.value());
 }
 
 }  // namespace qppjs

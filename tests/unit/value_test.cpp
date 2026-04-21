@@ -1,6 +1,7 @@
 #include "qppjs/runtime/value.h"
 
 #include "qppjs/debug/format.h"
+#include "qppjs/runtime/js_object.h"
 
 #include <gtest/gtest.h>
 #include <memory>
@@ -11,7 +12,7 @@ TEST(ValueTest, PreservesKindsAndPayloads) {
     const qppjs::Value bool_value = qppjs::Value::boolean(true);
     const qppjs::Value number_value = qppjs::Value::number(3.5);
     const qppjs::Value string_value = qppjs::Value::string("hello");
-    const qppjs::Value object_value = qppjs::Value::object(std::make_shared<qppjs::Object>());
+    const qppjs::Value object_value = qppjs::Value::object(std::make_shared<qppjs::JSObject>());
 
     EXPECT_EQ(undefined_value.kind(), qppjs::ValueKind::Undefined);
     EXPECT_EQ(null_value.kind(), qppjs::ValueKind::Null);
@@ -31,5 +32,5 @@ TEST(ValueTest, FormatsValuesForDebugOutput) {
     EXPECT_EQ(qppjs::format_value(qppjs::Value::boolean(true)), "true");
     EXPECT_EQ(qppjs::format_value(qppjs::Value::number(3.5)), "3.5");
     EXPECT_EQ(qppjs::format_value(qppjs::Value::string("hello")), "hello");
-    EXPECT_EQ(qppjs::format_value(qppjs::Value::object(std::make_shared<qppjs::Object>())), "[object]");
+    EXPECT_EQ(qppjs::format_value(qppjs::Value::object(std::make_shared<qppjs::JSObject>())), "[object]");
 }

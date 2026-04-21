@@ -4,8 +4,8 @@
 
 ## 1. 当前阶段
 
-- 当前阶段：Phase 2 已全部完成，下一阶段为 Phase 3：Object Model
-- 最近更新时间：2026-04-21（Phase 2 AST Interpreter 完成）
+- 当前阶段：Phase 3 已全部完成，下一阶段为 Phase 4：Function
+- 最近更新时间：2026-04-21（Phase 3 Object Model 完成 + Review Bug 修复）
 
 ## 2. 当前任务状态
 
@@ -13,7 +13,7 @@
 - [x] 建立项目目标、参考仓库与 agent team 协作约定
 - [x] 创建 6 个项目级 subagents：`es-spec`、`quickjs-research`、`design-agent`、`implementation-agent`、`testing-agent`、`review-agent`
 - [x] 形成长期路线图、当前状态、下一阶段计划三文档体系
-- [x] 明确当前状态更新机制以“任务完成”而不是“commit”作为主触发点
+- [x] 明确当前状态更新机制以”任务完成”而不是”commit”作为主触发点
 - [x] 0.1 建立最小目录结构
 - [x] 0.2 建立最小构建链路（顶层 CMake 骨架）
 - [x] 0.3 建立最小 CLI
@@ -30,29 +30,56 @@
   - [x] 1.4 实现表达式解析（Pratt Parser：原子/一元/二元/逻辑/赋值，含优先级与结合性）
   - [x] 1.5 实现语句解析（ExpressionStatement、VariableDeclaration、BlockStatement、IfStatement、WhileStatement、ReturnStatement + 最小 ASI）
   - [x] 1.6 实现 AST dump（dump_expr / dump_stmt / dump_program，缩进树形格式，17 个测试全部通过）
-  - [x] 1.7 建立 parser 错误报告（make_parse_error 辅助函数，位置信息拼入 message，格式 "line N, column M: <描述>"，5 个新测试，242/242 全部通过）
+  - [x] 1.7 建立 parser 错误报告（make_parse_error 辅助函数，位置信息拼入 message，格式 “line N, column M: <描述>”，5 个新测试，242/242 全部通过）
 
 - [x] Phase 2：AST Interpreter（已全部完成）
   - [x] 2.1 Environment / Scope（Binding struct，链式 Environment，VarKind define，TDZ，get/set/initialize）
   - [x] 2.2 表达式求值（NumberLiteral/StringLiteral/BooleanLiteral/NullLiteral/Identifier/UnaryExpression/BinaryExpression/LogicalExpression/AssignmentExpression）
   - [x] 2.3 语句执行（ExpressionStatement/VariableDeclaration/BlockStatement/IfStatement/WhileStatement/ReturnStatement + var 提升）
-  - [x] 2.4 ToBoolean falsy 规则（undefined/null/false/0/NaN/""）
+  - [x] 2.4 ToBoolean falsy 规则（undefined/null/false/0/NaN/””）
   - [x] 2.5 Completion 模型（CompletionType kNormal/kReturn，EvalResult/StmtResult，顶层 return 视为正常完成）
   - Parser 调整：允许顶层 return（移除 function_depth 检查），更新 3 个相关 parser 测试
   - CLI 更新：接入 Interpreter，parse + exec + format_value
   - 321/321 测试全部通过（含新增 65 个 interpreter 测试）
   - Bug 修复（Review + Testing Agent 审查后）：typeof TDZ 应抛 ReferenceError、let 无初始化值应为 undefined、字符串关系比较使用词典序；Testing Agent 补充 35 个边界测试；359/359 测试全部通过
 
+- [x] Phase 3：Object Model（已全部完成）
+  - [x] 3.1 Object 基类抽象化（ObjectKind 枚举，Object 添加纯虚 object_kind()）
+  - [x] 3.2 JSObject 实现（properties_ 向量 + index_map_ 哈希索引，get/set/has_own_property）
+  - [x] 3.3 扩展 AST 节点（ObjectExpression、MemberExpression、MemberAssignmentExpression + ObjectProperty 辅助结构）
+  - [x] 3.4 扩展 Parser（lbp: Dot/LBracket=18；nud: LBrace 对象字面量；led: Dot/LBracket 成员访问，赋值扩展支持 MemberExpression 左侧）
+  - [x] 3.5 扩展 AST dump（ObjectExpression/MemberExpression/MemberAssignmentExpression 三个新分支）
+  - [x] 3.6 扩展 Interpreter（eval_object_expr/eval_member_expr/eval_member_assign，null/undefined 访问抛 TypeError）
+  - value_test.cpp 更新：改用 JSObject 替代抽象类 Object 的直接实例化
+  - 387/387 测试全部通过（含新增 28 个 object 测试）
+  - Bug 修复（Review Agent 审查后）：
+    - parser.cpp：对象字面量数字键经 ToPropertyKey 规范化（`0x1` → `"1"`）；新增 `number_to_property_key` 辅助函数
+    - interpreter.cpp：eval_member_expr / eval_member_assign 在 static_cast 前加 `assert(object_kind() == kOrdinary)` 保护
+    - object_test.cpp：新增 2 个回归测试（HexLiteralKeyNormalizedToDecimal、DecimalLiteralKeyAccessByNumberAndString）
+  - 417/417 测试全部通过（原有 387 个 + Testing Agent 新增 28 个 + Bug 修复新增 2 个）
+
 ### 进行中
-- 暂无（Phase 2 已全部完成）
+- 暂无（Phase 3 已全部完成）
 
 ### 未开始
-- [ ] Phase 3：Object Model
+- [ ] Phase 4：Function
 
 ### 阻塞
 - 暂无 Phase 0 阻塞项
 
 ## 3. 最近完成内容
+
+- 已完成 Phase 3 Object Model + Review Bug 修复：
+  - `include/qppjs/runtime/value.h`：添加 ObjectKind 枚举，Object 添加纯虚 object_kind() 方法（Object 成为抽象类）
+  - `include/qppjs/runtime/js_object.h` + `src/runtime/js_object.cpp`：JSObject 类（继承 Object），properties_ 向量 + index_map_ 哈希索引，实现 get_property/set_property/has_own_property
+  - `include/qppjs/frontend/ast.h`：新增 ObjectProperty（辅助结构）、ObjectExpression、MemberExpression、MemberAssignmentExpression；ExprNode variant 扩展三个新类型
+  - `src/frontend/parser.cpp`：lbp 新增 Dot/LBracket(18)；nud 新增 LBrace 对象字面量解析；led 新增 Dot/LBracket 成员访问，赋值分支扩展支持 MemberExpression 左侧；expr_range 新增三个节点；数字键经 `number_to_property_key` 规范化（Bug 修复）
+  - `src/frontend/ast_dump.cpp`：新增 ObjectExpression/MemberExpression/MemberAssignmentExpression 三个 dump 分支
+  - `include/qppjs/runtime/interpreter.h` + `src/runtime/interpreter.cpp`：新增 eval_object_expr/eval_member_expr/eval_member_assign 三个方法，eval_expr dispatch 扩展；eval_member_expr/eval_member_assign 加 assert 断言（Bug 修复）
+  - `tests/unit/object_test.cpp`：30 个测试（JSObject 单元 7 个，Parser 6 个，Interpreter 端到端 15 个；Testing Agent 补 2 个；Bug 修复新增 2 个）
+  - `tests/unit/value_test.cpp`：改用 JSObject 替代直接实例化抽象类 Object
+  - `src/CMakeLists.txt`、`tests/CMakeLists.txt`：追加新文件
+  - 417/417 测试全部通过（原有 387 个 + Testing Agent 新增 28 个 + Bug 修复新增 2 个）
 
 - 已完成 Phase 2 AST Interpreter：
   - `include/qppjs/runtime/completion.h`：CompletionType/Completion/EvalResult/StmtResult 类型定义
@@ -127,7 +154,7 @@
 新 session 开始时，优先做以下动作：
 1. 读取本文件
 2. 读取 `docs/plans/02-next-phase.md`
-3. Phase 2 所有任务已完成，进入 Phase 3：Object Model
+3. Phase 3 所有任务已完成，进入 Phase 4：Function
 
 ## 6. 收尾检查清单
 

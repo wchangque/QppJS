@@ -85,11 +85,42 @@ struct AssignmentExpression {
     SourceRange range;
 };
 
+// 对象字面量的单个属性（不是 ExprNode，只是辅助结构）
+struct ObjectProperty {
+    std::string key;
+    std::unique_ptr<ExprNode> value;
+    SourceRange range;
+};
+
+// 对象字面量 { key: value, ... }
+struct ObjectExpression {
+    std::vector<ObjectProperty> properties;
+    SourceRange range;
+};
+
+// 成员访问 obj.prop 或 obj[expr]
+struct MemberExpression {
+    std::unique_ptr<ExprNode> object;
+    std::unique_ptr<ExprNode> property;  // 点号时为 StringLiteral；方括号时为任意表达式
+    bool computed;                        // false=点号, true=方括号
+    SourceRange range;
+};
+
+// 成员赋值 obj.prop = val 或 obj[expr] = val
+struct MemberAssignmentExpression {
+    std::unique_ptr<ExprNode> object;
+    std::unique_ptr<ExprNode> property;
+    bool computed;
+    std::unique_ptr<ExprNode> value;
+    SourceRange range;
+};
+
 // ---- ExprNode 完整定义（必须在所有表达式 struct 定义之后）----
 
 struct ExprNode {
     std::variant<NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, Identifier, UnaryExpression,
-                 BinaryExpression, LogicalExpression, AssignmentExpression>
+                 BinaryExpression, LogicalExpression, AssignmentExpression,
+                 ObjectExpression, MemberExpression, MemberAssignmentExpression>
             v;
 
     template <typename T>

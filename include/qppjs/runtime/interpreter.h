@@ -33,6 +33,9 @@ private:
     EvalResult eval_binary(const BinaryExpression& expr);
     EvalResult eval_logical(const LogicalExpression& expr);
     EvalResult eval_assignment(const AssignmentExpression& expr);
+    EvalResult eval_object_expr(const ObjectExpression& expr);
+    EvalResult eval_member_expr(const MemberExpression& expr);
+    EvalResult eval_member_assign(const MemberAssignmentExpression& expr);
 
     // Type conversions (static)
     static bool to_boolean(const Value& v);

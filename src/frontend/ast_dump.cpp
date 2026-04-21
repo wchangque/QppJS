@@ -150,6 +150,31 @@ std::string dump_expr(const ExprNode& node, int indent) {
                            result += ind(indent + 1) + "value:\n";
                            result += dump_expr(*ae.value, indent + 2);
                        },
+                       [&](const ObjectExpression& oe) {
+                           result = prefix + "ObjectExpression\n";
+                           for (const auto& prop : oe.properties) {
+                               result += ind(indent + 1) + "prop \"" + prop.key + "\":\n";
+                               result += dump_expr(*prop.value, indent + 2);
+                           }
+                       },
+                       [&](const MemberExpression& me) {
+                           result = prefix + "MemberExpression [computed=" +
+                                    (me.computed ? "true" : "false") + "]\n";
+                           result += ind(indent + 1) + "object:\n";
+                           result += dump_expr(*me.object, indent + 2);
+                           result += ind(indent + 1) + "property:\n";
+                           result += dump_expr(*me.property, indent + 2);
+                       },
+                       [&](const MemberAssignmentExpression& mae) {
+                           result = prefix + "MemberAssignmentExpression [computed=" +
+                                    (mae.computed ? "true" : "false") + "]\n";
+                           result += ind(indent + 1) + "object:\n";
+                           result += dump_expr(*mae.object, indent + 2);
+                           result += ind(indent + 1) + "property:\n";
+                           result += dump_expr(*mae.property, indent + 2);
+                           result += ind(indent + 1) + "value:\n";
+                           result += dump_expr(*mae.value, indent + 2);
+                       },
                },
                node.v);
 
