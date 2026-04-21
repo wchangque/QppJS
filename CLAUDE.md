@@ -65,19 +65,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 - `Design Agent`：综合规范要求与 QuickJS 调研结果，为当前模块制定适合 QppJS 的实现方案。
 - `Implementation Agent`：依据设计方案，以 TDD 方式完成当前范围内的最小实现。
 - `Testing Agent`：补足测试矩阵、边界场景、异常路径与后续兼容性验证建议。
-- `Review Agent`：独立审查实现是否偏离规范和设计，并检查复杂度、可维护性与风险。
+- `Review Agent`：独立审查实现是否偏离规范和设计，调用 `/codex:review` 和 `/codex:adversarial-review` 获取审查结果，并检查复杂度、可维护性与风险。
 
 ### 协作顺序
 
 默认流程：
 
-`ES Spec Agent + QuickJS Research Agent -> Design Agent -> Implementation Agent -> Testing Agent -> Review Agent`
+```
+ES Spec Agent + QuickJS Research Agent
+  → Design Agent
+  → Implementation Agent（首次实现）
+  → Testing Agent
+  → Review Agent（首次审查，含 codex:review + codex:adversarial-review）
+  → Implementation Agent（修复合理的必修问题）
+  → Review Agent（验证审查，仅确认修复结果，不开新问题）
+```
 
 规则：
 
 - `ES Spec Agent` 与 `QuickJS Research Agent` 可以并行。
 - `Design Agent` 必须消费前两者的产出后再给出方案。
 - `Implementation Agent`、`Testing Agent`、`Review Agent` 默认串行接力，避免上下文漂移和结论互相覆盖。
+- 修复 + 验证只做一轮，验证审查结束后不再循环，防止无限迭代。
 
 ### 角色边界
 
