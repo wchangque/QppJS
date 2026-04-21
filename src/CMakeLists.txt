@@ -1,6 +1,8 @@
 add_library(qppjs_core
     base/error.cpp
     runtime/value.cpp
+    runtime/environment.cpp
+    runtime/interpreter.cpp
     debug/format.cpp
     frontend/token.cpp
     frontend/lexer.cpp

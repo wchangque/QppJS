@@ -430,12 +430,17 @@ TEST(ParserStmt, WhileLoop) {
 
 TEST(ParserStmt, TopLevelReturnEmpty) {
     auto result = parse_program("return;");
-    EXPECT_FALSE(result.ok());
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    EXPECT_TRUE(std::holds_alternative<ReturnStatement>(result.value().body[0].v));
 }
 
 TEST(ParserStmt, TopLevelReturnValue) {
     auto result = parse_program("return 1;");
-    EXPECT_FALSE(result.ok());
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    const auto& ret = std::get<ReturnStatement>(result.value().body[0].v);
+    EXPECT_TRUE(ret.argument.has_value());
 }
 
 // ---- 阶段 G：分号自动插入 ----
@@ -590,10 +595,12 @@ TEST(ParserErrorTest, InvalidAssignTargetHasLocation) {
     EXPECT_NE(result.error().message().find("line 1"), std::string::npos);
 }
 
-TEST(ParserErrorTest, TopLevelReturnHasLocation) {
+TEST(ParserErrorTest, TopLevelReturnIsAllowed) {
+    // Top-level return is now allowed; the interpreter handles it as normal completion.
     auto result = parse_program("return 1;");
-    ASSERT_FALSE(result.ok());
-    EXPECT_NE(result.error().message().find("line 1"), std::string::npos);
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    EXPECT_TRUE(std::holds_alternative<ReturnStatement>(result.value().body[0].v));
 }
 
 TEST(ParserErrorTest, MultilineErrorShowsCorrectLine) {

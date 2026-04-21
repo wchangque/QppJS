@@ -1,5 +1,7 @@
 #include "qppjs/base/error.h"
 #include "qppjs/debug/format.h"
+#include "qppjs/frontend/parser.h"
+#include "qppjs/runtime/interpreter.h"
 
 #include <iostream>
 #include <string_view>
@@ -21,6 +23,20 @@ int main(int argc, char** argv) {
     }
 
     const std::string_view source(argv[1]);
-    std::cout << "source: " << source << '\n';
+
+    auto parse_result = qppjs::parse_program(source);
+    if (!parse_result.ok()) {
+        std::cerr << qppjs::format_error(parse_result.error()) << '\n';
+        return 1;
+    }
+
+    qppjs::Interpreter interp;
+    auto exec_result = interp.exec(parse_result.value());
+    if (!exec_result.is_ok()) {
+        std::cerr << qppjs::format_error(exec_result.error()) << '\n';
+        return 1;
+    }
+
+    std::cout << qppjs::format_value(exec_result.value()) << '\n';
     return 0;
 }

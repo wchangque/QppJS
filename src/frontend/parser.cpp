@@ -220,12 +220,11 @@ static SourceRange stmt_range(const StmtNode& s) {
 struct Parser {
     std::string_view source;
     LexerState lex;
-    Token cur;    // 当前已消费 token（lookahead）
-    bool got_lf;  // cur 前是否有换行（ASI 用）
-    int function_depth;
+    Token cur;   // 当前已消费 token（lookahead）
+    bool got_lf; // cur 前是否有换行（ASI 用）
 
     explicit Parser(std::string_view src)
-        : source(src), lex(lexer_init(src)), cur{TokenKind::Eof, {0, 0}}, got_lf(false), function_depth(0) {
+        : source(src), lex(lexer_init(src)), cur{TokenKind::Eof, {0, 0}}, got_lf(false) {
         advance();  // 载入第一个 token
     }
 
@@ -625,9 +624,6 @@ struct Parser {
     ParseResult<StmtNode> parse_return_stmt() {
         Token kw = cur;
         advance();
-        if (function_depth == 0) {
-            return ParseResult<StmtNode>::Err(make_parse_error(source, kw, "return statement outside of function"));
-        }
         std::optional<ExprNode> arg;
         if (!got_lf && cur.kind != TokenKind::Semicolon && cur.kind != TokenKind::RBrace &&
             cur.kind != TokenKind::Eof) {

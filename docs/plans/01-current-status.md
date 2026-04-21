@@ -4,8 +4,8 @@
 
 ## 1. 当前阶段
 
-- 当前阶段：Phase 1 已全部完成，下一阶段为 Phase 2：AST Interpreter
-- 最近更新时间：2026-04-21（1.7 parser 错误报告完成）
+- 当前阶段：Phase 2 已全部完成，下一阶段为 Phase 3：Object Model
+- 最近更新时间：2026-04-21（Phase 2 AST Interpreter 完成）
 
 ## 2. 当前任务状态
 
@@ -32,16 +32,39 @@
   - [x] 1.6 实现 AST dump（dump_expr / dump_stmt / dump_program，缩进树形格式，17 个测试全部通过）
   - [x] 1.7 建立 parser 错误报告（make_parse_error 辅助函数，位置信息拼入 message，格式 "line N, column M: <描述>"，5 个新测试，242/242 全部通过）
 
+- [x] Phase 2：AST Interpreter（已全部完成）
+  - [x] 2.1 Environment / Scope（Binding struct，链式 Environment，VarKind define，TDZ，get/set/initialize）
+  - [x] 2.2 表达式求值（NumberLiteral/StringLiteral/BooleanLiteral/NullLiteral/Identifier/UnaryExpression/BinaryExpression/LogicalExpression/AssignmentExpression）
+  - [x] 2.3 语句执行（ExpressionStatement/VariableDeclaration/BlockStatement/IfStatement/WhileStatement/ReturnStatement + var 提升）
+  - [x] 2.4 ToBoolean falsy 规则（undefined/null/false/0/NaN/""）
+  - [x] 2.5 Completion 模型（CompletionType kNormal/kReturn，EvalResult/StmtResult，顶层 return 视为正常完成）
+  - Parser 调整：允许顶层 return（移除 function_depth 检查），更新 3 个相关 parser 测试
+  - CLI 更新：接入 Interpreter，parse + exec + format_value
+  - 321/321 测试全部通过（含新增 65 个 interpreter 测试）
+  - Bug 修复（Review + Testing Agent 审查后）：typeof TDZ 应抛 ReferenceError、let 无初始化值应为 undefined、字符串关系比较使用词典序；Testing Agent 补充 35 个边界测试；359/359 测试全部通过
+
 ### 进行中
-- 暂无（Phase 1 已全部完成）
+- 暂无（Phase 2 已全部完成）
 
 ### 未开始
-- [ ] Phase 2：AST Interpreter
+- [ ] Phase 3：Object Model
 
 ### 阻塞
 - 暂无 Phase 0 阻塞项
 
 ## 3. 最近完成内容
+
+- 已完成 Phase 2 AST Interpreter：
+  - `include/qppjs/runtime/completion.h`：CompletionType/Completion/EvalResult/StmtResult 类型定义
+  - `include/qppjs/runtime/environment.h`：Binding struct + Environment 类（define/define_initialized/lookup/get/set/initialize）
+  - `include/qppjs/runtime/interpreter.h`：Interpreter 类接口（exec + eval_stmt/eval_expr + to_boolean/to_number/to_string_val + ScopeGuard）
+  - `src/runtime/environment.cpp`：Environment 实现，insert_or_assign 避免默认构造
+  - `src/runtime/interpreter.cpp`：Completion/EvalResult/StmtResult 实现 + Interpreter 完整实现（表达式/语句/类型转换/var 提升/作用域切换）
+  - `tests/unit/interpreter_test.cpp`：65 个测试覆盖字面量/变量/TDZ/ToBoolean/typeof/一元/算术/比较/相等/逻辑/赋值/控制流/作用域/return
+  - `src/main/main.cpp`：CLI 更新，接入 parse_program + Interpreter + format_value
+  - `src/CMakeLists.txt`、`tests/CMakeLists.txt`：追加新源文件和测试
+  - Parser 调整：移除 function_depth 检查，允许顶层 return；`tests/unit/parser_test.cpp` 更新 3 个相关测试
+  - 359/359 测试全部通过（含 bug 修复后新增的 35 个边界测试）
 
 - 已完成 1.7 parser 错误报告：
   - `src/frontend/parser.cpp`：新增 `make_parse_error(source, tok, msg)` 静态辅助函数，调用 `compute_location` 将行列信息拼入 message，格式 `"line N, column M: <原有消息>"`
@@ -104,7 +127,7 @@
 新 session 开始时，优先做以下动作：
 1. 读取本文件
 2. 读取 `docs/plans/02-next-phase.md`
-3. Phase 1 所有任务已完成，进入 Phase 2：AST Interpreter
+3. Phase 2 所有任务已完成，进入 Phase 3：Object Model
 
 ## 6. 收尾检查清单
 

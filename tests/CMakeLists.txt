@@ -6,6 +6,7 @@ add_executable(qppjs_unit_tests
     unit/ast_test.cpp
     unit/parser_test.cpp
     unit/ast_dump_test.cpp
+    unit/interpreter_test.cpp
 )
 
 target_link_libraries(qppjs_unit_tests PRIVATE qppjs_core GTest::gtest_main)
@@ -21,5 +22,5 @@ set_tests_properties(qppjs_cli_without_args PROPERTIES
 
 add_test(NAME qppjs_cli_with_source COMMAND qppjs "1+2")
 set_tests_properties(qppjs_cli_with_source PROPERTIES
-    PASS_REGULAR_EXPRESSION "source: 1\\+2"
+    PASS_REGULAR_EXPRESSION "3"
 )
