@@ -4,6 +4,7 @@
 #include "qppjs/frontend/ast.h"
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/environment.h"
+#include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/value.h"
 
@@ -68,17 +69,32 @@ const Error& StmtResult::error() const { return std::get<Error>(data); }
 // ScopeGuard
 // ============================================================
 
-Interpreter::ScopeGuard::ScopeGuard(Interpreter& i, Environment* new_env) : interp(i), saved(i.current_env_) {
-    interp.current_env_ = new_env;
+Interpreter::ScopeGuard::ScopeGuard(Interpreter& i, std::shared_ptr<Environment> new_env,
+                                     std::shared_ptr<Environment> new_var_env, bool is_call)
+    : interp(i), saved_env(i.current_env_), saved_var_env(i.var_env_), owns_call_depth(is_call) {
+    interp.current_env_ = std::move(new_env);
+    interp.var_env_ = std::move(new_var_env);
+    if (owns_call_depth) {
+        ++interp.call_depth_;
+    }
 }
 
-Interpreter::ScopeGuard::~ScopeGuard() { interp.current_env_ = saved; }
+Interpreter::ScopeGuard::~ScopeGuard() {
+    interp.current_env_ = std::move(saved_env);
+    interp.var_env_ = std::move(saved_var_env);
+    if (owns_call_depth) {
+        --interp.call_depth_;
+    }
+}
 
 // ============================================================
 // Interpreter
 // ============================================================
 
-Interpreter::Interpreter() : global_env_(nullptr), current_env_(&global_env_) {}
+Interpreter::Interpreter()
+    : global_env_(std::make_shared<Environment>(nullptr)),
+      current_env_(global_env_),
+      var_env_(global_env_) {}
 
 // ---- Type conversions ----
 
@@ -160,24 +176,33 @@ std::string Interpreter::to_string_val(const Value& v) {
     }
     case ValueKind::String:
         return v.as_string();
-    case ValueKind::Object:
+    case ValueKind::Object: {
+        const auto& obj = v.as_object();
+        if (obj && obj->object_kind() == ObjectKind::kFunction) {
+            return "function";
+        }
         return "[object Object]";
+    }
     }
     return "undefined";
 }
 
 // ---- Var hoisting ----
 
-void Interpreter::hoist_vars(const std::vector<StmtNode>& stmts) {
+void Interpreter::hoist_vars(const std::vector<StmtNode>& stmts, Environment& var_target) {
     for (const auto& stmt : stmts) {
         if (std::holds_alternative<VariableDeclaration>(stmt.v)) {
             const auto& decl = std::get<VariableDeclaration>(stmt.v);
             if (decl.kind == VarKind::Var) {
-                global_env_.define_initialized(decl.name);
+                var_target.define_initialized(decl.name);
             } else {
                 // let / const: pre-declare TDZ binding so access before the declaration throws ReferenceError
                 current_env_->define(decl.name, decl.kind);
             }
+        } else if (std::holds_alternative<FunctionDeclaration>(stmt.v)) {
+            // function declarations are hoisted to var_target (not TDZ)
+            const auto& fdecl = std::get<FunctionDeclaration>(stmt.v);
+            var_target.define_initialized(fdecl.name);
         }
         // Do not recurse into BlockStatement for var hoisting at top-level
     }
@@ -186,7 +211,7 @@ void Interpreter::hoist_vars(const std::vector<StmtNode>& stmts) {
 // ---- exec ----
 
 EvalResult Interpreter::exec(const Program& program) {
-    hoist_vars(program.body);
+    hoist_vars(program.body, *var_env_);
 
     Value last = Value::undefined();
     for (const auto& stmt : program.body) {
@@ -216,6 +241,7 @@ StmtResult Interpreter::eval_stmt(const StmtNode& stmt) {
             [this](const IfStatement& s) { return eval_if_stmt(s); },
             [this](const WhileStatement& s) { return eval_while_stmt(s); },
             [this](const ReturnStatement& s) { return eval_return_stmt(s); },
+            [this](const FunctionDeclaration& s) { return eval_function_decl(s); },
         },
         stmt.v);
 }
@@ -262,21 +288,10 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
 }
 
 StmtResult Interpreter::eval_block_stmt(const BlockStatement& stmt) {
-    Environment block_env(current_env_);
-    ScopeGuard guard(*this, &block_env);
+    auto block_env = std::make_shared<Environment>(current_env_);
+    ScopeGuard guard(*this, block_env, var_env_);
 
-    // Hoist var declarations inside the block to the global env;
-    // pre-declare let/const bindings as TDZ so access before declaration throws ReferenceError.
-    for (const auto& s : stmt.body) {
-        if (std::holds_alternative<VariableDeclaration>(s.v)) {
-            const auto& decl = std::get<VariableDeclaration>(s.v);
-            if (decl.kind == VarKind::Var) {
-                global_env_.define_initialized(decl.name);
-            } else {
-                block_env.define(decl.name, decl.kind);
-            }
-        }
-    }
+    hoist_vars(stmt.body, *var_env_);
 
     Value last = Value::undefined();
     for (const auto& s : stmt.body) {
@@ -364,12 +379,13 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const ObjectExpression& e) { return eval_object_expr(e); },
             [this](const MemberExpression& e) { return eval_member_expr(e); },
             [this](const MemberAssignmentExpression& e) { return eval_member_assign(e); },
+            [this](const FunctionExpression& e) { return eval_function_expr(e); },
+            [this](const CallExpression& e) { return eval_call_expr(e); },
         },
         expr.v);
 }
 
 EvalResult Interpreter::eval_identifier(const Identifier& expr) {
-    // "undefined" is a global identifier that evaluates to undefined
     if (expr.name == "undefined") {
         return EvalResult::ok(Value::undefined());
     }
@@ -387,11 +403,9 @@ EvalResult Interpreter::eval_unary(const UnaryExpression& expr) {
             }
             Binding* b = current_env_->lookup(id.name);
             if (b == nullptr) {
-                // Undeclared variable: typeof special rule, return "undefined" without throwing
                 return EvalResult::ok(Value::string("undefined"));
             }
             if (!b->initialized) {
-                // TDZ: typeof still throws ReferenceError (ECMAScript §13.5.3.1)
                 return EvalResult::err(Error(ErrorKind::Runtime,
                     "ReferenceError: Cannot access '" + id.name + "' before initialization"));
             }
@@ -413,8 +427,13 @@ EvalResult Interpreter::eval_unary(const UnaryExpression& expr) {
             return EvalResult::ok(Value::string("number"));
         case ValueKind::String:
             return EvalResult::ok(Value::string("string"));
-        case ValueKind::Object:
+        case ValueKind::Object: {
+            const auto& obj = val.as_object();
+            if (obj && obj->object_kind() == ObjectKind::kFunction) {
+                return EvalResult::ok(Value::string("function"));
+            }
             return EvalResult::ok(Value::string("object"));
+        }
         }
         return EvalResult::ok(Value::string("undefined"));
     }
@@ -845,7 +864,9 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
     }
     std::string key = to_string_val(key_result.value());
 
-    assert(obj_val.as_object()->object_kind() == ObjectKind::kOrdinary);
+    if (obj_val.as_object()->object_kind() != ObjectKind::kOrdinary) {
+        return EvalResult::ok(Value::undefined());
+    }
     auto* js_obj = static_cast<JSObject*>(obj_val.as_object().get());
     return EvalResult::ok(js_obj->get_property(key));
 }
@@ -877,10 +898,99 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
         return val_result;
     }
 
-    assert(obj_val.as_object()->object_kind() == ObjectKind::kOrdinary);
+    if (obj_val.as_object()->object_kind() != ObjectKind::kOrdinary) {
+        return EvalResult::err(Error(ErrorKind::Runtime,
+                "TypeError: Cannot set properties of non-ordinary object"));
+    }
     auto* js_obj = static_cast<JSObject*>(obj_val.as_object().get());
     js_obj->set_property(key, val_result.value());
     return EvalResult::ok(val_result.value());
+}
+
+StmtResult Interpreter::eval_function_decl(const FunctionDeclaration& stmt) {
+    auto fn = std::make_shared<JSFunction>();
+    fn->set_name(stmt.name);
+    fn->set_params(stmt.params);
+    fn->set_body(stmt.body);
+    fn->set_closure_env(current_env_);
+    Value fn_val = Value::object(fn);
+    // Bind to var_env_ (function/global scope), matching where hoist_vars pre-declared the name.
+    auto set_result = var_env_->set(stmt.name, fn_val);
+    if (!set_result.is_ok()) {
+        return StmtResult::err(set_result.error());
+    }
+    return StmtResult::ok(Completion::normal(Value::undefined()));
+}
+
+EvalResult Interpreter::eval_function_expr(const FunctionExpression& expr) {
+    auto fn = std::make_shared<JSFunction>();
+    fn->set_name(expr.name);
+    fn->set_params(expr.params);
+    fn->set_body(expr.body);
+    fn->set_closure_env(current_env_);
+    return EvalResult::ok(Value::object(fn));
+}
+
+EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
+    if (call_depth_ >= kMaxCallDepth) {
+        return EvalResult::err(
+            Error(ErrorKind::Runtime, "RangeError: Maximum call stack size exceeded"));
+    }
+
+    auto callee_result = eval_expr(*expr.callee);
+    if (!callee_result.is_ok()) {
+        return callee_result;
+    }
+    const Value& callee_val = callee_result.value();
+
+    if (!callee_val.is_object() || !callee_val.as_object() ||
+        callee_val.as_object()->object_kind() != ObjectKind::kFunction) {
+        return EvalResult::err(
+            Error(ErrorKind::Runtime, "TypeError: value is not a function"));
+    }
+
+    auto* fn = static_cast<JSFunction*>(callee_val.as_object().get());
+
+    // Evaluate arguments
+    std::vector<Value> args;
+    args.reserve(expr.arguments.size());
+    for (const auto& arg_expr : expr.arguments) {
+        auto arg_result = eval_expr(*arg_expr);
+        if (!arg_result.is_ok()) {
+            return arg_result;
+        }
+        args.push_back(std::move(arg_result.value()));
+    }
+
+    // Create function environment (parent = closure env)
+    auto fn_env = std::make_shared<Environment>(fn->closure_env());
+
+    // Bind parameters
+    const auto& params = fn->params();
+    for (size_t i = 0; i < params.size(); ++i) {
+        Value arg_val = (i < args.size()) ? args[i] : Value::undefined();
+        fn_env->define(params[i], VarKind::Var);
+        fn_env->initialize(params[i], std::move(arg_val));
+    }
+
+    // Hoist var declarations in function body to fn_env; ScopeGuard manages call_depth_.
+    ScopeGuard guard(*this, fn_env, fn_env, /*is_call=*/true);
+    hoist_vars(*fn->body(), *fn_env);
+
+    // Execute function body
+    Value result_val = Value::undefined();
+    for (const auto& stmt : *fn->body()) {
+        auto stmt_result = eval_stmt(stmt);
+        if (!stmt_result.is_ok()) {
+            return EvalResult::err(stmt_result.error());
+        }
+        const Completion& c = stmt_result.completion();
+        if (c.is_return()) {
+            return EvalResult::ok(c.value);
+        }
+        result_val = c.value;
+    }
+    return EvalResult::ok(result_val);
 }
 
 }  // namespace qppjs

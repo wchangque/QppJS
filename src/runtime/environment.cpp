@@ -4,7 +4,7 @@
 
 namespace qppjs {
 
-Environment::Environment(Environment* outer) : outer_(outer) {}
+Environment::Environment(std::shared_ptr<Environment> outer) : outer_(std::move(outer)) {}
 
 void Environment::define(const std::string& name, VarKind kind) {
     switch (kind) {
@@ -32,7 +32,7 @@ Binding* Environment::lookup(const std::string& name) {
     if (it != bindings_.end()) {
         return &it->second;
     }
-    if (outer_ != nullptr) {
+    if (outer_) {
         return outer_->lookup(name);
     }
     return nullptr;

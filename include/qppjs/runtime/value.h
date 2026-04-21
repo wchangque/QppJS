@@ -8,6 +8,7 @@ namespace qppjs {
 
 enum class ObjectKind {
     kOrdinary,
+    kFunction,
 };
 
 struct Object {

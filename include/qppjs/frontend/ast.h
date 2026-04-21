@@ -115,12 +115,28 @@ struct MemberAssignmentExpression {
     SourceRange range;
 };
 
+// 函数表达式 function [name](params) { body }
+struct FunctionExpression {
+    std::optional<std::string> name;
+    std::vector<std::string> params;
+    std::shared_ptr<std::vector<StmtNode>> body;
+    SourceRange range;
+};
+
+// 调用表达式 callee(args)
+struct CallExpression {
+    std::unique_ptr<ExprNode> callee;
+    std::vector<std::unique_ptr<ExprNode>> arguments;
+    SourceRange range;
+};
+
 // ---- ExprNode 完整定义（必须在所有表达式 struct 定义之后）----
 
 struct ExprNode {
     std::variant<NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, Identifier, UnaryExpression,
                  BinaryExpression, LogicalExpression, AssignmentExpression,
-                 ObjectExpression, MemberExpression, MemberAssignmentExpression>
+                 ObjectExpression, MemberExpression, MemberAssignmentExpression,
+                 FunctionExpression, CallExpression>
             v;
 
     template <typename T>
@@ -165,10 +181,19 @@ struct ReturnStatement {
     SourceRange range;
 };
 
+// 函数声明语句 function name(params) { body }
+struct FunctionDeclaration {
+    std::string name;
+    std::vector<std::string> params;
+    std::shared_ptr<std::vector<StmtNode>> body;
+    SourceRange range;
+};
+
 // ---- StmtNode 完整定义（必须在所有语句 struct 定义之后）----
 
 struct StmtNode {
-    std::variant<ExpressionStatement, VariableDeclaration, BlockStatement, IfStatement, WhileStatement, ReturnStatement>
+    std::variant<ExpressionStatement, VariableDeclaration, BlockStatement, IfStatement, WhileStatement,
+                 ReturnStatement, FunctionDeclaration>
             v;
 
     template <typename T>

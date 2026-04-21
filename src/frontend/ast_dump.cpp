@@ -175,6 +175,30 @@ std::string dump_expr(const ExprNode& node, int indent) {
                            result += ind(indent + 1) + "value:\n";
                            result += dump_expr(*mae.value, indent + 2);
                        },
+                       [&](const FunctionExpression& fe) {
+                           result = prefix + "FunctionExpression";
+                           if (fe.name.has_value()) result += " " + *fe.name;
+                           result += "\n";
+                           result += ind(indent + 1) + "params: (";
+                           for (size_t i = 0; i < fe.params.size(); ++i) {
+                               if (i > 0) result += ", ";
+                               result += fe.params[i];
+                           }
+                           result += ")\n";
+                           result += ind(indent + 1) + "body:\n";
+                           for (const auto& s : *fe.body) {
+                               result += dump_stmt(s, indent + 2);
+                           }
+                       },
+                       [&](const CallExpression& ce) {
+                           result = prefix + "CallExpression\n";
+                           result += ind(indent + 1) + "callee:\n";
+                           result += dump_expr(*ce.callee, indent + 2);
+                           result += ind(indent + 1) + "arguments:\n";
+                           for (const auto& arg : ce.arguments) {
+                               result += dump_expr(*arg, indent + 2);
+                           }
+                       },
                },
                node.v);
 
@@ -233,6 +257,19 @@ std::string dump_stmt(const StmtNode& node, int indent) {
                                result += dump_expr(*rs.argument, indent + 2);
                            } else {
                                result += ind(indent + 1) + "argument: (none)\n";
+                           }
+                       },
+                       [&](const FunctionDeclaration& fd) {
+                           result = prefix + "FunctionDeclaration " + fd.name + "\n";
+                           result += ind(indent + 1) + "params: (";
+                           for (size_t i = 0; i < fd.params.size(); ++i) {
+                               if (i > 0) result += ", ";
+                               result += fd.params[i];
+                           }
+                           result += ")\n";
+                           result += ind(indent + 1) + "body:\n";
+                           for (const auto& s : *fd.body) {
+                               result += dump_stmt(s, indent + 2);
                            }
                        },
                },

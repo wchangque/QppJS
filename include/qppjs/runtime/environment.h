@@ -4,6 +4,7 @@
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/value.h"
 
+#include <memory>
 #include <string>
 #include <unordered_map>
 
@@ -17,7 +18,7 @@ struct Binding {
 
 class Environment {
 public:
-    explicit Environment(Environment* outer);
+    explicit Environment(std::shared_ptr<Environment> outer);
 
     // Declare binding by VarKind:
     //   Var   -> initialized=true,  value=undefined, mutable=true
@@ -42,7 +43,7 @@ public:
 
 private:
     std::unordered_map<std::string, Binding> bindings_;
-    Environment* outer_;
+    std::shared_ptr<Environment> outer_;
 };
 
 }  // namespace qppjs

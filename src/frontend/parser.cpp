@@ -217,6 +217,8 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const ObjectExpression& n) { return n.range; },
                               [](const MemberExpression& n) { return n.range; },
                               [](const MemberAssignmentExpression& n) { return n.range; },
+                              [](const FunctionExpression& n) { return n.range; },
+                              [](const CallExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -230,6 +232,7 @@ static SourceRange stmt_range(const StmtNode& s) {
                               [](const IfStatement& n) { return n.range; },
                               [](const WhileStatement& n) { return n.range; },
                               [](const ReturnStatement& n) { return n.range; },
+                              [](const FunctionDeclaration& n) { return n.range; },
                       },
                       s.v);
 }
@@ -315,6 +318,8 @@ struct Parser {
             case TokenKind::Slash:
             case TokenKind::Percent:
                 return 14;
+            case TokenKind::LParen:
+                return 16;
             case TokenKind::Dot:
             case TokenKind::LBracket:
                 return 18;
@@ -389,6 +394,24 @@ struct Parser {
                 return ParseResult<ExprNode>::Ok(ExprNode{
                         UnaryExpression{UnaryOp::Void, std::make_unique<ExprNode>(std::move(operand.value())), r}});
             }
+            case TokenKind::KwFunction: {
+                // 函数表达式 function [name](params) { body }
+                uint32_t fn_start = tok.range.offset;
+                std::optional<std::string> fn_name;
+                if (cur.kind == TokenKind::Ident) {
+                    fn_name = std::string(token_text(cur));
+                    advance();
+                }
+                auto params_result = parse_function_params();
+                if (!params_result.ok()) return ParseResult<ExprNode>::Err(params_result.error());
+                auto body_result = parse_function_body();
+                if (!body_result.ok()) return ParseResult<ExprNode>::Err(body_result.error());
+                uint32_t fn_end = range_end(body_result.value().second);
+                auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
+                return ParseResult<ExprNode>::Ok(ExprNode{FunctionExpression{
+                        std::move(fn_name), std::move(params_result.value()),
+                        std::move(body_ptr), span(fn_start, fn_end)}});
+            }
             case TokenKind::LBrace: {
                 // 对象字面量 { key: value, ... }
                 uint32_t start = tok.range.offset;
@@ -450,6 +473,29 @@ struct Parser {
     ParseResult<ExprNode> led(Token op_tok, ExprNode left) {
         auto kind = op_tok.kind;
         int bp = lbp(kind);
+
+        // 调用表达式：callee(args)
+        if (kind == TokenKind::LParen) {
+            std::vector<std::unique_ptr<ExprNode>> args;
+            while (cur.kind != TokenKind::RParen && cur.kind != TokenKind::Eof) {
+                auto arg = parse_expr(2);  // stop before comma (lbp=0 for comma, but assignment lbp=2)
+                if (!arg.ok()) return arg;
+                args.push_back(std::make_unique<ExprNode>(std::move(arg.value())));
+                if (cur.kind == TokenKind::Comma) {
+                    advance();
+                } else {
+                    break;
+                }
+            }
+            auto rp = expect(TokenKind::RParen);
+            if (!rp.ok()) return ParseResult<ExprNode>::Err(rp.error());
+            uint32_t call_start = expr_range(left).offset;
+            uint32_t call_end = range_end(rp.value().range);
+            return ParseResult<ExprNode>::Ok(ExprNode{CallExpression{
+                    std::make_unique<ExprNode>(std::move(left)),
+                    std::move(args),
+                    span(call_start, call_end)}});
+        }
 
         // 成员访问：obj.prop
         if (kind == TokenKind::Dot) {
@@ -634,6 +680,56 @@ struct Parser {
         return left;
     }
 
+    // ---- 函数辅助 ----
+
+    // 解析参数列表 (a, b, c)，返回参数名向量
+    ParseResult<std::vector<std::string>> parse_function_params() {
+        auto lp = expect(TokenKind::LParen);
+        if (!lp.ok()) return ParseResult<std::vector<std::string>>::Err(lp.error());
+        std::vector<std::string> params;
+        while (cur.kind != TokenKind::RParen && cur.kind != TokenKind::Eof) {
+            if (cur.kind != TokenKind::Ident) {
+                return ParseResult<std::vector<std::string>>::Err(
+                        make_parse_error(source, cur, "expected parameter name"));
+            }
+            params.push_back(std::string(token_text(cur)));
+            advance();
+            if (cur.kind == TokenKind::Comma) {
+                advance();
+            } else {
+                break;
+            }
+        }
+        auto rp = expect(TokenKind::RParen);
+        if (!rp.ok()) return ParseResult<std::vector<std::string>>::Err(rp.error());
+        return ParseResult<std::vector<std::string>>::Ok(std::move(params));
+    }
+
+    // 解析函数体 { stmts }，返回 (body, range)
+    ParseResult<std::pair<std::vector<StmtNode>, SourceRange>> parse_function_body() {
+        if (cur.kind != TokenKind::LBrace) {
+            return ParseResult<std::pair<std::vector<StmtNode>, SourceRange>>::Err(
+                    make_parse_error(source, cur, "expected '{' before function body"));
+        }
+        Token lbrace = cur;
+        advance();
+        std::vector<StmtNode> body;
+        while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
+            auto stmt = parse_stmt();
+            if (!stmt.ok()) {
+                return ParseResult<std::pair<std::vector<StmtNode>, SourceRange>>::Err(stmt.error());
+            }
+            body.push_back(std::move(stmt.value()));
+        }
+        auto rb = expect(TokenKind::RBrace);
+        if (!rb.ok()) {
+            return ParseResult<std::pair<std::vector<StmtNode>, SourceRange>>::Err(rb.error());
+        }
+        SourceRange r{lbrace.range.offset, rb.value().range.offset + 1 - lbrace.range.offset};
+        return ParseResult<std::pair<std::vector<StmtNode>, SourceRange>>::Ok(
+                std::make_pair(std::move(body), r));
+    }
+
     // ---- 语句解析 ----
 
     ParseResult<StmtNode> parse_var_decl() {
@@ -783,6 +879,27 @@ struct Parser {
                 StmtNode{ExpressionStatement{std::move(expr.value()), span(start.range.offset, es_end)}});
     }
 
+    ParseResult<StmtNode> parse_function_decl_stmt() {
+        // cur 是 KwFunction
+        Token kw = cur;
+        advance();
+        if (cur.kind != TokenKind::Ident) {
+            return ParseResult<StmtNode>::Err(
+                    make_parse_error(source, cur, "expected function name"));
+        }
+        std::string fn_name{token_text(cur)};
+        advance();
+        auto params_result = parse_function_params();
+        if (!params_result.ok()) return ParseResult<StmtNode>::Err(params_result.error());
+        auto body_result = parse_function_body();
+        if (!body_result.ok()) return ParseResult<StmtNode>::Err(body_result.error());
+        uint32_t fn_end = range_end(body_result.value().second);
+        auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
+        return ParseResult<StmtNode>::Ok(StmtNode{FunctionDeclaration{
+                std::move(fn_name), std::move(params_result.value()),
+                std::move(body_ptr), span(kw.range.offset, fn_end)}});
+    }
+
     ParseResult<StmtNode> parse_stmt() {
         switch (cur.kind) {
             case TokenKind::KwLet:
@@ -797,6 +914,8 @@ struct Parser {
                 return parse_while_stmt();
             case TokenKind::KwReturn:
                 return parse_return_stmt();
+            case TokenKind::KwFunction:
+                return parse_function_decl_stmt();
             default:
                 return parse_expr_stmt();
         }
