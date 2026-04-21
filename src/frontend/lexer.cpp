@@ -10,6 +10,7 @@ static const std::unordered_map<std::string_view, TokenKind> kKeywords = {
         {"for", TokenKind::KwFor},         {"break", TokenKind::KwBreak},       {"continue", TokenKind::KwContinue},
         {"return", TokenKind::KwReturn},   {"function", TokenKind::KwFunction}, {"true", TokenKind::KwTrue},
         {"false", TokenKind::KwFalse},     {"null", TokenKind::KwNull},         {"new", TokenKind::KwNew},
+        {"this", TokenKind::KwThis},
         {"delete", TokenKind::KwDelete},   {"typeof", TokenKind::KwTypeof},     {"void", TokenKind::KwVoid},
         {"throw", TokenKind::KwThrow},     {"try", TokenKind::KwTry},           {"catch", TokenKind::KwCatch},
         {"finally", TokenKind::KwFinally},

@@ -46,6 +46,8 @@ std::string_view token_kind_name(TokenKind kind) {
             return "KwUndefined";
         case TokenKind::KwNew:
             return "KwNew";
+        case TokenKind::KwThis:
+            return "KwThis";
         case TokenKind::KwDelete:
             return "KwDelete";
         case TokenKind::KwTypeof:

@@ -9,6 +9,7 @@ add_executable(qppjs_unit_tests
     unit/interpreter_test.cpp
     unit/object_test.cpp
     unit/function_test.cpp
+    unit/proto_test.cpp
 )
 
 target_link_libraries(qppjs_unit_tests PRIVATE qppjs_core GTest::gtest_main)

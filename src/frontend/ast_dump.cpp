@@ -199,6 +199,15 @@ std::string dump_expr(const ExprNode& node, int indent) {
                                result += dump_expr(*arg, indent + 2);
                            }
                        },
+                       [&](const NewExpression& ne) {
+                           result = prefix + "NewExpression\n";
+                           result += ind(indent + 1) + "callee:\n";
+                           result += dump_expr(*ne.callee, indent + 2);
+                           result += ind(indent + 1) + "arguments:\n";
+                           for (const auto& arg : ne.arguments) {
+                               result += dump_expr(*arg, indent + 2);
+                           }
+                       },
                },
                node.v);
 

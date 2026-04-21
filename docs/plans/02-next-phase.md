@@ -4,85 +4,109 @@
 
 ## 1. 下一阶段
 
-- 下一阶段：Phase 4：Function
+- 下一阶段：Phase 5：原型链、this、new
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 
 ## 2. 阶段目标
 
-在已具备完整 Object Model 的基础上，引入函数定义与调用：函数声明/函数表达式、调用表达式、参数绑定、return 语义，为后续闭包和作用域链打基础。
+在已具备完整 Function 的基础上，引入面向对象的三个核心机制：原型链属性查找、this 绑定、new 表达式。完成后应能支持最基本的构造函数模式、实例方法、原型继承查找。
 
 ## 3. 进入前提
 
 当前已具备：
-- 完整 Lexer（1.1 + 1.2）
-- 完整 AST 节点体系（1.3）
-- Pratt Parser，支持表达式 + 语句（1.4 + 1.5）
-- AST dump（1.6）
-- Parser 错误报告，含位置信息（1.7）
-- AST Interpreter（Phase 2）：Environment/Scope、表达式求值、语句执行、ToBoolean、Completion 模型
-- Object Model（Phase 3）：JSObject、属性读写、对象字面量、成员访问（点号/方括号）、成员赋值
-- 387/387 测试全部通过
+- 完整 Lexer、Parser、AST（Phase 1）
+- AST Interpreter，含 Environment/Scope、表达式求值、语句执行（Phase 2）
+- Object Model（Phase 3）：JSObject、属性读写、对象字面量、成员访问
+- Function（Phase 4）：JSFunction、函数声明/表达式、调用表达式、闭包、递归、var 提升
+- 475/475 测试全部通过
 
 ## 4. 本阶段任务分解
 
-### 4.1 扩展 AST：函数定义与调用
+### 5.1 JSObject proto_ 字段 + 原型链查找 + object_prototype_
 
 目标：
-- `FunctionDeclaration`（`function name(params) { body }`）
-- `FunctionExpression`（`function(params) { body }` 或具名）
-- `CallExpression`（`callee(args)`）
+- `js_object.h`：添加 `proto_` 字段（`shared_ptr<JSObject>`，null 表示链尾）、`set_proto()`、`proto()` accessor
+- `js_object.cpp`：`get_property` 改为沿原型链查找；原自身查找提取为内部 helper `get_own_property`
+- Interpreter 构造函数：创建全局唯一 `object_prototype_`（proto_ = nullptr）
+- `eval_object_expr`：新建 JSObject 时调用 `set_proto(object_prototype_)`
+- 测试：属性未命中时能从 proto 上读到值；多级原型链；proto 为 null 时返回 undefined；set_property 只写自身
 
-### 4.2 扩展 Value：JSFunction
-
-目标：
-- `JSFunction` 类（继承 Object）：保存参数名列表、函数体 AST、词法环境（closure）
-- `ObjectKind::kFunction` 枚举值
-- `typeof fn` → `"function"`
-
-### 4.3 扩展 Parser
+### 5.2 JSFunction prototype_ 字段 + 急切初始化
 
 目标：
-- `function` 关键字处理：既可作为声明语句，也可作为前缀表达式（函数表达式）
-- 调用表达式 `callee(args)`：`(` 作为中缀操作符（lbp 高于成员访问），led 分支处理参数列表
-- 参数列表：逗号分隔的表达式列表
+- `js_function.h`：添加 `prototype_` 字段（`shared_ptr<JSObject>`）和 accessor
+- Interpreter：抽取 `make_function_value` 方法；`eval_function_decl` / `eval_function_expr` 改调 `make_function_value`
+- 急切初始化：创建 JSFunction 时立即创建 prototype 对象（proto = object_prototype_），设 `constructor` 属性
+- `eval_member_expr`：修改 kFunction 分支，支持读取 `F.prototype`（其他属性仍返回 undefined）
+- 测试：`typeof F.prototype === "object"`；`F.prototype.constructor === F`；现有 475 个测试无回归
 
-### 4.4 扩展 Interpreter
+### 5.3 this 关键字支持 + ScopeGuard 扩展
 
 目标：
-- `eval_function_decl`：创建 JSFunction，绑定到当前环境
-- `eval_call_expr`：求值 callee，检查是否为函数；创建新 Environment（父为闭包环境），绑定参数，执行函数体，处理 return
-- 简单的调用栈保护（最大深度限制，防止无限递归）
+- `token.h`：添加 `KwThis` token（当前 `this` 被识别为 Identifier，需要新增）
+- `token.cpp`：关键字查表中注册 `"this"` → `KwThis`
+- `parser.cpp`：nud 中为 `KwThis` 添加分支，产生 `Identifier{name: "this"}`
+- `interpreter.h`：添加 `current_this_` 成员（初始化为 undefined）；ScopeGuard 扩展 `saved_this` / `new_this` 参数
+- `interpreter.cpp`：`eval_identifier` 添加 `if (expr.name == "this")` 分支；ScopeGuard 析构时恢复 this；普通调用时 this = undefined
+- 测试：普通调用 `this === undefined`；现有测试无回归
+
+### 5.4 方法调用 this 提取 + call_function 抽取
+
+目标：
+- 将 `eval_call_expr` 的执行逻辑抽取为 `call_function(fn, this_val, args)`
+- `eval_call_expr`：检测 callee 是否为 MemberExpression；是则提取 this_val = 对象，从对象（走原型链）取方法；否则 this_val = undefined
+- 测试：`obj.method()` 中 `this === obj`；链式调用 `obj.a.b()` 中 `this === obj.a`；方法不存在抛 TypeError
+
+### 5.5 NewExpression AST + Parser + eval_new_expr
+
+目标：
+- `ast.h`：新增 `NewExpression`（callee + arguments + range）；扩展 ExprNode variant
+- `parser.cpp`：`KwNew` 的 nud 分支（带括号形式 `new F(args)`，优先级高于成员访问）
+- `interpreter.cpp`：`eval_new_expr`（创建对象、设置 proto、执行构造函数、处理返回值）
+- `ast_dump.cpp`：新增 NewExpression dump 分支
+- 测试：基础 new 调用；prototype 属性继承；构造函数返回对象覆盖；返回 null 不覆盖；超出调用栈 RangeError；对非函数 new → TypeError
 
 ## 5. 建议执行顺序
 
-1. 4.1 AST 扩展（FunctionDeclaration/FunctionExpression/CallExpression）
-2. 4.2 JSFunction（ObjectKind::kFunction，保存 params/body/closure）
-3. 4.3 Parser 扩展（function 关键字，调用表达式）
-4. 4.4 Interpreter 扩展（函数创建/调用/参数绑定）
+5.1 → 5.2 → 5.3 → 5.4 → 5.5，每完成一个子任务跑全量测试确认无回归。
 
 ## 6. 验证方式
 
 本阶段完成后，应至少能验证：
-- `function add(a, b) { return a + b; } add(1, 2)` → `3`
-- `let f = function(x) { return x * 2; }; f(5)` → `10`
-- `typeof add` → `"function"`
-- 函数内局部变量不泄露到外部
+
+```js
+// 原型链
+function Animal(name) { this.name = name; }
+Animal.prototype.speak = function() { return this.name; };
+let a = new Animal("Cat");
+a.speak()  // → "Cat"
+
+// this 绑定
+let obj = { x: 42, get: function() { return this.x; } };
+obj.get()  // → 42
+
+// new 基础
+function Point(x, y) { this.x = x; this.y = y; }
+let p = new Point(1, 2);
+p.x  // → 1
+```
 
 ## 7. 暂不处理内容
 
-- `arguments` 对象
-- 箭头函数（`=>`）
-- 默认参数 / rest 参数
-- `this` 绑定（Phase 5）
-- 原型链与方法调用（Phase 5）
-- 递归超出深度的具体错误类型
+- `class` 语法
+- `Object.create`、`Object.getPrototypeOf` 等内建方法
+- `instanceof` 运算符
+- getter/setter（property descriptor）
+- `arguments` 对象、箭头函数的 this 语义
+- 原始值的包装对象属性查找
+- `new F`（无括号形式）
+- `new.target`
 
 ## 8. 退出条件
 
-满足以下条件即可进入 Phase 5：
-- 函数声明和函数表达式可定义并调用
-- 参数正确绑定
-- return 语句在函数内正确终止并返回值
-- 闭包可读取外部变量
-- 新增测试覆盖上述场景，全部通过
+满足以下条件即可进入 Phase 6：
+- 原型链属性查找正确工作（多级链）
+- 方法调用时 this 正确绑定到调用对象
+- new 表达式能创建实例、关联原型、执行构造函数
+- 新增测试覆盖上述场景，全量测试全部通过

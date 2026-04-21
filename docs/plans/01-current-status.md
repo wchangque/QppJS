@@ -4,8 +4,8 @@
 
 ## 1. 当前阶段
 
-- 当前阶段：Phase 3 已全部完成，下一阶段为 Phase 4：Function
-- 最近更新时间：2026-04-21（Phase 3 Object Model 完成 + Review Bug 修复）
+- 当前阶段：Phase 4 已全部完成，下一阶段为 Phase 5：原型链、this、new
+- 最近更新时间：2026-04-22（Phase 4 Function 完成 + Review Bug 修复）
 
 ## 2. 当前任务状态
 
@@ -44,6 +44,20 @@
   - Bug 修复（Review + Testing Agent 审查后）：typeof TDZ 应抛 ReferenceError、let 无初始化值应为 undefined、字符串关系比较使用词典序；Testing Agent 补充 35 个边界测试；359/359 测试全部通过
 
 - [x] Phase 3：Object Model（已全部完成）
+- [x] Phase 4：Function（已全部完成）
+  - [x] 4.1 Environment outer_ 改为 shared_ptr，Interpreter 增加 var_env_、call_depth_
+  - [x] 4.2 AST 扩展（FunctionDeclaration/FunctionExpression/CallExpression）
+  - [x] 4.3 JSFunction 类（ObjectKind::kFunction，private 成员，accessor 访问）
+  - [x] 4.4 Parser 扩展（lbp(LParen)=16，nud KwFunction，led LParen，parse_function_params/body）
+  - [x] 4.5 hoist_vars 修正（var_target 参数，var 提升到函数作用域）
+  - [x] 4.6 eval_call_expr/eval_function_decl/eval_function_expr（RAII call_depth_，闭包，递归）
+  - [x] 4.7 AST dump 扩展（FunctionDeclaration/FunctionExpression/CallExpression）
+  - Bug 修复（Review Agent 审查后）：
+    - eval_function_decl 改为 var_env_->set()（与 hoist_vars 一致）
+    - eval_member_expr/assign 中 assert 改为 if + 返回 undefined/TypeError（支持 kFunction 对象）
+    - call_depth_ 纳入 ScopeGuard RAII 管理（is_call 参数）
+    - JSFunction 成员改为 private + 尾部下划线
+  - 475/475 测试全部通过（原有 417 个 + 新增 58 个函数测试）
   - [x] 3.1 Object 基类抽象化（ObjectKind 枚举，Object 添加纯虚 object_kind()）
   - [x] 3.2 JSObject 实现（properties_ 向量 + index_map_ 哈希索引，get/set/has_own_property）
   - [x] 3.3 扩展 AST 节点（ObjectExpression、MemberExpression、MemberAssignmentExpression + ObjectProperty 辅助结构）
@@ -59,15 +73,28 @@
   - 417/417 测试全部通过（原有 387 个 + Testing Agent 新增 28 个 + Bug 修复新增 2 个）
 
 ### 进行中
-- 暂无（Phase 3 已全部完成）
+- 暂无（Phase 4 已全部完成）
 
 ### 未开始
-- [ ] Phase 4：Function
+- [ ] Phase 5：原型链、this、new
 
 ### 阻塞
 - 暂无 Phase 0 阻塞项
 
 ## 3. 最近完成内容
+
+- 已完成 Phase 4 Function + Review Bug 修复：
+  - `include/qppjs/runtime/value.h`：ObjectKind 新增 kFunction
+  - `include/qppjs/runtime/js_function.h`（新增）：JSFunction 类，private 成员（name_/params_/body_/closure_env_），accessor 方法
+  - `include/qppjs/runtime/environment.h`：outer_ 从 raw pointer 改为 shared_ptr<Environment>
+  - `include/qppjs/runtime/interpreter.h`：新增 var_env_、call_depth_、ScopeGuard is_call 参数、eval_function_decl/expr、eval_call_expr、hoist_vars 签名变更
+  - `include/qppjs/frontend/ast.h`：新增 FunctionDeclaration（stmt）、FunctionExpression（expr）、CallExpression（expr）；StmtNode/ExprNode variant 扩展
+  - `src/runtime/environment.cpp`：构造函数参数改为 shared_ptr
+  - `src/runtime/interpreter.cpp`：全面更新（shared_ptr 环境链、ScopeGuard RAII call_depth_、eval_function_decl/expr/call_expr、hoist_vars var_target 参数、eval_member_expr/assign 移除 assert）
+  - `src/frontend/parser.cpp`：lbp(LParen)=16，nud KwFunction 分支（函数表达式），led LParen 分支（调用表达式），parse_function_params/body/parse_function_decl_stmt，expr_range/stmt_range 扩展
+  - `src/frontend/ast_dump.cpp`：新增 FunctionDeclaration/FunctionExpression/CallExpression dump 分支
+  - `tests/unit/function_test.cpp`（新增）：58 个测试（基础调用/函数表达式/typeof/作用域/闭包/递归/var 提升/高阶函数/错误路径/Parser/dump）
+  - 475/475 测试全部通过（原有 417 个 + 新增 58 个）
 
 - 已完成 Phase 3 Object Model + Review Bug 修复：
   - `include/qppjs/runtime/value.h`：添加 ObjectKind 枚举，Object 添加纯虚 object_kind() 方法（Object 成为抽象类）
@@ -154,7 +181,7 @@
 新 session 开始时，优先做以下动作：
 1. 读取本文件
 2. 读取 `docs/plans/02-next-phase.md`
-3. Phase 3 所有任务已完成，进入 Phase 4：Function
+3. Phase 4 所有任务已完成，进入 Phase 5：原型链、this、new
 
 ## 6. 收尾检查清单
 

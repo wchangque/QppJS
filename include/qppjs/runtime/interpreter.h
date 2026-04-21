@@ -11,6 +11,9 @@
 
 namespace qppjs {
 
+class JSObject;
+class JSFunction;
+
 class Interpreter {
 public:
     Interpreter();
@@ -40,6 +43,7 @@ private:
     EvalResult eval_member_assign(const MemberAssignmentExpression& expr);
     EvalResult eval_function_expr(const FunctionExpression& expr);
     EvalResult eval_call_expr(const CallExpression& expr);
+    EvalResult eval_new_expr(const NewExpression& expr);
 
     // Type conversions (static)
     static bool to_boolean(const Value& v);
@@ -49,20 +53,32 @@ private:
     // Hoist var declarations; var_target is the function-level env to receive var bindings.
     void hoist_vars(const std::vector<StmtNode>& stmts, Environment& var_target);
 
+    // Create a JSFunction value with eager prototype initialization.
+    Value make_function_value(std::optional<std::string> name, std::vector<std::string> params,
+                              std::shared_ptr<std::vector<StmtNode>> body);
+
+    // Execute a function with given this_val and args.
+    // Returns StmtResult so callers can distinguish explicit return from natural completion.
+    StmtResult call_function(JSFunction* fn, Value this_val, std::vector<Value> args);
+
     // RAII scope switcher; optionally increments call_depth_ and restores on destruction.
     struct ScopeGuard {
         Interpreter& interp;
         std::shared_ptr<Environment> saved_env;
         std::shared_ptr<Environment> saved_var_env;
+        Value saved_this;
         bool owns_call_depth;
         ScopeGuard(Interpreter& i, std::shared_ptr<Environment> new_env,
-                   std::shared_ptr<Environment> new_var_env, bool is_call = false);
+                   std::shared_ptr<Environment> new_var_env, Value new_this,
+                   bool is_call = false);
         ~ScopeGuard();
     };
 
     std::shared_ptr<Environment> global_env_;
     std::shared_ptr<Environment> current_env_;
     std::shared_ptr<Environment> var_env_;  // current function-level var scope
+    Value current_this_;                    // current this binding
+    std::shared_ptr<JSObject> object_prototype_;  // global Object.prototype
     int call_depth_ = 0;
     static constexpr int kMaxCallDepth = 500;
 };

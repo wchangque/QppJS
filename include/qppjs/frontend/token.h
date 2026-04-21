@@ -30,6 +30,7 @@ enum class TokenKind {
     KwNull,
     KwUndefined,
     KwNew,
+    KwThis,
     KwDelete,
     KwTypeof,
     KwVoid,

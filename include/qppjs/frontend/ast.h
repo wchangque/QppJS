@@ -130,13 +130,20 @@ struct CallExpression {
     SourceRange range;
 };
 
+// new 表达式 new callee(args)
+struct NewExpression {
+    std::unique_ptr<ExprNode> callee;
+    std::vector<std::unique_ptr<ExprNode>> arguments;
+    SourceRange range;
+};
+
 // ---- ExprNode 完整定义（必须在所有表达式 struct 定义之后）----
 
 struct ExprNode {
     std::variant<NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, Identifier, UnaryExpression,
                  BinaryExpression, LogicalExpression, AssignmentExpression,
                  ObjectExpression, MemberExpression, MemberAssignmentExpression,
-                 FunctionExpression, CallExpression>
+                 FunctionExpression, CallExpression, NewExpression>
             v;
 
     template <typename T>

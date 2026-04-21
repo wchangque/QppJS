@@ -219,6 +219,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const MemberAssignmentExpression& n) { return n.range; },
                               [](const FunctionExpression& n) { return n.range; },
                               [](const CallExpression& n) { return n.range; },
+                              [](const NewExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -351,6 +352,8 @@ struct Parser {
                 std::string name{token_text(tok)};
                 return ParseResult<ExprNode>::Ok(ExprNode{Identifier{std::move(name), tok.range}});
             }
+            case TokenKind::KwThis:
+                return ParseResult<ExprNode>::Ok(ExprNode{Identifier{"this", tok.range}});
             case TokenKind::LParen: {
                 auto inner = parse_expr(0);
                 if (!inner.ok()) return inner;
@@ -393,6 +396,41 @@ struct Parser {
                 auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
                 return ParseResult<ExprNode>::Ok(ExprNode{
                         UnaryExpression{UnaryOp::Void, std::make_unique<ExprNode>(std::move(operand.value())), r}});
+            }
+            case TokenKind::KwNew: {
+                // new callee(args)
+                uint32_t new_start = tok.range.offset;
+                // Parse callee at higher precedence (member access allowed, but not call)
+                // Use lbp(Dot)=18 as min_bp to allow member access but stop before call
+                auto callee = parse_expr(17);  // stop before LParen (lbp=16) but allow Dot/LBracket (lbp=18)
+                if (!callee.ok()) return callee;
+                std::vector<std::unique_ptr<ExprNode>> args;
+                if (cur.kind == TokenKind::LParen) {
+                    advance();  // consume '('
+                    while (cur.kind != TokenKind::RParen && cur.kind != TokenKind::Eof) {
+                        auto arg = parse_expr(2);
+                        if (!arg.ok()) return arg;
+                        args.push_back(std::make_unique<ExprNode>(std::move(arg.value())));
+                        if (cur.kind == TokenKind::Comma) {
+                            advance();
+                        } else {
+                            break;
+                        }
+                    }
+                    auto rp = expect(TokenKind::RParen);
+                    if (!rp.ok()) return ParseResult<ExprNode>::Err(rp.error());
+                    uint32_t new_end = range_end(rp.value().range);
+                    return ParseResult<ExprNode>::Ok(ExprNode{NewExpression{
+                            std::make_unique<ExprNode>(std::move(callee.value())),
+                            std::move(args),
+                            span(new_start, new_end)}});
+                }
+                // new F without parentheses: treat as new F()
+                uint32_t new_end = range_end(expr_range(callee.value()));
+                return ParseResult<ExprNode>::Ok(ExprNode{NewExpression{
+                        std::make_unique<ExprNode>(std::move(callee.value())),
+                        std::move(args),
+                        span(new_start, new_end)}});
             }
             case TokenKind::KwFunction: {
                 // 函数表达式 function [name](params) { body }

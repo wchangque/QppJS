@@ -8,6 +8,8 @@
 #include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/value.h"
 
+#include <optional>
+
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
@@ -70,10 +72,13 @@ const Error& StmtResult::error() const { return std::get<Error>(data); }
 // ============================================================
 
 Interpreter::ScopeGuard::ScopeGuard(Interpreter& i, std::shared_ptr<Environment> new_env,
-                                     std::shared_ptr<Environment> new_var_env, bool is_call)
-    : interp(i), saved_env(i.current_env_), saved_var_env(i.var_env_), owns_call_depth(is_call) {
+                                     std::shared_ptr<Environment> new_var_env, Value new_this,
+                                     bool is_call)
+    : interp(i), saved_env(i.current_env_), saved_var_env(i.var_env_),
+      saved_this(i.current_this_), owns_call_depth(is_call) {
     interp.current_env_ = std::move(new_env);
     interp.var_env_ = std::move(new_var_env);
+    interp.current_this_ = std::move(new_this);
     if (owns_call_depth) {
         ++interp.call_depth_;
     }
@@ -82,6 +87,7 @@ Interpreter::ScopeGuard::ScopeGuard(Interpreter& i, std::shared_ptr<Environment>
 Interpreter::ScopeGuard::~ScopeGuard() {
     interp.current_env_ = std::move(saved_env);
     interp.var_env_ = std::move(saved_var_env);
+    interp.current_this_ = std::move(saved_this);
     if (owns_call_depth) {
         --interp.call_depth_;
     }
@@ -94,7 +100,11 @@ Interpreter::ScopeGuard::~ScopeGuard() {
 Interpreter::Interpreter()
     : global_env_(std::make_shared<Environment>(nullptr)),
       current_env_(global_env_),
-      var_env_(global_env_) {}
+      var_env_(global_env_),
+      current_this_(Value::undefined()),
+      object_prototype_(std::make_shared<JSObject>()) {
+    // object_prototype_.proto_ stays nullptr (end of chain)
+}
 
 // ---- Type conversions ----
 
@@ -289,7 +299,7 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
 
 StmtResult Interpreter::eval_block_stmt(const BlockStatement& stmt) {
     auto block_env = std::make_shared<Environment>(current_env_);
-    ScopeGuard guard(*this, block_env, var_env_);
+    ScopeGuard guard(*this, block_env, var_env_, current_this_);
 
     hoist_vars(stmt.body, *var_env_);
 
@@ -381,6 +391,7 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const MemberAssignmentExpression& e) { return eval_member_assign(e); },
             [this](const FunctionExpression& e) { return eval_function_expr(e); },
             [this](const CallExpression& e) { return eval_call_expr(e); },
+            [this](const NewExpression& e) { return eval_new_expr(e); },
         },
         expr.v);
 }
@@ -388,6 +399,9 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
 EvalResult Interpreter::eval_identifier(const Identifier& expr) {
     if (expr.name == "undefined") {
         return EvalResult::ok(Value::undefined());
+    }
+    if (expr.name == "this") {
+        return EvalResult::ok(current_this_);
     }
     return current_env_->get(expr.name);
 }
@@ -831,6 +845,7 @@ EvalResult Interpreter::eval_assignment(const AssignmentExpression& expr) {
 
 EvalResult Interpreter::eval_object_expr(const ObjectExpression& expr) {
     auto obj = std::make_shared<JSObject>();
+    obj->set_proto(object_prototype_);
     for (const auto& prop : expr.properties) {
         auto val = eval_expr(*prop.value);
         if (!val.is_ok()) {
@@ -864,6 +879,13 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
     }
     std::string key = to_string_val(key_result.value());
 
+    if (obj_val.as_object()->object_kind() == ObjectKind::kFunction) {
+        auto* fn = static_cast<JSFunction*>(obj_val.as_object().get());
+        if (key == "prototype") {
+            return EvalResult::ok(Value::object(fn->prototype_obj()));
+        }
+        return EvalResult::ok(Value::undefined());
+    }
     if (obj_val.as_object()->object_kind() != ObjectKind::kOrdinary) {
         return EvalResult::ok(Value::undefined());
     }
@@ -907,14 +929,54 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
     return EvalResult::ok(val_result.value());
 }
 
-StmtResult Interpreter::eval_function_decl(const FunctionDeclaration& stmt) {
+Value Interpreter::make_function_value(std::optional<std::string> name, std::vector<std::string> params,
+                                        std::shared_ptr<std::vector<StmtNode>> body) {
     auto fn = std::make_shared<JSFunction>();
-    fn->set_name(stmt.name);
-    fn->set_params(stmt.params);
-    fn->set_body(stmt.body);
+    fn->set_name(std::move(name));
+    fn->set_params(std::move(params));
+    fn->set_body(std::move(body));
     fn->set_closure_env(current_env_);
+
+    // Eager prototype initialization: F.prototype = { constructor: F }
     Value fn_val = Value::object(fn);
-    // Bind to var_env_ (function/global scope), matching where hoist_vars pre-declared the name.
+    auto proto_obj = std::make_shared<JSObject>();
+    proto_obj->set_proto(object_prototype_);
+    proto_obj->set_property("constructor", fn_val);
+    fn->set_prototype_obj(proto_obj);
+
+    return fn_val;
+}
+
+StmtResult Interpreter::call_function(JSFunction* fn, Value this_val, std::vector<Value> args) {
+    auto fn_env = std::make_shared<Environment>(fn->closure_env());
+
+    const auto& params = fn->params();
+    for (size_t i = 0; i < params.size(); ++i) {
+        Value arg_val = (i < args.size()) ? args[i] : Value::undefined();
+        fn_env->define(params[i], VarKind::Var);
+        fn_env->initialize(params[i], std::move(arg_val));
+    }
+
+    ScopeGuard guard(*this, fn_env, fn_env, std::move(this_val), /*is_call=*/true);
+    hoist_vars(*fn->body(), *fn_env);
+
+    Value result_val = Value::undefined();
+    for (const auto& stmt : *fn->body()) {
+        auto stmt_result = eval_stmt(stmt);
+        if (!stmt_result.is_ok()) {
+            return stmt_result;
+        }
+        const Completion& c = stmt_result.completion();
+        if (c.is_return()) {
+            return stmt_result;  // preserve kReturn so callers can distinguish
+        }
+        result_val = c.value;
+    }
+    return StmtResult::ok(Completion::normal(result_val));
+}
+
+StmtResult Interpreter::eval_function_decl(const FunctionDeclaration& stmt) {
+    Value fn_val = make_function_value(stmt.name, stmt.params, stmt.body);
     auto set_result = var_env_->set(stmt.name, fn_val);
     if (!set_result.is_ok()) {
         return StmtResult::err(set_result.error());
@@ -923,12 +985,7 @@ StmtResult Interpreter::eval_function_decl(const FunctionDeclaration& stmt) {
 }
 
 EvalResult Interpreter::eval_function_expr(const FunctionExpression& expr) {
-    auto fn = std::make_shared<JSFunction>();
-    fn->set_name(expr.name);
-    fn->set_params(expr.params);
-    fn->set_body(expr.body);
-    fn->set_closure_env(current_env_);
-    return EvalResult::ok(Value::object(fn));
+    return EvalResult::ok(make_function_value(expr.name, expr.params, expr.body));
 }
 
 EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
@@ -937,21 +994,52 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
             Error(ErrorKind::Runtime, "RangeError: Maximum call stack size exceeded"));
     }
 
-    auto callee_result = eval_expr(*expr.callee);
-    if (!callee_result.is_ok()) {
-        return callee_result;
+    Value this_val = Value::undefined();
+    Value callee_val = Value::undefined();
+
+    // Detect method call: obj.method() — extract this from the object
+    if (std::holds_alternative<MemberExpression>(expr.callee->v)) {
+        const auto& member = std::get<MemberExpression>(expr.callee->v);
+        auto obj_result = eval_expr(*member.object);
+        if (!obj_result.is_ok()) {
+            return obj_result;
+        }
+        this_val = obj_result.value();
+
+        auto key_result = eval_expr(*member.property);
+        if (!key_result.is_ok()) {
+            return key_result;
+        }
+        std::string key = to_string_val(key_result.value());
+
+        if (!this_val.is_object()) {
+            return EvalResult::err(Error(ErrorKind::Runtime,
+                "TypeError: Cannot read properties of " + to_string_val(this_val)));
+        }
+        const auto& obj_ptr = this_val.as_object();
+        if (obj_ptr->object_kind() == ObjectKind::kOrdinary) {
+            auto* js_obj = static_cast<JSObject*>(obj_ptr.get());
+            callee_val = js_obj->get_property(key);
+        } else if (obj_ptr->object_kind() == ObjectKind::kFunction) {
+            auto* fn_obj = static_cast<JSFunction*>(obj_ptr.get());
+            callee_val = (key == "prototype") ? Value::object(fn_obj->prototype_obj()) : Value::undefined();
+        } else {
+            callee_val = Value::undefined();
+        }
+    } else {
+        auto callee_result = eval_expr(*expr.callee);
+        if (!callee_result.is_ok()) {
+            return callee_result;
+        }
+        callee_val = std::move(callee_result.value());
     }
-    const Value& callee_val = callee_result.value();
 
     if (!callee_val.is_object() || !callee_val.as_object() ||
         callee_val.as_object()->object_kind() != ObjectKind::kFunction) {
-        return EvalResult::err(
-            Error(ErrorKind::Runtime, "TypeError: value is not a function"));
+        return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: value is not a function"));
     }
-
     auto* fn = static_cast<JSFunction*>(callee_val.as_object().get());
 
-    // Evaluate arguments
     std::vector<Value> args;
     args.reserve(expr.arguments.size());
     for (const auto& arg_expr : expr.arguments) {
@@ -962,35 +1050,59 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
         args.push_back(std::move(arg_result.value()));
     }
 
-    // Create function environment (parent = closure env)
-    auto fn_env = std::make_shared<Environment>(fn->closure_env());
+    auto call_result = call_function(fn, std::move(this_val), std::move(args));
+    if (!call_result.is_ok()) {
+        return EvalResult::err(call_result.error());
+    }
+    return EvalResult::ok(call_result.completion().value);
+}
 
-    // Bind parameters
-    const auto& params = fn->params();
-    for (size_t i = 0; i < params.size(); ++i) {
-        Value arg_val = (i < args.size()) ? args[i] : Value::undefined();
-        fn_env->define(params[i], VarKind::Var);
-        fn_env->initialize(params[i], std::move(arg_val));
+EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
+    if (call_depth_ >= kMaxCallDepth) {
+        return EvalResult::err(
+            Error(ErrorKind::Runtime, "RangeError: Maximum call stack size exceeded"));
     }
 
-    // Hoist var declarations in function body to fn_env; ScopeGuard manages call_depth_.
-    ScopeGuard guard(*this, fn_env, fn_env, /*is_call=*/true);
-    hoist_vars(*fn->body(), *fn_env);
-
-    // Execute function body
-    Value result_val = Value::undefined();
-    for (const auto& stmt : *fn->body()) {
-        auto stmt_result = eval_stmt(stmt);
-        if (!stmt_result.is_ok()) {
-            return EvalResult::err(stmt_result.error());
-        }
-        const Completion& c = stmt_result.completion();
-        if (c.is_return()) {
-            return EvalResult::ok(c.value);
-        }
-        result_val = c.value;
+    auto callee_result = eval_expr(*expr.callee);
+    if (!callee_result.is_ok()) {
+        return callee_result;
     }
-    return EvalResult::ok(result_val);
+    const Value& callee_val = callee_result.value();
+    if (!callee_val.is_object() || !callee_val.as_object() ||
+        callee_val.as_object()->object_kind() != ObjectKind::kFunction) {
+        return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: value is not a constructor"));
+    }
+    auto* fn = static_cast<JSFunction*>(callee_val.as_object().get());
+
+    // Determine prototype for new object
+    std::shared_ptr<JSObject> proto = fn->prototype_obj() ? fn->prototype_obj() : object_prototype_;
+
+    // Create new object with [[Prototype]] = F.prototype
+    auto new_obj = std::make_shared<JSObject>();
+    new_obj->set_proto(proto);
+
+    std::vector<Value> args;
+    args.reserve(expr.arguments.size());
+    for (const auto& arg_expr : expr.arguments) {
+        auto arg_result = eval_expr(*arg_expr);
+        if (!arg_result.is_ok()) {
+            return arg_result;
+        }
+        args.push_back(std::move(arg_result.value()));
+    }
+
+    Value this_val = Value::object(new_obj);
+    auto call_result = call_function(fn, this_val, std::move(args));
+    if (!call_result.is_ok()) {
+        return EvalResult::err(call_result.error());
+    }
+
+    // Only an explicit return <Object> overrides this_val (ECMAScript §10.2.2 step 9)
+    const Completion& c = call_result.completion();
+    if (c.is_return() && c.value.is_object() && c.value.as_object() != nullptr) {
+        return EvalResult::ok(c.value);
+    }
+    return EvalResult::ok(this_val);
 }
 
 }  // namespace qppjs
