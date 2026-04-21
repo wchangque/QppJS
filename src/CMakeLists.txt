@@ -9,6 +9,8 @@ add_library(qppjs_core
     frontend/lexer.cpp
     frontend/parser.cpp
     frontend/ast_dump.cpp
+    vm/compiler.cpp
+    vm/vm.cpp
 )
 
 target_include_directories(qppjs_core PUBLIC "${PROJECT_SOURCE_DIR}/include")

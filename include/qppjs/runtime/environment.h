@@ -41,6 +41,8 @@ public:
     // Initialize a TDZ binding (called when let/const declaration executes).
     EvalResult initialize(const std::string& name, Value value);
 
+    std::shared_ptr<Environment> outer() const { return outer_; }
+
 private:
     std::unordered_map<std::string, Binding> bindings_;
     std::shared_ptr<Environment> outer_;
