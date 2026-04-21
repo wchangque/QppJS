@@ -2,6 +2,10 @@ add_library(qppjs_core
     base/error.cpp
     runtime/value.cpp
     debug/format.cpp
+    frontend/token.cpp
+    frontend/lexer.cpp
+    frontend/parser.cpp
+    frontend/ast_dump.cpp
 )
 
 target_include_directories(qppjs_core PUBLIC "${PROJECT_SOURCE_DIR}/include")

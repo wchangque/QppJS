@@ -1,6 +1,11 @@
 add_executable(qppjs_unit_tests
     unit/error_test.cpp
     unit/value_test.cpp
+    unit/token_test.cpp
+    unit/lexer_test.cpp
+    unit/ast_test.cpp
+    unit/parser_test.cpp
+    unit/ast_dump_test.cpp
 )
 
 target_link_libraries(qppjs_unit_tests PRIVATE qppjs_core GTest::gtest_main)

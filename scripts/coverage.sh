@@ -157,7 +157,7 @@ lcov \
     '*/usr/*' \
     '*/opt/homebrew/*' \
     --output-file "$FILTERED_INFO" \
-    --ignore-errors unused,inconsistent,unsupported \
+    --ignore-errors unused,inconsistent,unsupported,format \
     --rc branch_coverage=1 \
     --rc derive_function_end_line=0
 

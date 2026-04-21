@@ -30,70 +30,83 @@
 
 ## 4. 本阶段任务分解
 
-### 1.1 实现 Tokenizer 基础结构
+### 1.1 实现 Tokenizer 基础结构 [已完成]
 目标：
 - 定义 token 类型
 - 支持位置信息记录
 - 明确输入流与输出 token 序列接口
 
-建议结果：
-- `src/frontend/lexer/` 中有 tokenizer 主体结构
-- `include/qppjs/frontend/lexer/` 中有最小公开声明
-- token 带有基础 source location
+实际结果：
+- `include/qppjs/frontend/token.h`：TokenKind、Token、SourceRange、SourceLocation
+- `include/qppjs/frontend/lexer.h`：LexerState、lexer_init、next_token
+- `src/frontend/token.cpp`、`src/frontend/lexer.cpp` 实现完毕
+- 26 个新测试（含 token_test + lexer_test）全部通过
 
-### 1.2 支持基础词法元素
+### 1.2 支持基础词法元素 [已完成]
 目标：
 - 支持标识符、关键字、数字字面量、字符串字面量、标点与基础操作符
 - 处理空白、换行与注释
 
-建议：
-- 先覆盖最小 JS 子集
-- 每增加一类 token 都配套单测
+实际结果：
+- 数字字面量：十进制整数/浮点/指数、0x/0b/0o 前缀、错误检测（前导零、空前缀、非法字符、空指数、字母后缀）
+- 字符串字面量：单双引号、\x/\u/\0 转义验证、行终止符中断 Invalid
+- 多字符操作符（最长匹配）与全部单字符操作符
+- . 的 lookahead 处理
+- 新增 64 个测试，92/92 全部通过
 
-### 1.3 设计 AST 节点体系
+### 1.3 设计 AST 节点体系 [已完成]
 目标：
 - 建立 `Program`、`Statement`、`Expression` 等最小节点骨架
 - 保持结构清晰，不提前优化表示
 
-建议：
-- 先聚焦 literal / identifier / unary / binary / variable declaration / block
-- 节点设计应便于后续 dump 与解释执行
+实际结果：
+- `include/qppjs/frontend/ast.h`（header-only）：5 个枚举 + 9 个表达式节点 + 6 个语句节点 + Program + ExprNode/StmtNode variant 包装 + overloaded helper
+- 定义顺序遵循依赖关系，避免不完整类型问题
+- 15 个 ast_test 全部通过，173/173 测试全绿
 
-### 1.4 实现表达式解析
+### 1.4 实现表达式解析 [已完成]
 目标：
 - 处理基础运算符优先级与结合性
 - 选定 Pratt parser 或递归下降策略
 
-建议：
-- 先支持 literal、identifier、括号、基础 unary/binary expression
-- 优先让简单表达式稳定可测
+实际结果：
+- Pratt Parser，nud/led 分离，绑定力表与设计方案一致
+- 支持原子（Number/String/Boolean/Null/Identifier/括号）、一元前缀（- + ! typeof void）、二元（加减乘除取模、比较、相等）、逻辑（&& ||）、赋值（= += -= *= /= %=）
+- 字符串解码（\n \t \r \b \f \v \\ \' \" \xNN \uNNNN \0）在 Parser 内完成
+- 数字解析（十进制/0x/0b/0o）在 Parser 内完成
 
-### 1.5 实现语句解析
+### 1.5 实现语句解析 [已完成]
 目标：
 - 支持 expression statement、`let`、block、`if / else`、`while`
 
-建议：
-- 先从 expression statement 与 `let` 开始
-- 逐步增加 block 与控制流
+实际结果：
+- 支持 ExpressionStatement、VariableDeclaration（let/const/var）、BlockStatement、IfStatement（含 else）、WhileStatement、ReturnStatement
+- Early Error：const 无初始化器、顶层 return、赋值左侧非 Identifier
+- 最小 ASI：; / got_lf / } / Eof 四种自动分号场景
+- 47 个新测试，220/220 全部通过
 
-### 1.6 实现 AST dump
+### 1.6 实现 AST dump [已完成]
 目标：
 - 提供文本形式 AST 输出
 - 复用现有 `debug` 输出入口
 
-建议：
-- 输出格式优先清晰稳定
-- 方便测试断言与人工检查
+实际结果：
+- `include/qppjs/frontend/ast_dump.h`：dump_expr / dump_stmt / dump_program 公开接口
+- `src/frontend/ast_dump.cpp`：std::visit + overloaded，缩进树形格式，数字整数化显示
+- `tests/unit/ast_dump_test.cpp`：17 个测试，237/237 全部通过
 
-### 1.7 建立 parser 错误报告
+### 1.7 建立 parser 错误报告 [已完成]
 目标：
 - 提供基础语法错误
 - 带位置信息
 - 输出最小可读错误信息
 
-建议：
-- 尽量复用现有 `Error` 结构
-- 与 CLI/debug 输出路径保持一致
+实际结果：
+- `src/frontend/parser.cpp`：新增 `make_parse_error(source, tok, msg)` 静态辅助函数
+- 位置信息格式：`"line N, column M: <原有消息>"`，通过 `compute_location` 计算
+- 替换全部 8 处 `Error(ErrorKind::Syntax, ...)` 调用点
+- `tests/unit/parser_test.cpp`：追加 5 个 `ParserErrorTest` 测试，242/242 全部通过
+- 未修改 `Error` 结构体或 `parser.h` 公开接口
 
 ## 5. 建议执行顺序
 

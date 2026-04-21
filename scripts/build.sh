@@ -92,14 +92,20 @@ fi
 if [[ -z "$PRESET" ]]; then
     case "$(uname -s)" in
         Darwin)
-            if [[ "$DO_COVERAGE" -eq 1 ]]; then
-                if [[ -x "/opt/homebrew/opt/llvm/bin/clang++" ]]; then
+            # 检查 PATH 中 clang 是否为 Homebrew LLVM（先捕获输出再 grep，避免 pipefail 干扰）
+            _clang_ver="$(clang -v 2>&1 | head -1)"
+            if echo "$_clang_ver" | grep -q "Homebrew clang"; then
+                if [[ "$DO_COVERAGE" -eq 1 ]]; then
                     PRESET="macos-llvmclang-coverage"
                 else
-                    PRESET="macos-appleclang-coverage"
+                    PRESET="macos-llvmclang-debug"
                 fi
             else
-                PRESET="macos-appleclang-debug"
+                if [[ "$DO_COVERAGE" -eq 1 ]]; then
+                    PRESET="macos-appleclang-coverage"
+                else
+                    PRESET="macos-appleclang-debug"
+                fi
             fi
             ;;
         Linux)
@@ -128,6 +134,22 @@ else
 fi
 
 BUILD_DIR="${ROOT_DIR}/build/${PRESET}"
+
+# ── LLVM_PREFIX（macos-llvmclang-* preset 需要）────────────────────
+if [[ "$PRESET" == macos-llvmclang-* ]]; then
+    if [[ -z "${LLVM_PREFIX:-}" ]]; then
+        # 从 clang++ 实际路径推导：clang++ -> .../bin/clang++ -> ...
+        _clang_bin="$(command -v clang++ 2>/dev/null || true)"
+        if [[ -n "$_clang_bin" ]]; then
+            LLVM_PREFIX="$(cd "$(dirname "$_clang_bin")/.." && pwd)"
+        else
+            echo "error: LLVM_PREFIX is not set and clang++ not found in PATH" >&2
+            exit 1
+        fi
+    fi
+    export LLVM_PREFIX
+    echo "LLVM_PREFIX: $LLVM_PREFIX"
+fi
 
 # ── clean ─────────────────────────────────────────────────────────
 if [[ "$DO_CLEAN" -eq 1 && -d "$BUILD_DIR" ]]; then
