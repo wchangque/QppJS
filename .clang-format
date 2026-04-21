@@ -1,0 +1,23 @@
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 120
+
+# 访问控制符不缩进（与 class 对齐）
+AccessModifierOffset: -4
+
+# 函数参数换行时 8 空格缩进（比函数体多 4 格）
+ContinuationIndentWidth: 8
+
+# 头文件分组排序
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex:           '^<[a-z_]+\.h>'
+    Priority:        2
+  - Regex:           '^<'
+    Priority:        3
+  - Regex:           '^"'
+    Priority:        1
+SortIncludes: CaseSensitive
+
+# 文件扩展名
+Standard: c++20

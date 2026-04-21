@@ -5,29 +5,17 @@
 
 namespace qppjs {
 
-Value Value::undefined() {
-    return Value(Undefined {});
-}
+Value Value::undefined() { return Value(Undefined{}); }
 
-Value Value::null() {
-    return Value(Null {});
-}
+Value Value::null() { return Value(Null{}); }
 
-Value Value::boolean(bool value) {
-    return Value(value);
-}
+Value Value::boolean(bool value) { return Value(value); }
 
-Value Value::number(double value) {
-    return Value(value);
-}
+Value Value::number(double value) { return Value(value); }
 
-Value Value::string(std::string value) {
-    return Value(std::move(value));
-}
+Value Value::string(std::string value) { return Value(std::move(value)); }
 
-Value Value::object(ObjectPtr value) {
-    return Value(std::move(value));
-}
+Value Value::object(ObjectPtr value) { return Value(std::move(value)); }
 
 ValueKind Value::kind() const {
     if (std::holds_alternative<Undefined>(storage_)) {
@@ -48,29 +36,17 @@ ValueKind Value::kind() const {
     return ValueKind::Object;
 }
 
-bool Value::is_undefined() const {
-    return std::holds_alternative<Undefined>(storage_);
-}
+bool Value::is_undefined() const { return std::holds_alternative<Undefined>(storage_); }
 
-bool Value::is_null() const {
-    return std::holds_alternative<Null>(storage_);
-}
+bool Value::is_null() const { return std::holds_alternative<Null>(storage_); }
 
-bool Value::is_bool() const {
-    return std::holds_alternative<bool>(storage_);
-}
+bool Value::is_bool() const { return std::holds_alternative<bool>(storage_); }
 
-bool Value::is_number() const {
-    return std::holds_alternative<double>(storage_);
-}
+bool Value::is_number() const { return std::holds_alternative<double>(storage_); }
 
-bool Value::is_string() const {
-    return std::holds_alternative<std::string>(storage_);
-}
+bool Value::is_string() const { return std::holds_alternative<std::string>(storage_); }
 
-bool Value::is_object() const {
-    return std::holds_alternative<ObjectPtr>(storage_);
-}
+bool Value::is_object() const { return std::holds_alternative<ObjectPtr>(storage_); }
 
 bool Value::as_bool() const {
     assert(is_bool());
@@ -92,7 +68,6 @@ const ObjectPtr& Value::as_object() const {
     return std::get<ObjectPtr>(storage_);
 }
 
-Value::Value(Storage storage)
-    : storage_(std::move(storage)) {}
+Value::Value(Storage storage) : storage_(std::move(storage)) {}
 
-} // namespace qppjs
+}  // namespace qppjs

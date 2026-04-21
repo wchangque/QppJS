@@ -1,29 +1,31 @@
 #pragma once
 
+#include "qppjs/frontend/token.h"
+
 #include <memory>
 #include <optional>
 #include <string>
 #include <variant>
 #include <vector>
 
-#include "qppjs/frontend/token.h"
-
 namespace qppjs {
 
 // ---- overloaded helper ----
 
-template<typename... Ts>
-struct overloaded : Ts... { using Ts::operator()...; };
-template<typename... Ts>
+template <typename... Ts>
+struct overloaded : Ts... {
+    using Ts::operator()...;
+};
+template <typename... Ts>
 overloaded(Ts...) -> overloaded<Ts...>;
 
 // ---- 枚举 ----
 
-enum class UnaryOp  { Minus, Plus, Bang, Typeof, Void };
+enum class UnaryOp { Minus, Plus, Bang, Typeof, Void };
 enum class BinaryOp { Add, Sub, Mul, Div, Mod, Lt, Gt, LtEq, GtEq, EqEq, NotEq, EqEqEq, NotEqEq };
-enum class LogicalOp{ And, Or };
+enum class LogicalOp { And, Or };
 enum class AssignOp { Assign, AddAssign, SubAssign, MulAssign, DivAssign, ModAssign };
-enum class VarKind  { Var, Let, Const };
+enum class VarKind { Var, Let, Const };
 
 // ---- 前向声明 ----
 
@@ -86,19 +88,11 @@ struct AssignmentExpression {
 // ---- ExprNode 完整定义（必须在所有表达式 struct 定义之后）----
 
 struct ExprNode {
-    std::variant<
-        NumberLiteral,
-        StringLiteral,
-        BooleanLiteral,
-        NullLiteral,
-        Identifier,
-        UnaryExpression,
-        BinaryExpression,
-        LogicalExpression,
-        AssignmentExpression
-    > v;
+    std::variant<NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, Identifier, UnaryExpression,
+                 BinaryExpression, LogicalExpression, AssignmentExpression>
+            v;
 
-    template<typename T>
+    template <typename T>
     ExprNode(T&& node) : v(std::forward<T>(node)) {}
 };
 
@@ -143,16 +137,10 @@ struct ReturnStatement {
 // ---- StmtNode 完整定义（必须在所有语句 struct 定义之后）----
 
 struct StmtNode {
-    std::variant<
-        ExpressionStatement,
-        VariableDeclaration,
-        BlockStatement,
-        IfStatement,
-        WhileStatement,
-        ReturnStatement
-    > v;
+    std::variant<ExpressionStatement, VariableDeclaration, BlockStatement, IfStatement, WhileStatement, ReturnStatement>
+            v;
 
-    template<typename T>
+    template <typename T>
     StmtNode(T&& node) : v(std::forward<T>(node)) {}
 };
 
@@ -163,4 +151,4 @@ struct Program {
     SourceRange range;
 };
 
-} // namespace qppjs
+}  // namespace qppjs

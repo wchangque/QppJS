@@ -1,4 +1,5 @@
 #include "qppjs/frontend/parser.h"
+
 #include "qppjs/frontend/lexer.h"
 
 #include <cassert>
@@ -25,8 +26,8 @@ static std::string decode_string(std::string_view raw) {
     // raw 包含首尾引号
     std::string result;
     result.reserve(raw.size());
-    std::size_t i = 1; // 跳过开头引号
-    std::size_t end = raw.size() - 1; // 跳过结尾引号
+    std::size_t i = 1;                 // 跳过开头引号
+    std::size_t end = raw.size() - 1;  // 跳过结尾引号
     while (i < end) {
         char c = raw[i];
         if (c != '\\') {
@@ -40,21 +41,39 @@ static std::string decode_string(std::string_view raw) {
         char esc = raw[i];
         ++i;
         switch (esc) {
-            case 'n':  result += '\n'; break;
-            case 't':  result += '\t'; break;
-            case 'r':  result += '\r'; break;
-            case 'b':  result += '\b'; break;
-            case 'f':  result += '\f'; break;
-            case 'v':  result += '\v'; break;
-            case '\\': result += '\\'; break;
-            case '\'': result += '\''; break;
-            case '"':  result += '"';  break;
-            case '0':  result += '\0'; break;
+            case 'n':
+                result += '\n';
+                break;
+            case 't':
+                result += '\t';
+                break;
+            case 'r':
+                result += '\r';
+                break;
+            case 'b':
+                result += '\b';
+                break;
+            case 'f':
+                result += '\f';
+                break;
+            case 'v':
+                result += '\v';
+                break;
+            case '\\':
+                result += '\\';
+                break;
+            case '\'':
+                result += '\'';
+                break;
+            case '"':
+                result += '"';
+                break;
+            case '0':
+                result += '\0';
+                break;
             case 'x': {
                 // \xNN
-                if (i + 2 <= end
-                    && is_hex_digit_char(raw[i])
-                    && is_hex_digit_char(raw[i + 1])) {
+                if (i + 2 <= end && is_hex_digit_char(raw[i]) && is_hex_digit_char(raw[i + 1])) {
                     int val = hex_val(raw[i]) * 16 + hex_val(raw[i + 1]);
                     result += static_cast<char>(val);
                     i += 2;
@@ -65,22 +84,22 @@ static std::string decode_string(std::string_view raw) {
                 // \uNNNN
                 auto read_hex4 = [&](std::size_t pos) -> int {
                     if (pos + 4 > end) return -1;
-                    if (!is_hex_digit_char(raw[pos])   || !is_hex_digit_char(raw[pos+1])
-                     || !is_hex_digit_char(raw[pos+2]) || !is_hex_digit_char(raw[pos+3]))
+                    if (!is_hex_digit_char(raw[pos]) || !is_hex_digit_char(raw[pos + 1]) ||
+                        !is_hex_digit_char(raw[pos + 2]) || !is_hex_digit_char(raw[pos + 3]))
                         return -1;
-                    return hex_val(raw[pos]) << 12 | hex_val(raw[pos+1]) << 8
-                         | hex_val(raw[pos+2]) << 4  | hex_val(raw[pos+3]);
+                    return hex_val(raw[pos]) << 12 | hex_val(raw[pos + 1]) << 8 | hex_val(raw[pos + 2]) << 4 |
+                           hex_val(raw[pos + 3]);
                 };
                 int hi = read_hex4(i);
                 if (hi < 0) break;
                 i += 4;
                 uint32_t cp = static_cast<uint32_t>(hi);
                 // 高代理：尝试消费后续 \uNNNN 低代理，合并为非 BMP 码点
-                if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < end && raw[i] == '\\' && raw[i+1] == 'u') {
+                if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < end && raw[i] == '\\' && raw[i + 1] == 'u') {
                     int lo = read_hex4(i + 2);
                     if (lo >= 0xDC00 && lo <= 0xDFFF) {
                         cp = 0x10000 + ((cp - 0xD800) << 10) + (static_cast<uint32_t>(lo) - 0xDC00);
-                        i += 6; // 消费 \uNNNN
+                        i += 6;  // 消费 \uNNNN
                     }
                 }
                 // 编码为 UTF-8
@@ -96,7 +115,7 @@ static std::string decode_string(std::string_view raw) {
                 } else {
                     result += static_cast<char>(0xF0 | (cp >> 18));
                     result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-                    result += static_cast<char>(0x80 | ((cp >> 6)  & 0x3F));
+                    result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
                     result += static_cast<char>(0x80 | (cp & 0x3F));
                 }
                 break;
@@ -145,55 +164,55 @@ static double parse_number_text(std::string_view text) {
             return v;
         }
     }
-    try { return std::stod(std::string(text)); }
-    catch (const std::out_of_range&) { return std::numeric_limits<double>::infinity(); }
+    try {
+        return std::stod(std::string(text));
+    } catch (const std::out_of_range&) {
+        return std::numeric_limits<double>::infinity();
+    }
 }
 
 // ---- 错误构造辅助 ----
 
 static Error make_parse_error(std::string_view source, const Token& tok, std::string_view msg) {
     auto loc = compute_location(source, tok.range.offset);
-    std::string full_msg = "line " + std::to_string(loc.line)
-                         + ", column " + std::to_string(loc.column)
-                         + ": " + std::string(msg);
+    std::string full_msg =
+            "line " + std::to_string(loc.line) + ", column " + std::to_string(loc.column) + ": " + std::string(msg);
     return Error{ErrorKind::Syntax, std::move(full_msg)};
 }
 
 // 从 SourceRange 计算结束偏移（offset + length）
-static uint32_t range_end(SourceRange r) {
-    return r.offset + r.length;
-}
+static uint32_t range_end(SourceRange r) { return r.offset + r.length; }
 
 // 构造覆盖 [start_offset, end_offset) 的 SourceRange
-static SourceRange span(uint32_t start, uint32_t end) {
-    return {start, end > start ? end - start : 0};
-}
+static SourceRange span(uint32_t start, uint32_t end) { return {start, end > start ? end - start : 0}; }
 
 // 取 ExprNode 的 SourceRange
 static SourceRange expr_range(const ExprNode& e) {
     return std::visit(overloaded{
-        [](const NumberLiteral&    n) { return n.range; },
-        [](const StringLiteral&    n) { return n.range; },
-        [](const BooleanLiteral&   n) { return n.range; },
-        [](const NullLiteral&      n) { return n.range; },
-        [](const Identifier&       n) { return n.range; },
-        [](const UnaryExpression&  n) { return n.range; },
-        [](const BinaryExpression& n) { return n.range; },
-        [](const LogicalExpression&n) { return n.range; },
-        [](const AssignmentExpression& n) { return n.range; },
-    }, e.v);
+                              [](const NumberLiteral& n) { return n.range; },
+                              [](const StringLiteral& n) { return n.range; },
+                              [](const BooleanLiteral& n) { return n.range; },
+                              [](const NullLiteral& n) { return n.range; },
+                              [](const Identifier& n) { return n.range; },
+                              [](const UnaryExpression& n) { return n.range; },
+                              [](const BinaryExpression& n) { return n.range; },
+                              [](const LogicalExpression& n) { return n.range; },
+                              [](const AssignmentExpression& n) { return n.range; },
+                      },
+                      e.v);
 }
 
 // 取 StmtNode 的 SourceRange
 static SourceRange stmt_range(const StmtNode& s) {
     return std::visit(overloaded{
-        [](const ExpressionStatement& n) { return n.range; },
-        [](const VariableDeclaration& n) { return n.range; },
-        [](const BlockStatement&      n) { return n.range; },
-        [](const IfStatement&         n) { return n.range; },
-        [](const WhileStatement&      n) { return n.range; },
-        [](const ReturnStatement&     n) { return n.range; },
-    }, s.v);
+                              [](const ExpressionStatement& n) { return n.range; },
+                              [](const VariableDeclaration& n) { return n.range; },
+                              [](const BlockStatement& n) { return n.range; },
+                              [](const IfStatement& n) { return n.range; },
+                              [](const WhileStatement& n) { return n.range; },
+                              [](const ReturnStatement& n) { return n.range; },
+                      },
+                      s.v);
 }
 
 // ---- Parser 状态 ----
@@ -201,15 +220,13 @@ static SourceRange stmt_range(const StmtNode& s) {
 struct Parser {
     std::string_view source;
     LexerState lex;
-    Token cur;      // 当前已消费 token（lookahead）
-    bool got_lf;    // cur 前是否有换行（ASI 用）
+    Token cur;    // 当前已消费 token（lookahead）
+    bool got_lf;  // cur 前是否有换行（ASI 用）
     int function_depth;
 
     explicit Parser(std::string_view src)
-        : source(src), lex(lexer_init(src)), cur{TokenKind::Eof, {0, 0}},
-          got_lf(false), function_depth(0)
-    {
-        advance(); // 载入第一个 token
+        : source(src), lex(lexer_init(src)), cur{TokenKind::Eof, {0, 0}}, got_lf(false), function_depth(0) {
+        advance();  // 载入第一个 token
     }
 
     // 推进一个 token，记录换行状态
@@ -219,16 +236,13 @@ struct Parser {
     }
 
     // 返回当前 token 的原始文本
-    std::string_view token_text(const Token& tok) const {
-        return source.substr(tok.range.offset, tok.range.length);
-    }
+    std::string_view token_text(const Token& tok) const { return source.substr(tok.range.offset, tok.range.length); }
 
     // 期望当前 token 是 kind，消费并推进；否则返回错误
     ParseResult<Token> expect(TokenKind kind) {
         if (cur.kind != kind) {
-            return ParseResult<Token>::Err(
-                make_parse_error(source, cur,
-                      std::string("unexpected token: ") + std::string(token_kind_name(cur.kind))));
+            return ParseResult<Token>::Err(make_parse_error(
+                    source, cur, std::string("unexpected token: ") + std::string(token_kind_name(cur.kind))));
         }
         Token t = cur;
         advance();
@@ -247,8 +261,7 @@ struct Parser {
         if (got_lf || cur.kind == TokenKind::RBrace || cur.kind == TokenKind::Eof) {
             return ParseResult<Token>::Ok(Token{TokenKind::Semicolon, {cur.range.offset, 0}});
         }
-        return ParseResult<Token>::Err(
-            make_parse_error(source, cur, "missing semicolon"));
+        return ParseResult<Token>::Err(make_parse_error(source, cur, "missing semicolon"));
     }
 
     // ---- 表达式解析（Pratt Parser）----
@@ -324,56 +337,41 @@ struct Parser {
                 auto operand = parse_expr(15);
                 if (!operand.ok()) return operand;
                 auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
-                return ParseResult<ExprNode>::Ok(ExprNode{UnaryExpression{
-                    UnaryOp::Minus,
-                    std::make_unique<ExprNode>(std::move(operand.value())),
-                    r
-                }});
+                return ParseResult<ExprNode>::Ok(ExprNode{
+                        UnaryExpression{UnaryOp::Minus, std::make_unique<ExprNode>(std::move(operand.value())), r}});
             }
             case TokenKind::Plus: {
                 auto operand = parse_expr(15);
                 if (!operand.ok()) return operand;
                 auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
-                return ParseResult<ExprNode>::Ok(ExprNode{UnaryExpression{
-                    UnaryOp::Plus,
-                    std::make_unique<ExprNode>(std::move(operand.value())),
-                    r
-                }});
+                return ParseResult<ExprNode>::Ok(ExprNode{
+                        UnaryExpression{UnaryOp::Plus, std::make_unique<ExprNode>(std::move(operand.value())), r}});
             }
             case TokenKind::Bang: {
                 auto operand = parse_expr(15);
                 if (!operand.ok()) return operand;
                 auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
-                return ParseResult<ExprNode>::Ok(ExprNode{UnaryExpression{
-                    UnaryOp::Bang,
-                    std::make_unique<ExprNode>(std::move(operand.value())),
-                    r
-                }});
+                return ParseResult<ExprNode>::Ok(ExprNode{
+                        UnaryExpression{UnaryOp::Bang, std::make_unique<ExprNode>(std::move(operand.value())), r}});
             }
             case TokenKind::KwTypeof: {
                 auto operand = parse_expr(15);
                 if (!operand.ok()) return operand;
                 auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
-                return ParseResult<ExprNode>::Ok(ExprNode{UnaryExpression{
-                    UnaryOp::Typeof,
-                    std::make_unique<ExprNode>(std::move(operand.value())),
-                    r
-                }});
+                return ParseResult<ExprNode>::Ok(ExprNode{
+                        UnaryExpression{UnaryOp::Typeof, std::make_unique<ExprNode>(std::move(operand.value())), r}});
             }
             case TokenKind::KwVoid: {
                 auto operand = parse_expr(15);
                 if (!operand.ok()) return operand;
                 auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
-                return ParseResult<ExprNode>::Ok(ExprNode{UnaryExpression{
-                    UnaryOp::Void,
-                    std::make_unique<ExprNode>(std::move(operand.value())),
-                    r
-                }});
+                return ParseResult<ExprNode>::Ok(ExprNode{
+                        UnaryExpression{UnaryOp::Void, std::make_unique<ExprNode>(std::move(operand.value())), r}});
             }
             default:
-                return ParseResult<ExprNode>::Err(
-                    make_parse_error(source, tok,
-                          std::string("unexpected token in expression: ") + std::string(token_kind_name(tok.kind))));
+                return ParseResult<ExprNode>::Err(make_parse_error(
+                        source, tok,
+                        std::string("unexpected token in expression: ") + std::string(token_kind_name(tok.kind))));
         }
     }
 
@@ -383,36 +381,43 @@ struct Parser {
         int bp = lbp(kind);
 
         // 赋值：右结合，检查左侧是 Identifier
-        if (kind == TokenKind::Eq ||
-            kind == TokenKind::PlusEq || kind == TokenKind::MinusEq ||
-            kind == TokenKind::StarEq || kind == TokenKind::SlashEq ||
-            kind == TokenKind::PercentEq) {
+        if (kind == TokenKind::Eq || kind == TokenKind::PlusEq || kind == TokenKind::MinusEq ||
+            kind == TokenKind::StarEq || kind == TokenKind::SlashEq || kind == TokenKind::PercentEq) {
             // Early Error：左侧必须是 Identifier
             if (!std::holds_alternative<Identifier>(left.v)) {
                 return ParseResult<ExprNode>::Err(
-                    make_parse_error(source, op_tok, "invalid left-hand side in assignment"));
+                        make_parse_error(source, op_tok, "invalid left-hand side in assignment"));
             }
             std::string target = std::get<Identifier>(left.v).name;
-            auto right = parse_expr(bp - 1); // 右结合
+            auto right = parse_expr(bp - 1);  // 右结合
             if (!right.ok()) return right;
             AssignOp aop;
             switch (kind) {
-                case TokenKind::Eq:        aop = AssignOp::Assign; break;
-                case TokenKind::PlusEq:    aop = AssignOp::AddAssign; break;
-                case TokenKind::MinusEq:   aop = AssignOp::SubAssign; break;
-                case TokenKind::StarEq:    aop = AssignOp::MulAssign; break;
-                case TokenKind::SlashEq:   aop = AssignOp::DivAssign; break;
-                case TokenKind::PercentEq: aop = AssignOp::ModAssign; break;
-                default: aop = AssignOp::Assign; break;
+                case TokenKind::Eq:
+                    aop = AssignOp::Assign;
+                    break;
+                case TokenKind::PlusEq:
+                    aop = AssignOp::AddAssign;
+                    break;
+                case TokenKind::MinusEq:
+                    aop = AssignOp::SubAssign;
+                    break;
+                case TokenKind::StarEq:
+                    aop = AssignOp::MulAssign;
+                    break;
+                case TokenKind::SlashEq:
+                    aop = AssignOp::DivAssign;
+                    break;
+                case TokenKind::PercentEq:
+                    aop = AssignOp::ModAssign;
+                    break;
+                default:
+                    aop = AssignOp::Assign;
+                    break;
             }
-            auto asgn_r = span(std::get<Identifier>(left.v).range.offset,
-                               range_end(expr_range(right.value())));
+            auto asgn_r = span(std::get<Identifier>(left.v).range.offset, range_end(expr_range(right.value())));
             return ParseResult<ExprNode>::Ok(ExprNode{AssignmentExpression{
-                aop,
-                std::move(target),
-                std::make_unique<ExprNode>(std::move(right.value())),
-                asgn_r
-            }});
+                    aop, std::move(target), std::make_unique<ExprNode>(std::move(right.value())), asgn_r}});
         }
 
         // || 和 &&：LogicalExpression
@@ -421,12 +426,9 @@ struct Parser {
             if (!right.ok()) return right;
             LogicalOp lop = (kind == TokenKind::AmpAmp) ? LogicalOp::And : LogicalOp::Or;
             auto log_r = span(expr_range(left).offset, range_end(expr_range(right.value())));
-            return ParseResult<ExprNode>::Ok(ExprNode{LogicalExpression{
-                lop,
-                std::make_unique<ExprNode>(std::move(left)),
-                std::make_unique<ExprNode>(std::move(right.value())),
-                log_r
-            }});
+            return ParseResult<ExprNode>::Ok(
+                    ExprNode{LogicalExpression{lop, std::make_unique<ExprNode>(std::move(left)),
+                                               std::make_unique<ExprNode>(std::move(right.value())), log_r}});
         }
 
         // 其他二元操作符：BinaryExpression（左结合）
@@ -435,30 +437,52 @@ struct Parser {
 
         BinaryOp bop;
         switch (kind) {
-            case TokenKind::Plus:     bop = BinaryOp::Add; break;
-            case TokenKind::Minus:    bop = BinaryOp::Sub; break;
-            case TokenKind::Star:     bop = BinaryOp::Mul; break;
-            case TokenKind::Slash:    bop = BinaryOp::Div; break;
-            case TokenKind::Percent:  bop = BinaryOp::Mod; break;
-            case TokenKind::Lt:       bop = BinaryOp::Lt; break;
-            case TokenKind::Gt:       bop = BinaryOp::Gt; break;
-            case TokenKind::LtEq:     bop = BinaryOp::LtEq; break;
-            case TokenKind::GtEq:     bop = BinaryOp::GtEq; break;
-            case TokenKind::EqEq:     bop = BinaryOp::EqEq; break;
-            case TokenKind::BangEq:   bop = BinaryOp::NotEq; break;
-            case TokenKind::EqEqEq:   bop = BinaryOp::EqEqEq; break;
-            case TokenKind::BangEqEq: bop = BinaryOp::NotEqEq; break;
+            case TokenKind::Plus:
+                bop = BinaryOp::Add;
+                break;
+            case TokenKind::Minus:
+                bop = BinaryOp::Sub;
+                break;
+            case TokenKind::Star:
+                bop = BinaryOp::Mul;
+                break;
+            case TokenKind::Slash:
+                bop = BinaryOp::Div;
+                break;
+            case TokenKind::Percent:
+                bop = BinaryOp::Mod;
+                break;
+            case TokenKind::Lt:
+                bop = BinaryOp::Lt;
+                break;
+            case TokenKind::Gt:
+                bop = BinaryOp::Gt;
+                break;
+            case TokenKind::LtEq:
+                bop = BinaryOp::LtEq;
+                break;
+            case TokenKind::GtEq:
+                bop = BinaryOp::GtEq;
+                break;
+            case TokenKind::EqEq:
+                bop = BinaryOp::EqEq;
+                break;
+            case TokenKind::BangEq:
+                bop = BinaryOp::NotEq;
+                break;
+            case TokenKind::EqEqEq:
+                bop = BinaryOp::EqEqEq;
+                break;
+            case TokenKind::BangEqEq:
+                bop = BinaryOp::NotEqEq;
+                break;
             default:
-                return ParseResult<ExprNode>::Err(
-                    make_parse_error(source, op_tok, "unknown binary operator"));
+                return ParseResult<ExprNode>::Err(make_parse_error(source, op_tok, "unknown binary operator"));
         }
         auto bin_r = span(expr_range(left).offset, range_end(expr_range(right.value())));
-        return ParseResult<ExprNode>::Ok(ExprNode{BinaryExpression{
-            bop,
-            std::make_unique<ExprNode>(std::move(left)),
-            std::make_unique<ExprNode>(std::move(right.value())),
-            bin_r
-        }});
+        return ParseResult<ExprNode>::Ok(
+                ExprNode{BinaryExpression{bop, std::make_unique<ExprNode>(std::move(left)),
+                                          std::make_unique<ExprNode>(std::move(right.value())), bin_r}});
     }
 
     // Pratt parser 主循环
@@ -490,16 +514,23 @@ struct Parser {
         advance();
         VarKind kind;
         switch (kw.kind) {
-            case TokenKind::KwLet:   kind = VarKind::Let; break;
-            case TokenKind::KwConst: kind = VarKind::Const; break;
-            case TokenKind::KwVar:   kind = VarKind::Var; break;
-            default: kind = VarKind::Var; break;
+            case TokenKind::KwLet:
+                kind = VarKind::Let;
+                break;
+            case TokenKind::KwConst:
+                kind = VarKind::Const;
+                break;
+            case TokenKind::KwVar:
+                kind = VarKind::Var;
+                break;
+            default:
+                kind = VarKind::Var;
+                break;
         }
 
         // 期望标识符
         if (cur.kind != TokenKind::Ident) {
-            return ParseResult<StmtNode>::Err(
-                make_parse_error(source, cur, "expected identifier after var/let/const"));
+            return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected identifier after var/let/const"));
         }
         std::string name{token_text(cur)};
         Token name_tok = cur;
@@ -507,14 +538,14 @@ struct Parser {
 
         std::optional<ExprNode> init;
         if (cur.kind == TokenKind::Eq) {
-            advance(); // 消费 =
+            advance();  // 消费 =
             auto expr = parse_expr(0);
             if (!expr.ok()) return ParseResult<StmtNode>::Err(expr.error());
             init = std::move(expr.value());
         } else if (kind == VarKind::Const) {
             // const 必须有初始化器
             return ParseResult<StmtNode>::Err(
-                make_parse_error(source, cur, "const declaration must have an initializer"));
+                    make_parse_error(source, cur, "const declaration must have an initializer"));
         }
 
         auto semi = consume_semicolon();
@@ -530,15 +561,13 @@ struct Parser {
             }
         }
         SourceRange range = span(kw.range.offset, decl_end);
-        return ParseResult<StmtNode>::Ok(StmtNode{VariableDeclaration{
-            kind, std::move(name), std::move(init), range
-        }});
+        return ParseResult<StmtNode>::Ok(StmtNode{VariableDeclaration{kind, std::move(name), std::move(init), range}});
     }
 
     ParseResult<StmtNode> parse_block_stmt() {
         // cur 是 LBrace
         Token lbrace = cur;
-        advance(); // 消费 {
+        advance();  // 消费 {
         std::vector<StmtNode> body;
         while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
             auto stmt = parse_stmt();
@@ -570,15 +599,10 @@ struct Parser {
             if (!alt.ok()) return alt;
             alt_ptr = std::make_unique<StmtNode>(std::move(alt.value()));
         }
-        uint32_t if_end = alt_ptr
-            ? range_end(stmt_range(*alt_ptr))
-            : range_end(stmt_range(consequent.value()));
-        return ParseResult<StmtNode>::Ok(StmtNode{IfStatement{
-            std::move(test.value()),
-            std::make_unique<StmtNode>(std::move(consequent.value())),
-            std::move(alt_ptr),
-            span(kw.range.offset, if_end)
-        }});
+        uint32_t if_end = alt_ptr ? range_end(stmt_range(*alt_ptr)) : range_end(stmt_range(consequent.value()));
+        return ParseResult<StmtNode>::Ok(
+                StmtNode{IfStatement{std::move(test.value()), std::make_unique<StmtNode>(std::move(consequent.value())),
+                                     std::move(alt_ptr), span(kw.range.offset, if_end)}});
     }
 
     ParseResult<StmtNode> parse_while_stmt() {
@@ -593,23 +617,20 @@ struct Parser {
         auto body = parse_stmt();
         if (!body.ok()) return body;
         uint32_t while_end = range_end(stmt_range(body.value()));
-        return ParseResult<StmtNode>::Ok(StmtNode{WhileStatement{
-            std::move(test.value()),
-            std::make_unique<StmtNode>(std::move(body.value())),
-            span(kw.range.offset, while_end)
-        }});
+        return ParseResult<StmtNode>::Ok(
+                StmtNode{WhileStatement{std::move(test.value()), std::make_unique<StmtNode>(std::move(body.value())),
+                                        span(kw.range.offset, while_end)}});
     }
 
     ParseResult<StmtNode> parse_return_stmt() {
         Token kw = cur;
         advance();
         if (function_depth == 0) {
-            return ParseResult<StmtNode>::Err(
-                make_parse_error(source, kw, "return statement outside of function"));
+            return ParseResult<StmtNode>::Err(make_parse_error(source, kw, "return statement outside of function"));
         }
         std::optional<ExprNode> arg;
-        if (!got_lf && cur.kind != TokenKind::Semicolon
-            && cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
+        if (!got_lf && cur.kind != TokenKind::Semicolon && cur.kind != TokenKind::RBrace &&
+            cur.kind != TokenKind::Eof) {
             auto expr = parse_expr(0);
             if (!expr.ok()) return ParseResult<StmtNode>::Err(expr.error());
             arg = std::move(expr.value());
@@ -633,9 +654,8 @@ struct Parser {
         if (es_end == semi.value().range.offset) {
             es_end = range_end(expr_range(expr.value()));
         }
-        return ParseResult<StmtNode>::Ok(StmtNode{ExpressionStatement{
-            std::move(expr.value()), span(start.range.offset, es_end)
-        }});
+        return ParseResult<StmtNode>::Ok(
+                StmtNode{ExpressionStatement{std::move(expr.value()), span(start.range.offset, es_end)}});
     }
 
     ParseResult<StmtNode> parse_stmt() {
@@ -674,4 +694,4 @@ ParseResult<Program> parse_program(std::string_view source) {
     return p.parse();
 }
 
-} // namespace qppjs
+}  // namespace qppjs

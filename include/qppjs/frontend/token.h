@@ -14,27 +14,72 @@ enum class TokenKind {
     Ident,
 
     // 关键字（连续排列，is_keyword 用区间判断）
-    KwLet, KwConst, KwVar,
-    KwIf, KwElse,
-    KwWhile, KwFor,
-    KwBreak, KwContinue, KwReturn,
+    KwLet,
+    KwConst,
+    KwVar,
+    KwIf,
+    KwElse,
+    KwWhile,
+    KwFor,
+    KwBreak,
+    KwContinue,
+    KwReturn,
     KwFunction,
-    KwTrue, KwFalse, KwNull, KwUndefined,
-    KwNew, KwDelete, KwTypeof, KwVoid,
-    KwThrow, KwTry, KwCatch, KwFinally,
+    KwTrue,
+    KwFalse,
+    KwNull,
+    KwUndefined,
+    KwNew,
+    KwDelete,
+    KwTypeof,
+    KwVoid,
+    KwThrow,
+    KwTry,
+    KwCatch,
+    KwFinally,
 
     // 标点
-    LParen, RParen, LBrace, RBrace, LBracket, RBracket,
-    Semicolon, Colon, Comma, Dot, Question,
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    LBracket,
+    RBracket,
+    Semicolon,
+    Colon,
+    Comma,
+    Dot,
+    Question,
 
     // 操作符
-    Plus, Minus, Star, Slash, Percent,
-    Lt, Gt, LtEq, GtEq,
-    EqEq, BangEq, EqEqEq, BangEqEq,
-    Eq, PlusEq, MinusEq, StarEq, SlashEq, PercentEq,
-    AmpAmp, PipePipe, Bang,
-    Amp, Pipe, Caret, Tilde,
-    PlusPlus, MinusMinus,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
+    EqEq,
+    BangEq,
+    EqEqEq,
+    BangEqEq,
+    Eq,
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    AmpAmp,
+    PipePipe,
+    Bang,
+    Amp,
+    Pipe,
+    Caret,
+    Tilde,
+    PlusPlus,
+    MinusMinus,
     Arrow,
 
     Invalid,
@@ -46,7 +91,7 @@ struct SourceRange {
 };
 
 struct Token {
-    TokenKind   kind;
+    TokenKind kind;
     SourceRange range;
 };
 
@@ -59,4 +104,4 @@ bool is_keyword(TokenKind kind);
 std::string_view token_kind_name(TokenKind kind);
 SourceLocation compute_location(std::string_view source, uint32_t offset);
 
-} // namespace qppjs
+}  // namespace qppjs

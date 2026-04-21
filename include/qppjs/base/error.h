@@ -25,4 +25,4 @@ private:
 
 [[nodiscard]] std::string error_kind_name(ErrorKind kind);
 
-} // namespace qppjs
+}  // namespace qppjs

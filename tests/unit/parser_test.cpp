@@ -1,5 +1,7 @@
 #include "qppjs/frontend/parser.h"
+
 #include "qppjs/frontend/ast.h"
+
 #include <cmath>
 #include <gtest/gtest.h>
 #include <string>
@@ -7,15 +9,13 @@
 using namespace qppjs;
 
 // 测试辅助：将表达式字符串包装为语句，解析并返回 Program
-static ParseResult<Program> parse_expr_src(const char* src) {
-    return parse_program(std::string(src) + ";");
-}
+static ParseResult<Program> parse_expr_src(const char* src) { return parse_program(std::string(src) + ";"); }
 
 // 从 Program 的第一条语句中取出 ExprNode（ExpressionStatement），
 // 断言结构正确，返回 ExprNode 的 const 引用（引用稳定，因 Program 仍在 result 中）
-#define ASSERT_EXPR(result, expr_ref) \
-    ASSERT_TRUE((result).ok()); \
-    ASSERT_FALSE((result).value().body.empty()); \
+#define ASSERT_EXPR(result, expr_ref)                                                     \
+    ASSERT_TRUE((result).ok());                                                           \
+    ASSERT_FALSE((result).value().body.empty());                                          \
     ASSERT_TRUE(std::holds_alternative<ExpressionStatement>((result).value().body[0].v)); \
     const ExprNode& expr_ref = std::get<ExpressionStatement>((result).value().body[0].v).expr
 

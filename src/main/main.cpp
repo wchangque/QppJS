@@ -12,7 +12,7 @@ int fail_with_usage() {
     return 1;
 }
 
-} // namespace
+}  // namespace
 
 int main(int argc, char** argv) {
     if (argc != 2) {

@@ -54,4 +54,4 @@ private:
     Storage storage_;
 };
 
-} // namespace qppjs
+}  // namespace qppjs

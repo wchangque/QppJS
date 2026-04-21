@@ -1,4 +1,5 @@
 #include "qppjs/base/error.h"
+
 #include "qppjs/debug/format.h"
 
 #include <gtest/gtest.h>

@@ -22,6 +22,7 @@ model: sonnet
 - 不把参考实现直接翻译成代码。
 - 每次改动都应尽量保持最小。
 - 实现前应优先确认对应任务编号，以及 `docs/plans/01-current-status.md` 和 `docs/plans/02-next-phase.md` 中的当前阶段约束。
+- 编码风格遵循code-style.md中定义的风格。
 
 你的工作方式：
 1. 先列出本次最小目标。

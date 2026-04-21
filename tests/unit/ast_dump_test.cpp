@@ -1,6 +1,8 @@
 #include "qppjs/frontend/ast_dump.h"
+
 #include "qppjs/frontend/ast.h"
 #include "qppjs/frontend/parser.h"
+
 #include <gtest/gtest.h>
 #include <string>
 
@@ -44,11 +46,8 @@ TEST(AstDumpExpr, Identifier) {
 // ---- 测试 6：一元表达式 ----
 
 TEST(AstDumpExpr, UnaryExpression) {
-    std::string out = dump_expr(ExprNode{UnaryExpression{
-        UnaryOp::Minus,
-        std::make_unique<ExprNode>(NumberLiteral{1.0, {1, 1}}),
-        {0, 2}
-    }});
+    std::string out = dump_expr(
+            ExprNode{UnaryExpression{UnaryOp::Minus, std::make_unique<ExprNode>(NumberLiteral{1.0, {1, 1}}), {0, 2}}});
     EXPECT_NE(out.find("UnaryExpression(-)"), std::string::npos) << "actual: " << out;
     EXPECT_NE(out.find("NumberLiteral(1)"), std::string::npos) << "actual: " << out;
 }
@@ -57,12 +56,10 @@ TEST(AstDumpExpr, UnaryExpression) {
 
 TEST(AstDumpExpr, BinaryExpression) {
     // 1 + 2
-    std::string out = dump_expr(ExprNode{BinaryExpression{
-        BinaryOp::Add,
-        std::make_unique<ExprNode>(NumberLiteral{1.0, {0, 1}}),
-        std::make_unique<ExprNode>(NumberLiteral{2.0, {4, 1}}),
-        {0, 5}
-    }});
+    std::string out = dump_expr(ExprNode{BinaryExpression{BinaryOp::Add,
+                                                          std::make_unique<ExprNode>(NumberLiteral{1.0, {0, 1}}),
+                                                          std::make_unique<ExprNode>(NumberLiteral{2.0, {4, 1}}),
+                                                          {0, 5}}});
     EXPECT_NE(out.find("BinaryExpression(+)"), std::string::npos) << "actual: " << out;
     // 子节点应有缩进
     EXPECT_NE(out.find("  NumberLiteral(1)"), std::string::npos) << "actual: " << out;
@@ -73,12 +70,10 @@ TEST(AstDumpExpr, BinaryExpression) {
 
 TEST(AstDumpExpr, LogicalExpression) {
     // a && b
-    std::string out = dump_expr(ExprNode{LogicalExpression{
-        LogicalOp::And,
-        std::make_unique<ExprNode>(Identifier{"a", {0, 1}}),
-        std::make_unique<ExprNode>(Identifier{"b", {5, 1}}),
-        {0, 6}
-    }});
+    std::string out = dump_expr(ExprNode{LogicalExpression{LogicalOp::And,
+                                                           std::make_unique<ExprNode>(Identifier{"a", {0, 1}}),
+                                                           std::make_unique<ExprNode>(Identifier{"b", {5, 1}}),
+                                                           {0, 6}}});
     EXPECT_NE(out.find("LogicalExpression(&&)"), std::string::npos) << "actual: " << out;
 }
 
@@ -87,11 +82,7 @@ TEST(AstDumpExpr, LogicalExpression) {
 TEST(AstDumpExpr, AssignmentExpression) {
     // x = 1
     std::string out = dump_expr(ExprNode{AssignmentExpression{
-        AssignOp::Assign,
-        "x",
-        std::make_unique<ExprNode>(NumberLiteral{1.0, {4, 1}}),
-        {0, 5}
-    }});
+            AssignOp::Assign, "x", std::make_unique<ExprNode>(NumberLiteral{1.0, {4, 1}}), {0, 5}}});
     EXPECT_NE(out.find("AssignmentExpression(=)"), std::string::npos) << "actual: " << out;
     EXPECT_NE(out.find("target: x"), std::string::npos) << "actual: " << out;
 }
@@ -99,12 +90,8 @@ TEST(AstDumpExpr, AssignmentExpression) {
 // ---- 测试 10：VariableDeclaration（let x = 1）----
 
 TEST(AstDumpStmt, VariableDeclaration) {
-    std::string out = dump_stmt(StmtNode{VariableDeclaration{
-        VarKind::Let,
-        "x",
-        ExprNode{NumberLiteral{1.0, {8, 1}}},
-        {0, 9}
-    }});
+    std::string out =
+            dump_stmt(StmtNode{VariableDeclaration{VarKind::Let, "x", ExprNode{NumberLiteral{1.0, {8, 1}}}, {0, 9}}});
     EXPECT_NE(out.find("VariableDeclaration(let)"), std::string::npos) << "actual: " << out;
     EXPECT_NE(out.find("name: x"), std::string::npos) << "actual: " << out;
 }
@@ -120,12 +107,10 @@ TEST(AstDumpStmt, BlockStatementEmpty) {
 
 TEST(AstDumpStmt, IfStatementNoElse) {
     // if (true) {}
-    IfStatement is{
-        ExprNode{BooleanLiteral{true, {3, 4}}},
-        std::make_unique<StmtNode>(BlockStatement{{}, {9, 2}}),
-        nullptr,
-        {0, 11}
-    };
+    IfStatement is{ExprNode{BooleanLiteral{true, {3, 4}}},
+                   std::make_unique<StmtNode>(BlockStatement{{}, {9, 2}}),
+                   nullptr,
+                   {0, 11}};
     std::string out = dump_stmt(StmtNode{std::move(is)});
     EXPECT_NE(out.find("IfStatement"), std::string::npos) << "actual: " << out;
     EXPECT_NE(out.find("test:"), std::string::npos) << "actual: " << out;
@@ -136,12 +121,10 @@ TEST(AstDumpStmt, IfStatementNoElse) {
 
 TEST(AstDumpStmt, IfStatementWithElse) {
     // if (true) {} else {}
-    IfStatement is{
-        ExprNode{BooleanLiteral{true, {3, 4}}},
-        std::make_unique<StmtNode>(BlockStatement{{}, {9, 2}}),
-        std::make_unique<StmtNode>(BlockStatement{{}, {17, 2}}),
-        {0, 19}
-    };
+    IfStatement is{ExprNode{BooleanLiteral{true, {3, 4}}},
+                   std::make_unique<StmtNode>(BlockStatement{{}, {9, 2}}),
+                   std::make_unique<StmtNode>(BlockStatement{{}, {17, 2}}),
+                   {0, 19}};
     std::string out = dump_stmt(StmtNode{std::move(is)});
     // 有 alternate 时不应出现 (none)
     EXPECT_EQ(out.find("alternate: (none)"), std::string::npos) << "actual: " << out;
@@ -153,10 +136,7 @@ TEST(AstDumpStmt, IfStatementWithElse) {
 TEST(AstDumpStmt, WhileStatement) {
     // while (true) {}
     WhileStatement ws{
-        ExprNode{BooleanLiteral{true, {6, 4}}},
-        std::make_unique<StmtNode>(BlockStatement{{}, {12, 2}}),
-        {0, 14}
-    };
+            ExprNode{BooleanLiteral{true, {6, 4}}}, std::make_unique<StmtNode>(BlockStatement{{}, {12, 2}}), {0, 14}};
     std::string out = dump_stmt(StmtNode{std::move(ws)});
     EXPECT_NE(out.find("WhileStatement"), std::string::npos) << "actual: " << out;
 }

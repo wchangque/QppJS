@@ -5,54 +5,30 @@
 namespace qppjs {
 
 static const std::unordered_map<std::string_view, TokenKind> kKeywords = {
-    {"let",       TokenKind::KwLet},
-    {"const",     TokenKind::KwConst},
-    {"var",       TokenKind::KwVar},
-    {"if",        TokenKind::KwIf},
-    {"else",      TokenKind::KwElse},
-    {"while",     TokenKind::KwWhile},
-    {"for",       TokenKind::KwFor},
-    {"break",     TokenKind::KwBreak},
-    {"continue",  TokenKind::KwContinue},
-    {"return",    TokenKind::KwReturn},
-    {"function",  TokenKind::KwFunction},
-    {"true",      TokenKind::KwTrue},
-    {"false",     TokenKind::KwFalse},
-    {"null",      TokenKind::KwNull},
-    {"new",       TokenKind::KwNew},
-    {"delete",    TokenKind::KwDelete},
-    {"typeof",    TokenKind::KwTypeof},
-    {"void",      TokenKind::KwVoid},
-    {"throw",     TokenKind::KwThrow},
-    {"try",       TokenKind::KwTry},
-    {"catch",     TokenKind::KwCatch},
-    {"finally",   TokenKind::KwFinally},
+        {"let", TokenKind::KwLet},         {"const", TokenKind::KwConst},       {"var", TokenKind::KwVar},
+        {"if", TokenKind::KwIf},           {"else", TokenKind::KwElse},         {"while", TokenKind::KwWhile},
+        {"for", TokenKind::KwFor},         {"break", TokenKind::KwBreak},       {"continue", TokenKind::KwContinue},
+        {"return", TokenKind::KwReturn},   {"function", TokenKind::KwFunction}, {"true", TokenKind::KwTrue},
+        {"false", TokenKind::KwFalse},     {"null", TokenKind::KwNull},         {"new", TokenKind::KwNew},
+        {"delete", TokenKind::KwDelete},   {"typeof", TokenKind::KwTypeof},     {"void", TokenKind::KwVoid},
+        {"throw", TokenKind::KwThrow},     {"try", TokenKind::KwTry},           {"catch", TokenKind::KwCatch},
+        {"finally", TokenKind::KwFinally},
 };
 
-LexerState lexer_init(std::string_view source) {
-    return {source, 0, 1, false};
-}
+LexerState lexer_init(std::string_view source) { return {source, 0, 1, false}; }
 
 static bool is_whitespace(char c) {
-    return c == ' ' || c == '\t' || c == '\v' || c == '\f'
-        || static_cast<unsigned char>(c) == 0xA0;  // U+00A0 NBSP (Latin-1)
+    return c == ' ' || c == '\t' || c == '\v' || c == '\f' ||
+           static_cast<unsigned char>(c) == 0xA0;  // U+00A0 NBSP (Latin-1)
 }
 
-static bool is_ident_start(char c) {
-    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '$';
-}
+static bool is_ident_start(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '$'; }
 
-static bool is_ident_part(char c) {
-    return is_ident_start(c) || (c >= '0' && c <= '9');
-}
+static bool is_ident_part(char c) { return is_ident_start(c) || (c >= '0' && c <= '9'); }
 
-static bool is_dec_digit(char c) {
-    return c >= '0' && c <= '9';
-}
+static bool is_dec_digit(char c) { return c >= '0' && c <= '9'; }
 
-static bool is_hex_digit(char c) {
-    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-}
+static bool is_hex_digit(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 
 // 扫描十进制数字字面量（pos 已指向第一个字符，可能是数字或 '.'）
 // 返回 true 表示合法，pos 已推进到 token 末尾
@@ -247,9 +223,7 @@ static Token scan_string(LexerState& state, uint32_t start) {
     char quote = src[state.pos];
     ++state.pos;  // 消耗开头引号
 
-    auto make_invalid = [&]() -> Token {
-        return {TokenKind::Invalid, {start, state.pos - start}};
-    };
+    auto make_invalid = [&]() -> Token { return {TokenKind::Invalid, {start, state.pos - start}}; };
 
     while (state.pos < len) {
         char c = src[state.pos];
@@ -276,19 +250,14 @@ static Token scan_string(LexerState& state, uint32_t start) {
 
             if (esc == 'x') {
                 // \xNN：必须恰好两位十六进制
-                if (state.pos + 2 > len
-                    || !is_hex_digit(src[state.pos])
-                    || !is_hex_digit(src[state.pos + 1])) {
+                if (state.pos + 2 > len || !is_hex_digit(src[state.pos]) || !is_hex_digit(src[state.pos + 1])) {
                     return make_invalid();
                 }
                 state.pos += 2;
             } else if (esc == 'u') {
                 // \uNNNN：必须恰好四位十六进制
-                if (state.pos + 4 > len
-                    || !is_hex_digit(src[state.pos])
-                    || !is_hex_digit(src[state.pos + 1])
-                    || !is_hex_digit(src[state.pos + 2])
-                    || !is_hex_digit(src[state.pos + 3])) {
+                if (state.pos + 4 > len || !is_hex_digit(src[state.pos]) || !is_hex_digit(src[state.pos + 1]) ||
+                    !is_hex_digit(src[state.pos + 2]) || !is_hex_digit(src[state.pos + 3])) {
                     return make_invalid();
                 }
                 state.pos += 4;
@@ -433,72 +402,152 @@ Token next_token(LexerState& state) {
     switch (c) {
         case '=':
             if (peek(1) == '=') {
-                if (peek(2) == '=') { state.pos += 3; return {TokenKind::EqEqEq, {start, 3}}; }
-                state.pos += 2; return {TokenKind::EqEq, {start, 2}};
+                if (peek(2) == '=') {
+                    state.pos += 3;
+                    return {TokenKind::EqEqEq, {start, 3}};
+                }
+                state.pos += 2;
+                return {TokenKind::EqEq, {start, 2}};
             }
-            if (peek(1) == '>') { state.pos += 2; return {TokenKind::Arrow, {start, 2}}; }
-            ++state.pos; return {TokenKind::Eq, {start, 1}};
+            if (peek(1) == '>') {
+                state.pos += 2;
+                return {TokenKind::Arrow, {start, 2}};
+            }
+            ++state.pos;
+            return {TokenKind::Eq, {start, 1}};
 
         case '!':
             if (peek(1) == '=') {
-                if (peek(2) == '=') { state.pos += 3; return {TokenKind::BangEqEq, {start, 3}}; }
-                state.pos += 2; return {TokenKind::BangEq, {start, 2}};
+                if (peek(2) == '=') {
+                    state.pos += 3;
+                    return {TokenKind::BangEqEq, {start, 3}};
+                }
+                state.pos += 2;
+                return {TokenKind::BangEq, {start, 2}};
             }
-            ++state.pos; return {TokenKind::Bang, {start, 1}};
+            ++state.pos;
+            return {TokenKind::Bang, {start, 1}};
 
         case '<':
-            if (peek(1) == '=') { state.pos += 2; return {TokenKind::LtEq, {start, 2}}; }
-            ++state.pos; return {TokenKind::Lt, {start, 1}};
+            if (peek(1) == '=') {
+                state.pos += 2;
+                return {TokenKind::LtEq, {start, 2}};
+            }
+            ++state.pos;
+            return {TokenKind::Lt, {start, 1}};
 
         case '>':
-            if (peek(1) == '=') { state.pos += 2; return {TokenKind::GtEq, {start, 2}}; }
-            ++state.pos; return {TokenKind::Gt, {start, 1}};
+            if (peek(1) == '=') {
+                state.pos += 2;
+                return {TokenKind::GtEq, {start, 2}};
+            }
+            ++state.pos;
+            return {TokenKind::Gt, {start, 1}};
 
         case '+':
-            if (peek(1) == '+') { state.pos += 2; return {TokenKind::PlusPlus, {start, 2}}; }
-            if (peek(1) == '=') { state.pos += 2; return {TokenKind::PlusEq, {start, 2}}; }
-            ++state.pos; return {TokenKind::Plus, {start, 1}};
+            if (peek(1) == '+') {
+                state.pos += 2;
+                return {TokenKind::PlusPlus, {start, 2}};
+            }
+            if (peek(1) == '=') {
+                state.pos += 2;
+                return {TokenKind::PlusEq, {start, 2}};
+            }
+            ++state.pos;
+            return {TokenKind::Plus, {start, 1}};
 
         case '-':
-            if (peek(1) == '-') { state.pos += 2; return {TokenKind::MinusMinus, {start, 2}}; }
-            if (peek(1) == '=') { state.pos += 2; return {TokenKind::MinusEq, {start, 2}}; }
-            ++state.pos; return {TokenKind::Minus, {start, 1}};
+            if (peek(1) == '-') {
+                state.pos += 2;
+                return {TokenKind::MinusMinus, {start, 2}};
+            }
+            if (peek(1) == '=') {
+                state.pos += 2;
+                return {TokenKind::MinusEq, {start, 2}};
+            }
+            ++state.pos;
+            return {TokenKind::Minus, {start, 1}};
 
         case '*':
-            if (peek(1) == '=') { state.pos += 2; return {TokenKind::StarEq, {start, 2}}; }
-            ++state.pos; return {TokenKind::Star, {start, 1}};
+            if (peek(1) == '=') {
+                state.pos += 2;
+                return {TokenKind::StarEq, {start, 2}};
+            }
+            ++state.pos;
+            return {TokenKind::Star, {start, 1}};
 
         case '/':
-            if (peek(1) == '=') { state.pos += 2; return {TokenKind::SlashEq, {start, 2}}; }
-            ++state.pos; return {TokenKind::Slash, {start, 1}};
+            if (peek(1) == '=') {
+                state.pos += 2;
+                return {TokenKind::SlashEq, {start, 2}};
+            }
+            ++state.pos;
+            return {TokenKind::Slash, {start, 1}};
 
         case '%':
-            if (peek(1) == '=') { state.pos += 2; return {TokenKind::PercentEq, {start, 2}}; }
-            ++state.pos; return {TokenKind::Percent, {start, 1}};
+            if (peek(1) == '=') {
+                state.pos += 2;
+                return {TokenKind::PercentEq, {start, 2}};
+            }
+            ++state.pos;
+            return {TokenKind::Percent, {start, 1}};
 
         case '&':
-            if (peek(1) == '&') { state.pos += 2; return {TokenKind::AmpAmp, {start, 2}}; }
-            ++state.pos; return {TokenKind::Amp, {start, 1}};
+            if (peek(1) == '&') {
+                state.pos += 2;
+                return {TokenKind::AmpAmp, {start, 2}};
+            }
+            ++state.pos;
+            return {TokenKind::Amp, {start, 1}};
 
         case '|':
-            if (peek(1) == '|') { state.pos += 2; return {TokenKind::PipePipe, {start, 2}}; }
-            ++state.pos; return {TokenKind::Pipe, {start, 1}};
+            if (peek(1) == '|') {
+                state.pos += 2;
+                return {TokenKind::PipePipe, {start, 2}};
+            }
+            ++state.pos;
+            return {TokenKind::Pipe, {start, 1}};
 
-        case '^': ++state.pos; return {TokenKind::Caret, {start, 1}};
-        case '~': ++state.pos; return {TokenKind::Tilde, {start, 1}};
+        case '^':
+            ++state.pos;
+            return {TokenKind::Caret, {start, 1}};
+        case '~':
+            ++state.pos;
+            return {TokenKind::Tilde, {start, 1}};
 
         // 单字符标点
-        case '(': ++state.pos; return {TokenKind::LParen,    {start, 1}};
-        case ')': ++state.pos; return {TokenKind::RParen,    {start, 1}};
-        case '{': ++state.pos; return {TokenKind::LBrace,    {start, 1}};
-        case '}': ++state.pos; return {TokenKind::RBrace,    {start, 1}};
-        case '[': ++state.pos; return {TokenKind::LBracket,  {start, 1}};
-        case ']': ++state.pos; return {TokenKind::RBracket,  {start, 1}};
-        case ';': ++state.pos; return {TokenKind::Semicolon, {start, 1}};
-        case ':': ++state.pos; return {TokenKind::Colon,     {start, 1}};
-        case ',': ++state.pos; return {TokenKind::Comma,     {start, 1}};
-        case '?': ++state.pos; return {TokenKind::Question,  {start, 1}};
-        default: break;
+        case '(':
+            ++state.pos;
+            return {TokenKind::LParen, {start, 1}};
+        case ')':
+            ++state.pos;
+            return {TokenKind::RParen, {start, 1}};
+        case '{':
+            ++state.pos;
+            return {TokenKind::LBrace, {start, 1}};
+        case '}':
+            ++state.pos;
+            return {TokenKind::RBrace, {start, 1}};
+        case '[':
+            ++state.pos;
+            return {TokenKind::LBracket, {start, 1}};
+        case ']':
+            ++state.pos;
+            return {TokenKind::RBracket, {start, 1}};
+        case ';':
+            ++state.pos;
+            return {TokenKind::Semicolon, {start, 1}};
+        case ':':
+            ++state.pos;
+            return {TokenKind::Colon, {start, 1}};
+        case ',':
+            ++state.pos;
+            return {TokenKind::Comma, {start, 1}};
+        case '?':
+            ++state.pos;
+            return {TokenKind::Question, {start, 1}};
+        default:
+            break;
     }
 
     // 标识符与关键字
@@ -521,4 +570,4 @@ Token next_token(LexerState& state) {
     return {TokenKind::Invalid, {start, 1}};
 }
 
-} // namespace qppjs
+}  // namespace qppjs

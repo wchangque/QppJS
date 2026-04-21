@@ -1,4 +1,5 @@
 #include "qppjs/frontend/ast.h"
+
 #include <gtest/gtest.h>
 
 using namespace qppjs;
@@ -36,23 +37,19 @@ TEST(AstTest, UnaryExpression) {
 
 TEST(AstTest, BinaryExpression) {
     // 4. BinaryExpression 可以构造
-    BinaryExpression be{
-        BinaryOp::Add,
-        std::make_unique<ExprNode>(NumberLiteral{1.0, {0, 1}}),
-        std::make_unique<ExprNode>(NumberLiteral{2.0, {4, 1}}),
-        {0, 5}
-    };
+    BinaryExpression be{BinaryOp::Add,
+                        std::make_unique<ExprNode>(NumberLiteral{1.0, {0, 1}}),
+                        std::make_unique<ExprNode>(NumberLiteral{2.0, {4, 1}}),
+                        {0, 5}};
     EXPECT_EQ(be.op, BinaryOp::Add);
 }
 
 TEST(AstTest, LogicalExpression) {
     // 5. LogicalExpression 独立于 BinaryExpression
-    LogicalExpression le{
-        LogicalOp::And,
-        std::make_unique<ExprNode>(BooleanLiteral{true, {0, 4}}),
-        std::make_unique<ExprNode>(BooleanLiteral{false, {8, 5}}),
-        {0, 13}
-    };
+    LogicalExpression le{LogicalOp::And,
+                         std::make_unique<ExprNode>(BooleanLiteral{true, {0, 4}}),
+                         std::make_unique<ExprNode>(BooleanLiteral{false, {8, 5}}),
+                         {0, 13}};
     EXPECT_EQ(le.op, LogicalOp::And);
 }
 
@@ -82,12 +79,10 @@ TEST(AstTest, BlockStatement) {
 
 TEST(AstTest, IfStatement) {
     // 9. IfStatement（含 nullptr alternate）
-    IfStatement is{
-        ExprNode{BooleanLiteral{true, {3, 4}}},
-        std::make_unique<StmtNode>(BlockStatement{{}, {8, 2}}),
-        nullptr,
-        {0, 10}
-    };
+    IfStatement is{ExprNode{BooleanLiteral{true, {3, 4}}},
+                   std::make_unique<StmtNode>(BlockStatement{{}, {8, 2}}),
+                   nullptr,
+                   {0, 10}};
     EXPECT_TRUE(is.consequent != nullptr);
     EXPECT_TRUE(is.alternate == nullptr);
 }
@@ -95,10 +90,7 @@ TEST(AstTest, IfStatement) {
 TEST(AstTest, WhileStatement) {
     // 10. WhileStatement
     WhileStatement ws{
-        ExprNode{BooleanLiteral{true, {6, 4}}},
-        std::make_unique<StmtNode>(BlockStatement{{}, {12, 2}}),
-        {0, 14}
-    };
+            ExprNode{BooleanLiteral{true, {6, 4}}}, std::make_unique<StmtNode>(BlockStatement{{}, {12, 2}}), {0, 14}};
     EXPECT_TRUE(ws.body != nullptr);
 }
 
@@ -119,10 +111,9 @@ TEST(AstTest, Program) {
 
 TEST(AstTest, StdVisitWorks) {
     // 13. std::visit 工作
-    std::visit(overloaded{
-        [](const NumberLiteral& n) { EXPECT_EQ(n.value, 42.0); },
-        [](const auto&) { FAIL() << "unexpected node type"; }
-    }, ExprNode{NumberLiteral{42.0, {0, 2}}}.v);
+    std::visit(overloaded{[](const NumberLiteral& n) { EXPECT_EQ(n.value, 42.0); },
+                          [](const auto&) { FAIL() << "unexpected node type"; }},
+               ExprNode{NumberLiteral{42.0, {0, 2}}}.v);
 }
 
 TEST(AstTest, VarKindDistinct) {

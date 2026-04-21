@@ -16,4 +16,4 @@ struct LexerState {
 LexerState lexer_init(std::string_view source);
 Token next_token(LexerState& state);
 
-} // namespace qppjs
+}  // namespace qppjs

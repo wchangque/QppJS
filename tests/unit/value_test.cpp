@@ -1,5 +1,6 @@
-#include "qppjs/debug/format.h"
 #include "qppjs/runtime/value.h"
+
+#include "qppjs/debug/format.h"
 
 #include <gtest/gtest.h>
 #include <memory>

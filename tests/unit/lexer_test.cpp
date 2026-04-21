@@ -1,4 +1,5 @@
 #include "qppjs/frontend/lexer.h"
+
 #include "qppjs/frontend/token.h"
 
 #include <gtest/gtest.h>
@@ -74,18 +75,15 @@ TEST(LexerTest, SingleCharPunctuation) {
 }
 
 TEST(LexerTest, AllSingleCharPunctuations) {
-    struct Case { char ch; TokenKind kind; };
+    struct Case {
+        char ch;
+        TokenKind kind;
+    };
     const Case cases[] = {
-        {'(', TokenKind::LParen},
-        {')', TokenKind::RParen},
-        {'{', TokenKind::LBrace},
-        {'}', TokenKind::RBrace},
-        {'[', TokenKind::LBracket},
-        {']', TokenKind::RBracket},
-        {';', TokenKind::Semicolon},
-        {':', TokenKind::Colon},
-        {',', TokenKind::Comma},
-        {'.', TokenKind::Dot},
+            {'(', TokenKind::LParen},    {')', TokenKind::RParen},   {'{', TokenKind::LBrace},
+            {'}', TokenKind::RBrace},    {'[', TokenKind::LBracket}, {']', TokenKind::RBracket},
+            {';', TokenKind::Semicolon}, {':', TokenKind::Colon},    {',', TokenKind::Comma},
+            {'.', TokenKind::Dot},
     };
     for (const auto& c : cases) {
         char buf[2] = {c.ch, '\0'};
@@ -651,7 +649,7 @@ TEST(LexerTest, DotFollowedByLetterIsDot) {
 TEST(LexerTest, SoloCrCountsAsNewline) {
     // 单独 '\r'（无 '\n' 跟随）：got_lf = true，line 递增为 2
     auto state = qppjs::lexer_init("a\rb");
-    qppjs::next_token(state);        // 消耗 'a'
+    qppjs::next_token(state);             // 消耗 'a'
     auto tok = qppjs::next_token(state);  // 跳过 '\r'，消耗 'b'
     EXPECT_EQ(tok.kind, TokenKind::Ident);
     EXPECT_TRUE(state.got_lf);
@@ -661,7 +659,7 @@ TEST(LexerTest, SoloCrCountsAsNewline) {
 TEST(LexerTest, CrLfCountsAsSingleNewlineLineNumber) {
     // '\r\n' 应计为单个换行，line 仅递增 1
     auto state = qppjs::lexer_init("a\r\nb");
-    qppjs::next_token(state);        // 消耗 'a'
+    qppjs::next_token(state);             // 消耗 'a'
     auto tok = qppjs::next_token(state);  // 跳过 '\r\n'，消耗 'b'
     EXPECT_EQ(tok.kind, TokenKind::Ident);
     EXPECT_EQ(state.line, 2u);
@@ -670,8 +668,8 @@ TEST(LexerTest, CrLfCountsAsSingleNewlineLineNumber) {
 TEST(LexerTest, MultipleNewlinesLineCount) {
     // "a\n\n\nb" -> 经过 3 个 '\n'，line 应为 4
     auto state = qppjs::lexer_init("a\n\n\nb");
-    qppjs::next_token(state);        // 消耗 'a'
-    qppjs::next_token(state);        // 消耗 'b'
+    qppjs::next_token(state);  // 消耗 'a'
+    qppjs::next_token(state);  // 消耗 'b'
     EXPECT_EQ(state.line, 4u);
 }
 
@@ -714,10 +712,12 @@ TEST(LexerTest, U2028NotTreatedAsNewlineCurrentImpl) {
     // NOTE: ECMAScript 规范要求 U+2028 为行终止符，但当前实现未支持。
     // 以下断言验证现有行为（U+2028 不触发换行），作为回归基线。
     // 如需规范合规，需在 next_token 中识别 U+2028/U+2029 的 UTF-8 编码。
-    const char src[] = "a\xE2\x80\xA8" "b";  // "a" + U+2028(UTF-8) + "b"
+    const char src[] =
+            "a\xE2\x80\xA8"
+            "b";  // "a" + U+2028(UTF-8) + "b"
     auto state = qppjs::lexer_init(std::string_view(src, sizeof(src) - 1));
-    qppjs::next_token(state);       // 消耗 'a'
-    qppjs::next_token(state);       // 跳过 U+2028 字节序列，消耗 'b'
+    qppjs::next_token(state);  // 消耗 'a'
+    qppjs::next_token(state);  // 跳过 U+2028 字节序列，消耗 'b'
     // 当前实现：got_lf == false，line == 1（未将 U+2028 视为换行）
     EXPECT_FALSE(state.got_lf);
     EXPECT_EQ(state.line, 1u);
@@ -725,7 +725,9 @@ TEST(LexerTest, U2028NotTreatedAsNewlineCurrentImpl) {
 
 TEST(LexerTest, U2029NotTreatedAsNewlineCurrentImpl) {
     // NOTE: 同 U+2028，U+2029 在当前实现中未被视为行终止符。
-    const char src[] = "a\xE2\x80\xA9" "b";  // "a" + U+2029(UTF-8) + "b"
+    const char src[] =
+            "a\xE2\x80\xA9"
+            "b";  // "a" + U+2029(UTF-8) + "b"
     auto state = qppjs::lexer_init(std::string_view(src, sizeof(src) - 1));
     qppjs::next_token(state);
     qppjs::next_token(state);
@@ -1108,22 +1110,14 @@ TEST(LexerTest, RegressionWhile2IsIdent) {
 
 TEST(LexerTest, RegressionAllKeywordPrefixIdents) {
     // 验证各关键字加后缀后均为 Ident 而非关键字
-    struct Case { const char* src; uint32_t len; };
+    struct Case {
+        const char* src;
+        uint32_t len;
+    };
     const Case cases[] = {
-        {"const2",     6u},
-        {"var_",       4u},
-        {"ifx",        3u},
-        {"else_",      5u},
-        {"forx",       4u},
-        {"break_",     6u},
-        {"continue1",  9u},
-        {"return_",    7u},
-        {"function1", 9u},
-        {"truefalse", 9u},
-        {"nullx",      5u},
-        {"newx",       4u},
-        {"typeof_",    7u},
-        {"throwx",     6u},
+            {"const2", 6u}, {"var_", 4u},      {"ifx", 3u},     {"else_", 5u},     {"forx", 4u},
+            {"break_", 6u}, {"continue1", 9u}, {"return_", 7u}, {"function1", 9u}, {"truefalse", 9u},
+            {"nullx", 5u},  {"newx", 4u},      {"typeof_", 7u}, {"throwx", 6u},
     };
     for (const auto& c : cases) {
         auto state = qppjs::lexer_init(std::string_view(c.src, c.len));

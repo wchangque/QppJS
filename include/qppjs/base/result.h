@@ -1,12 +1,13 @@
 #pragma once
 
 #include "qppjs/base/error.h"
-#include <variant>
+
 #include <utility>
+#include <variant>
 
 namespace qppjs {
 
-template<typename T>
+template <typename T>
 struct ParseResult {
     std::variant<T, Error> data;
 
@@ -20,4 +21,4 @@ struct ParseResult {
     static ParseResult<T> Err(Error e) { return {std::variant<T, Error>(std::move(e))}; }
 };
 
-} // namespace qppjs
+}  // namespace qppjs
