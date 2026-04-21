@@ -21,6 +21,7 @@
 - [x] 0.5 设计第一版 Value
 - [x] 0.6 建立测试基线
 - [x] 0.7 建立调试输出入口
+- [x] 0.8 建立覆盖率报告链路（lcov + genhtml，HTML 行/分支覆盖率）
 
 ### 进行中
 - [ ] Phase 1：Lexer + Parser + AST
@@ -44,6 +45,7 @@
 - 已新增 `cmake/CompilerFlags.cmake`：统一警告、ASan、UBSan 开关，所有 target 通过 `qppjs_apply_compiler_flags` 接入
 - 已新增 `include/qppjs/platform/compiler.h` 与 `arch.h`：跨编译器宏与架构检测
 - `CMakeUserPresets.json` 已加入 `.gitignore`
+- 已建立覆盖率报告链路：新增 3 个 coverage preset（macos/linux-gcc/linux-clang）、`scripts/coverage.sh` 负责收集与生成 HTML，`build.sh --test --coverage` 一键触发；macOS 用 Homebrew LLVM llvm-cov 作为 gcov wrapper 解决版本错配问题
 
 ## 4. 当前风险与待决策项
 

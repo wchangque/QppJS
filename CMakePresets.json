@@ -39,6 +39,19 @@
             }
         },
         {
+            "name": "linux-gcc-coverage",
+            "displayName": "Linux GCC Coverage",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_BUILD_TYPE": "Debug",
+                "QPPJS_ENABLE_COVERAGE": "ON",
+                "QPPJS_ENABLE_ASAN": "OFF",
+                "QPPJS_WARNINGS_AS_ERRORS": "OFF"
+            }
+        },
+        {
             "name": "linux-clang-debug",
             "displayName": "Linux Clang Debug",
             "inherits": "base",
@@ -60,6 +73,19 @@
             }
         },
         {
+            "name": "linux-clang-coverage",
+            "displayName": "Linux Clang Coverage",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_BUILD_TYPE": "Debug",
+                "QPPJS_ENABLE_COVERAGE": "ON",
+                "QPPJS_ENABLE_ASAN": "OFF",
+                "QPPJS_WARNINGS_AS_ERRORS": "OFF"
+            }
+        },
+        {
             "name": "macos-appleclang-debug",
             "displayName": "macOS Apple Clang Debug",
             "inherits": "base",
@@ -76,6 +102,52 @@
             "generator": "Ninja",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "macos-appleclang-coverage",
+            "displayName": "macOS Apple Clang Coverage",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "QPPJS_ENABLE_COVERAGE": "ON",
+                "QPPJS_ENABLE_ASAN": "OFF",
+                "QPPJS_WARNINGS_AS_ERRORS": "OFF"
+            }
+        },
+        {
+            "name": "macos-llvmclang-debug",
+            "displayName": "macOS LLVM Clang Debug",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++",
+                "CMAKE_BUILD_TYPE": "Debug",
+                "QPPJS_ENABLE_ASAN": "ON"
+            }
+        },
+        {
+            "name": "macos-llvmclang-release",
+            "displayName": "macOS LLVM Clang Release",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++",
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "macos-llvmclang-coverage",
+            "displayName": "macOS LLVM Clang Coverage",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++",
+                "CMAKE_BUILD_TYPE": "Debug",
+                "QPPJS_ENABLE_COVERAGE": "ON",
+                "QPPJS_ENABLE_ASAN": "OFF",
+                "QPPJS_WARNINGS_AS_ERRORS": "OFF"
             }
         },
         {
@@ -109,6 +181,10 @@
             "configurePreset": "linux-gcc-release"
         },
         {
+            "name": "linux-gcc-coverage",
+            "configurePreset": "linux-gcc-coverage"
+        },
+        {
             "name": "linux-clang-debug",
             "configurePreset": "linux-clang-debug"
         },
@@ -117,12 +193,32 @@
             "configurePreset": "linux-clang-release"
         },
         {
+            "name": "linux-clang-coverage",
+            "configurePreset": "linux-clang-coverage"
+        },
+        {
             "name": "macos-appleclang-debug",
             "configurePreset": "macos-appleclang-debug"
         },
         {
             "name": "macos-appleclang-release",
             "configurePreset": "macos-appleclang-release"
+        },
+        {
+            "name": "macos-appleclang-coverage",
+            "configurePreset": "macos-appleclang-coverage"
+        },
+        {
+            "name": "macos-llvmclang-debug",
+            "configurePreset": "macos-llvmclang-debug"
+        },
+        {
+            "name": "macos-llvmclang-release",
+            "configurePreset": "macos-llvmclang-release"
+        },
+        {
+            "name": "macos-llvmclang-coverage",
+            "configurePreset": "macos-llvmclang-coverage"
         },
         {
             "name": "windows-msvc-debug",
@@ -151,6 +247,13 @@
             }
         },
         {
+            "name": "linux-gcc-coverage",
+            "configurePreset": "linux-gcc-coverage",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
             "name": "linux-clang-debug",
             "configurePreset": "linux-clang-debug",
             "output": {
@@ -165,6 +268,13 @@
             }
         },
         {
+            "name": "linux-clang-coverage",
+            "configurePreset": "linux-clang-coverage",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
             "name": "macos-appleclang-debug",
             "configurePreset": "macos-appleclang-debug",
             "output": {
@@ -174,6 +284,34 @@
         {
             "name": "macos-appleclang-release",
             "configurePreset": "macos-appleclang-release",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "macos-appleclang-coverage",
+            "configurePreset": "macos-appleclang-coverage",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "macos-llvmclang-debug",
+            "configurePreset": "macos-llvmclang-debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "macos-llvmclang-release",
+            "configurePreset": "macos-llvmclang-release",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "macos-llvmclang-coverage",
+            "configurePreset": "macos-llvmclang-coverage",
             "output": {
                 "outputOnFailure": true
             }
