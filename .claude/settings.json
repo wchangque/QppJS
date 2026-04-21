@@ -3,5 +3,17 @@
   "permissions": {
     "allow": [],
     "deny": []
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"systemMessage\": \"收尾检查：请确认 docs/plans/01-current-status.md 和 02-next-phase.md 已同步当前任务状态。\"}'"
+          }
+        ]
+      }
+    ]
   }
 }
