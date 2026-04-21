@@ -1,0 +1,31 @@
+option(QPPJS_ENABLE_ASAN "Enable AddressSanitizer" OFF)
+option(QPPJS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
+option(QPPJS_WARNINGS_AS_ERRORS "Treat warnings as errors" ON)
+
+function(qppjs_apply_compiler_flags target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /utf-8)
+        if(QPPJS_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(${target} PRIVATE
+            -Wall -Wextra -Wpedantic
+            -Wno-unused-parameter
+        )
+        if(QPPJS_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE -Werror)
+        endif()
+    endif()
+
+    if(NOT MSVC)
+        if(QPPJS_ENABLE_ASAN)
+            target_compile_options(${target} PRIVATE -fsanitize=address -fno-omit-frame-pointer)
+            target_link_options(${target} PRIVATE -fsanitize=address)
+        endif()
+        if(QPPJS_ENABLE_UBSAN)
+            target_compile_options(${target} PRIVATE -fsanitize=undefined)
+            target_link_options(${target} PRIVATE -fsanitize=undefined)
+        endif()
+    endif()
+endfunction()

@@ -4,9 +4,7 @@
 
 ## 1. 当前阶段
 
-- 当前阶段：Phase 0：项目骨架与实验环境
-- 当前任务编号：0.3 / 0.4 / 0.5 / 0.6 / 0.7
-- 当前主题：完成测试基线、最小 CLI、错误模型、第一版 Value 与调试输出入口
+- 当前阶段：Phase 1：Lexer + Parser + AST（Phase 0 已完成）
 - 最近更新时间：2026-04-21
 
 ## 2. 当前任务状态
@@ -42,6 +40,10 @@
 - 已建立 `debug` 输出入口，统一格式化 `Error` 与 `Value`
 - 已接入 GoogleTest：优先使用系统 GTest，找不到时通过 `cmake/Dependencies.cmake` 自动获取
 - 已通过 CMake 配置、编译与 CTest 验证，当前测试结果为 6/6 通过
+- 已接入 CMake Presets（方案 B）：支持 Linux GCC/Clang、macOS Apple Clang、Windows MSVC 共 8 个 preset
+- 已新增 `cmake/CompilerFlags.cmake`：统一警告、ASan、UBSan 开关，所有 target 通过 `qppjs_apply_compiler_flags` 接入
+- 已新增 `include/qppjs/platform/compiler.h` 与 `arch.h`：跨编译器宏与架构检测
+- `CMakeUserPresets.json` 已加入 `.gitignore`
 
 ## 4. 当前风险与待决策项
 

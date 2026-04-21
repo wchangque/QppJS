@@ -1,3 +1,4 @@
 CLAUDE.local.md
 .claude/settings.local.json
 build/
+CMakeUserPresets.json
