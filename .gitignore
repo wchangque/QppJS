@@ -1,6 +1,6 @@
 CLAUDE.local.md
 .claude/settings.local.json
-build/
+build/*
 CMakeUserPresets.json
 .cache
 compile_commands.json
