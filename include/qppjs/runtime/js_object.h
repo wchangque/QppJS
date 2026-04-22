@@ -15,12 +15,12 @@ public:
 
     ObjectKind object_kind() const override;
 
-    // [[Prototype]] slot; nullptr means end of chain (Object.prototype's proto)
     void set_proto(std::shared_ptr<JSObject> proto) { proto_ = std::move(proto); }
     const std::shared_ptr<JSObject>& proto() const { return proto_; }
 
-    Value get_property(const std::string& key) const;   // walks prototype chain
-    void set_property(const std::string& key, Value value);  // own property only
+    Value get_property(const std::string& key) const;
+    void set_property(const std::string& key, Value value);
+    void set_constructor_property(ObjectPtr value);
     bool has_own_property(const std::string& key) const;
 
 private:
@@ -32,6 +32,8 @@ private:
 
     std::vector<PropertyEntry> properties_;
     std::unordered_map<std::string, size_t> index_map_;
+    std::weak_ptr<Object> constructor_property_;
+    bool has_constructor_property_ = false;
 };
 
 }  // namespace qppjs

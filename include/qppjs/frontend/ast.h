@@ -146,8 +146,11 @@ struct ExprNode {
                  FunctionExpression, CallExpression, NewExpression>
             v;
 
+    ExprNode() = default;
+
     template <typename T>
-    ExprNode(T&& node) : v(std::forward<T>(node)) {}
+        requires(!std::same_as<std::remove_cvref_t<T>, ExprNode>)
+    explicit ExprNode(T&& node) : v(std::forward<T>(node)) {}
 };
 
 // ---- 语句节点（ExprNode 已完整；BlockStatement 的 vector<StmtNode> 在 StmtNode 完整前声明，
@@ -203,8 +206,11 @@ struct StmtNode {
                  ReturnStatement, FunctionDeclaration>
             v;
 
+    StmtNode() = default;
+
     template <typename T>
-    StmtNode(T&& node) : v(std::forward<T>(node)) {}
+        requires(!std::same_as<std::remove_cvref_t<T>, StmtNode>)
+    explicit StmtNode(T&& node) : v(std::forward<T>(node)) {}
 };
 
 // ---- 程序根节点 ----

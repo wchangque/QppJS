@@ -204,17 +204,23 @@ sum  // → 55
 
 ## 8. 暂不处理内容
 
-- break/continue 语句（Phase 7）
-- throw/try/catch/finally（Phase 7）
 - 字节码序列化/反序列化
 - QuickJS 字节码兼容
 - upvalue 优化（继续用 Environment 链）
 - NaN boxing
 - atom 系统
 
-## 9. 退出条件
+## 9. 进入 Phase 7 前的前置收尾
 
-满足以下条件即可进入 Phase 7：
+在正式开始 Phase 7 前，先完成以下构建系统收尾项：
+- 验证 `scripts/coverage.sh` 在 `linux-clang-coverage`（`llvm-cov`）与 `linux-gcc-coverage`（`gcov`）下都能端到端生成 HTML 报告
+- 确认 `linux-clang-debug` 非 coverage 构建不会生成 coverage 产物
+- 至少确认精简后的 preset 在 Windows/MSVC 与 macOS/AppleClang 上 configure/build 路径不因本轮重构失效
+
+## 10. 退出条件
+
+满足以下条件即可进入 Phase 7 实质实现：
+- 上述构建系统收尾验证已完成并同步到 `docs/plans/01-current-status.md`
 - vm_test.cpp 中 531 个用例全部通过
 - 原有 531 个 Interpreter 测试无回归
 - main.cpp 支持 `--vm` flag 切换执行路径

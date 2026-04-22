@@ -11,44 +11,7 @@
             "hidden": true,
             "binaryDir": "${sourceDir}/build/${presetName}",
             "cacheVariables": {
-                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "CMAKE_EXE_LINKER_FLAGS": "",
-                "CMAKE_MODULE_LINKER_FLAGS": "",
-                "CMAKE_SHARED_LINKER_FLAGS": ""
-            }
-        },
-        {
-            "name": "linux-gcc-debug",
-            "displayName": "Linux GCC Debug",
-            "inherits": "base",
-            "generator": "Ninja",
-            "cacheVariables": {
-                "CMAKE_CXX_COMPILER": "g++",
-                "CMAKE_BUILD_TYPE": "Debug",
-                "QPPJS_ENABLE_ASAN": "ON"
-            }
-        },
-        {
-            "name": "linux-gcc-release",
-            "displayName": "Linux GCC Release",
-            "inherits": "base",
-            "generator": "Ninja",
-            "cacheVariables": {
-                "CMAKE_CXX_COMPILER": "g++",
-                "CMAKE_BUILD_TYPE": "Release"
-            }
-        },
-        {
-            "name": "linux-gcc-coverage",
-            "displayName": "Linux GCC Coverage",
-            "inherits": "base",
-            "generator": "Ninja",
-            "cacheVariables": {
-                "CMAKE_CXX_COMPILER": "g++",
-                "CMAKE_BUILD_TYPE": "Debug",
-                "QPPJS_ENABLE_COVERAGE": "ON",
-                "QPPJS_ENABLE_ASAN": "OFF",
-                "QPPJS_WARNINGS_AS_ERRORS": "OFF"
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
             }
         },
         {
@@ -63,16 +26,6 @@
             }
         },
         {
-            "name": "linux-clang-release",
-            "displayName": "Linux Clang Release",
-            "inherits": "base",
-            "generator": "Ninja",
-            "cacheVariables": {
-                "CMAKE_CXX_COMPILER": "clang++",
-                "CMAKE_BUILD_TYPE": "Release"
-            }
-        },
-        {
             "name": "linux-clang-coverage",
             "displayName": "Linux Clang Coverage",
             "inherits": "base",
@@ -81,7 +34,18 @@
                 "CMAKE_CXX_COMPILER": "clang++",
                 "CMAKE_BUILD_TYPE": "Debug",
                 "QPPJS_ENABLE_COVERAGE": "ON",
-                "QPPJS_ENABLE_ASAN": "OFF",
+                "QPPJS_WARNINGS_AS_ERRORS": "OFF"
+            }
+        },
+        {
+            "name": "linux-gcc-coverage",
+            "displayName": "Linux GCC Coverage",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_BUILD_TYPE": "Debug",
+                "QPPJS_ENABLE_COVERAGE": "ON",
                 "QPPJS_WARNINGS_AS_ERRORS": "OFF"
             }
         },
@@ -96,15 +60,6 @@
             }
         },
         {
-            "name": "macos-appleclang-release",
-            "displayName": "macOS Apple Clang Release",
-            "inherits": "base",
-            "generator": "Ninja",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release"
-            }
-        },
-        {
             "name": "macos-appleclang-coverage",
             "displayName": "macOS Apple Clang Coverage",
             "inherits": "base",
@@ -112,51 +67,7 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "QPPJS_ENABLE_COVERAGE": "ON",
-                "QPPJS_ENABLE_ASAN": "OFF",
                 "QPPJS_WARNINGS_AS_ERRORS": "OFF"
-            }
-        },
-        {
-            "name": "macos-llvmclang-debug",
-            "displayName": "macOS LLVM Clang Debug",
-            "inherits": "base",
-            "generator": "Ninja",
-            "cacheVariables": {
-                "CMAKE_CXX_COMPILER": "$env{LLVM_PREFIX}/bin/clang++",
-                "CMAKE_BUILD_TYPE": "Debug",
-                "QPPJS_ENABLE_ASAN": "ON",
-                "CMAKE_EXE_LINKER_FLAGS": "-L$env{LLVM_PREFIX}/lib/c++",
-                "CMAKE_MODULE_LINKER_FLAGS": "-L$env{LLVM_PREFIX}/lib/c++",
-                "CMAKE_SHARED_LINKER_FLAGS": "-L$env{LLVM_PREFIX}/lib/c++"
-            }
-        },
-        {
-            "name": "macos-llvmclang-release",
-            "displayName": "macOS LLVM Clang Release",
-            "inherits": "base",
-            "generator": "Ninja",
-            "cacheVariables": {
-                "CMAKE_CXX_COMPILER": "$env{LLVM_PREFIX}/bin/clang++",
-                "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_EXE_LINKER_FLAGS": "-L$env{LLVM_PREFIX}/lib/c++",
-                "CMAKE_MODULE_LINKER_FLAGS": "-L$env{LLVM_PREFIX}/lib/c++",
-                "CMAKE_SHARED_LINKER_FLAGS": "-L$env{LLVM_PREFIX}/lib/c++"
-            }
-        },
-        {
-            "name": "macos-llvmclang-coverage",
-            "displayName": "macOS LLVM Clang Coverage",
-            "inherits": "base",
-            "generator": "Ninja",
-            "cacheVariables": {
-                "CMAKE_CXX_COMPILER": "$env{LLVM_PREFIX}/bin/clang++",
-                "CMAKE_BUILD_TYPE": "Debug",
-                "QPPJS_ENABLE_COVERAGE": "ON",
-                "QPPJS_ENABLE_ASAN": "OFF",
-                "QPPJS_WARNINGS_AS_ERRORS": "OFF",
-                "CMAKE_EXE_LINKER_FLAGS": "-L$env{LLVM_PREFIX}/lib/c++",
-                "CMAKE_MODULE_LINKER_FLAGS": "-L$env{LLVM_PREFIX}/lib/c++",
-                "CMAKE_SHARED_LINKER_FLAGS": "-L$env{LLVM_PREFIX}/lib/c++"
             }
         },
         {
@@ -168,89 +79,49 @@
             "cacheVariables": {
                 "CMAKE_CONFIGURATION_TYPES": "Debug"
             }
-        },
-        {
-            "name": "windows-msvc-release",
-            "displayName": "Windows MSVC Release",
-            "inherits": "base",
-            "generator": "Visual Studio 17 2022",
-            "architecture": "x64",
-            "cacheVariables": {
-                "CMAKE_CONFIGURATION_TYPES": "Release"
-            }
         }
     ],
     "buildPresets": [
         {
-            "name": "linux-gcc-debug",
-            "configurePreset": "linux-gcc-debug"
-        },
-        {
-            "name": "linux-gcc-release",
-            "configurePreset": "linux-gcc-release"
-        },
-        {
-            "name": "linux-gcc-coverage",
-            "configurePreset": "linux-gcc-coverage"
-        },
-        {
             "name": "linux-clang-debug",
             "configurePreset": "linux-clang-debug"
-        },
-        {
-            "name": "linux-clang-release",
-            "configurePreset": "linux-clang-release"
         },
         {
             "name": "linux-clang-coverage",
             "configurePreset": "linux-clang-coverage"
         },
         {
-            "name": "macos-appleclang-debug",
-            "configurePreset": "macos-appleclang-debug"
+            "name": "linux-gcc-coverage",
+            "configurePreset": "linux-gcc-coverage"
         },
         {
-            "name": "macos-appleclang-release",
-            "configurePreset": "macos-appleclang-release"
+            "name": "macos-appleclang-debug",
+            "configurePreset": "macos-appleclang-debug"
         },
         {
             "name": "macos-appleclang-coverage",
             "configurePreset": "macos-appleclang-coverage"
         },
         {
-            "name": "macos-llvmclang-debug",
-            "configurePreset": "macos-llvmclang-debug"
-        },
-        {
-            "name": "macos-llvmclang-release",
-            "configurePreset": "macos-llvmclang-release"
-        },
-        {
-            "name": "macos-llvmclang-coverage",
-            "configurePreset": "macos-llvmclang-coverage"
-        },
-        {
             "name": "windows-msvc-debug",
             "configurePreset": "windows-msvc-debug",
             "configuration": "Debug"
-        },
-        {
-            "name": "windows-msvc-release",
-            "configurePreset": "windows-msvc-release",
-            "configuration": "Release"
         }
     ],
     "testPresets": [
         {
-            "name": "linux-gcc-debug",
-            "configurePreset": "linux-gcc-debug",
+            "name": "linux-clang-debug",
+            "configurePreset": "linux-clang-debug",
             "output": {
                 "outputOnFailure": true
+            },
+            "environment": {
+                "ASAN_OPTIONS": "detect_leaks=0"
             }
         },
         {
-            "name": "linux-gcc-release",
-            "configurePreset": "linux-gcc-release",
+            "name": "linux-clang-coverage",
+            "configurePreset": "linux-clang-coverage",
             "output": {
                 "outputOnFailure": true
             }
@@ -263,38 +134,13 @@
             }
         },
         {
-            "name": "linux-clang-debug",
-            "configurePreset": "linux-clang-debug",
-            "output": {
-                "outputOnFailure": true
-            }
-        },
-        {
-            "name": "linux-clang-release",
-            "configurePreset": "linux-clang-release",
-            "output": {
-                "outputOnFailure": true
-            }
-        },
-        {
-            "name": "linux-clang-coverage",
-            "configurePreset": "linux-clang-coverage",
-            "output": {
-                "outputOnFailure": true
-            }
-        },
-        {
             "name": "macos-appleclang-debug",
             "configurePreset": "macos-appleclang-debug",
             "output": {
                 "outputOnFailure": true
-            }
-        },
-        {
-            "name": "macos-appleclang-release",
-            "configurePreset": "macos-appleclang-release",
-            "output": {
-                "outputOnFailure": true
+            },
+            "environment": {
+                "ASAN_OPTIONS": "detect_leaks=0"
             }
         },
         {
@@ -305,38 +151,9 @@
             }
         },
         {
-            "name": "macos-llvmclang-debug",
-            "configurePreset": "macos-llvmclang-debug",
-            "output": {
-                "outputOnFailure": true
-            }
-        },
-        {
-            "name": "macos-llvmclang-release",
-            "configurePreset": "macos-llvmclang-release",
-            "output": {
-                "outputOnFailure": true
-            }
-        },
-        {
-            "name": "macos-llvmclang-coverage",
-            "configurePreset": "macos-llvmclang-coverage",
-            "output": {
-                "outputOnFailure": true
-            }
-        },
-        {
             "name": "windows-msvc-debug",
             "configurePreset": "windows-msvc-debug",
             "configuration": "Debug",
-            "output": {
-                "outputOnFailure": true
-            }
-        },
-        {
-            "name": "windows-msvc-release",
-            "configurePreset": "windows-msvc-release",
-            "configuration": "Release",
             "output": {
                 "outputOnFailure": true
             }

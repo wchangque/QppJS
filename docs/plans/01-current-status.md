@@ -5,7 +5,7 @@
 ## 1. 当前阶段
 
 - 当前阶段：Phase 6 已全部完成，下一阶段为 Phase 7
-- 最近更新时间：2026-04-22（Phase 6 Bytecode VM 完成）
+- 最近更新时间：2026-04-22（构建系统重构已完成核心代码改造，待补齐矩阵验证与覆盖率链路验证）
 
 ## 2. 当前任务状态
 
@@ -22,6 +22,7 @@
 - [x] 0.6 建立测试基线
 - [x] 0.7 建立调试输出入口
 - [x] 0.8 建立覆盖率报告链路（lcov + genhtml，HTML 行/分支覆盖率）
+- [x] 构建系统重构：完成 CMake 公共配置架构重构（`qppjs_project_options` / `qppjs_project_warnings` / `qppjs_configure_project_target`）、构建 metadata 导出、preset 精简、`scripts/build.sh`/`scripts/coverage.sh` 职责收缩
 
 - [x] Phase 1：Lexer + Parser + AST（已全部完成）
   - [x] 1.1 实现 Tokenizer 基础结构（TokenKind、Token、SourceRange、SourceLocation、LexerState、next_token 最小实现）
@@ -75,7 +76,7 @@
   - 529（interpreter）+ 134（VM）= 663 个测试全部通过
 
 ### 进行中
-- 暂无（Phase 6 已全部完成）
+- 构建系统重构收尾验证：已完成核心代码改造与 metadata 生成，`linux-clang-debug`、`linux-clang-coverage`、`linux-gcc-coverage` 已能产出有效 `qppjs-build-meta.json`；Linux 下 `gcov` / `llvm-cov` coverage HTML 已可生成，`build.sh --test` 与 `build.sh --test --coverage` 默认路径已可用，待确认精简 preset 在 Windows/MSVC 与 macOS/AppleClang 上 configure/build 不回归
 
 ### 未开始
 - [ ] Phase 7：控制流扩展（break/continue/throw/try/catch/finally）
@@ -84,6 +85,16 @@
 - 暂无
 
 ## 3. 最近完成内容
+
+- 已完成构建系统重构核心代码改造：
+  - `cmake/CompilerFlags.cmake`：重构为全局 option + `qppjs_project_options` / `qppjs_project_warnings` 两个 INTERFACE target，并新增 `qppjs_setup_project_targets()`、`qppjs_configure_project_target()`、`qppjs_write_build_metadata()`
+  - `CMakeLists.txt`：接入统一项目配置初始化与构建 metadata 导出
+  - `src/CMakeLists.txt`、`tests/CMakeLists.txt`：切换为单次 `qppjs_configure_project_target(target)` 接入项目公共配置
+  - `CMakePresets.json`：从大矩阵收缩为少量常用入口 preset
+  - `scripts/build.sh`：降级为薄封装入口，不再承担 preset 改写与 LLVM 主逻辑探测，并支持在 `--coverage` 下自动选择 coverage preset
+  - `scripts/coverage.sh`：改为基于 build 目录和 `qppjs-build-meta.json` 采集 coverage，按 `gcov` / `llvm-cov` 分支生成 HTML 报告，并补齐 lcov/gcov 警告兼容处理
+  - 当前已确认 `linux-clang-debug`、`linux-clang-coverage`、`linux-gcc-coverage` 的 metadata 内容正确
+  - 当前已验证 Linux 下 `linux-clang-coverage`、`linux-gcc-coverage` 可生成 coverage HTML，`build.sh --test` 与 `build.sh --test --coverage` 可用，且 `linux-clang-debug` 不会生成 `default.profraw`
 
 - 已完成 Phase 6 Bytecode VM：
   - `include/qppjs/vm/opcode.h`（新建）：49 条指令，X-Macro 形式
@@ -101,6 +112,8 @@
 
 ## 4. 当前风险与待决策项
 
+- 需确认精简后的 preset 集合在 Windows/MSVC 与 macOS/AppleClang 上 configure/build 不回归
+- 当前 debug test preset 通过 `ASAN_OPTIONS=detect_leaks=0` 避免在 Phase 9 GC 之前被 LeakSanitizer 阻塞；ASan 越界/Use-after-free 检查仍保留
 - JSFunction::body_ 字段继续保留（AST Interpreter 使用）
 - VM 尚不支持 break/continue/throw/try/catch（Phase 7）
 - GetProp/SetProp 对 JSFunction 的非 prototype 属性当前静默忽略
@@ -110,7 +123,8 @@
 新 session 开始时，优先做以下动作：
 1. 读取本文件
 2. 读取 `docs/plans/02-next-phase.md`
-3. Phase 6 所有任务已完成，进入 Phase 7：控制流扩展
+3. 先完成构建系统重构收尾验证：跑通 `linux-clang-coverage` / `linux-gcc-coverage` 的 coverage 采集，确认精简 preset 在其他平台不回归
+4. 构建系统重构收尾后，再进入 Phase 7：控制流扩展
 
 ## 6. 收尾检查清单
 

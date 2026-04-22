@@ -502,7 +502,7 @@ EvalResult VM::run(size_t exit_depth) {
             fn->set_closure_env(env);
             auto proto_obj = std::make_shared<JSObject>();
             proto_obj->set_proto(object_prototype_);
-            proto_obj->set_property("constructor", Value::object(fn));
+            proto_obj->set_constructor_property(fn);
             fn->set_prototype_obj(proto_obj);
             stack.push_back(Value::object(std::move(fn)));
             break;

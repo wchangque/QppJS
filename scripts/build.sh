@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: build.sh [preset] [--test] [--clean]
-#   preset   CMake configure preset name (default: auto-detected)
-#   --test   run ctest after build
-#   --clean  remove build directory before configuring
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -13,46 +8,28 @@ usage() {
     cat <<EOF
 Usage: build.sh [preset] [options]
 
-  preset    CMake configure preset name (default: auto-detected)
+  preset    CMake preset name (default: auto-detected)
 
 Options:
   --test      Run ctest after build
-  --coverage  Generate HTML coverage report after --test (requires --test)
+  --coverage  Run coverage.sh after --test
   --open      Open the coverage report in browser after generation (requires --coverage)
   --clean     Remove build directory before configuring
   --help, -h  Show this help message
 
-Available presets:
-  macos-appleclang-debug      macOS Apple Clang, Debug + ASan
-  macos-appleclang-release    macOS Apple Clang, Release
-  macos-appleclang-coverage   macOS Apple Clang, Coverage
-  macos-llvmclang-debug       macOS LLVM Clang, Debug + ASan
-  macos-llvmclang-release     macOS LLVM Clang, Release
-  macos-llvmclang-coverage    macOS LLVM Clang, Coverage
-  linux-gcc-debug             Linux GCC, Debug + ASan
-  linux-gcc-release           Linux GCC, Release
-  linux-gcc-coverage          Linux GCC, Coverage
-  linux-clang-debug           Linux Clang, Debug + ASan
-  linux-clang-release         Linux Clang, Release
-  linux-clang-coverage        Linux Clang, Coverage
-  windows-msvc-debug          Windows MSVC, Debug
-  windows-msvc-release        Windows MSVC, Release
-
 Examples:
-  build.sh                                           # auto-detect preset, build only
-  build.sh --test                                    # auto-detect preset, build + test
-  build.sh --clean --test                            # clean, build + test
-  build.sh linux-gcc-release --test                  # specific preset, build + test
-  build.sh macos-llvmclang-coverage --test --coverage --open  # build + test + coverage report
+  build.sh
+  build.sh --test
+  build.sh linux-clang-coverage --test --coverage
 EOF
 }
 
-# ── 参数解析 ──────────────────────────────────────────────────────
 PRESET=""
 RUN_TEST=0
 DO_CLEAN=0
 DO_COVERAGE=0
 DO_OPEN=0
+USER_SET_PRESET=0
 
 for arg in "$@"; do
     case "$arg" in
@@ -62,7 +39,7 @@ for arg in "$@"; do
         --clean)    DO_CLEAN=1 ;;
         --help|-h)  usage; exit 0 ;;
         --*)        echo "unknown option: $arg" >&2; echo; usage >&2; exit 1 ;;
-        *)          PRESET="$arg" ;;
+        *)          PRESET="$arg"; USER_SET_PRESET=1 ;;
     esac
 done
 
@@ -71,56 +48,20 @@ if [[ "$DO_COVERAGE" -eq 1 && "$RUN_TEST" -eq 0 ]]; then
     exit 1
 fi
 
-# --coverage 时把 *-debug / *-release preset 自动换成对应的 *-coverage variant
-# 只对以 -debug 或 -release 结尾的 preset 做替换，已是 *-coverage 的不处理
-# 替换后验证 coverage preset 在 CMakePresets.json 中存在，否则报错
-if [[ "$DO_COVERAGE" -eq 1 && -n "$PRESET" ]]; then
-    if [[ "$PRESET" == *-debug || "$PRESET" == *-release ]]; then
-        COVERAGE_PRESET="${PRESET%-debug}"
-        COVERAGE_PRESET="${COVERAGE_PRESET%-release}"
-        COVERAGE_PRESET="${COVERAGE_PRESET}-coverage"
-        if ! grep -q "\"name\": \"${COVERAGE_PRESET}\"" "${ROOT_DIR}/CMakePresets.json"; then
-            echo "error: --coverage: no coverage preset found for '$PRESET' (looked for '$COVERAGE_PRESET')" >&2
-            exit 1
-        fi
-        echo "note: --coverage: switching preset $PRESET -> $COVERAGE_PRESET"
-        PRESET="$COVERAGE_PRESET"
-    fi
-fi
-
-# ── 自动检测 preset ───────────────────────────────────────────────
 if [[ -z "$PRESET" ]]; then
     case "$(uname -s)" in
         Darwin)
-            # 检查 PATH 中 clang 是否为 Homebrew LLVM（先捕获输出再 grep，避免 pipefail 干扰）
-            _clang_ver="$(clang -v 2>&1 | head -1)"
-            if echo "$_clang_ver" | grep -q "Homebrew clang"; then
-                if [[ "$DO_COVERAGE" -eq 1 ]]; then
-                    PRESET="macos-llvmclang-coverage"
-                else
-                    PRESET="macos-llvmclang-debug"
-                fi
+            if [[ "$DO_COVERAGE" -eq 1 ]]; then
+                PRESET="macos-appleclang-coverage"
             else
-                if [[ "$DO_COVERAGE" -eq 1 ]]; then
-                    PRESET="macos-appleclang-coverage"
-                else
-                    PRESET="macos-appleclang-debug"
-                fi
+                PRESET="macos-appleclang-debug"
             fi
             ;;
         Linux)
-            if command -v clang++ &>/dev/null; then
-                if [[ "$DO_COVERAGE" -eq 1 ]]; then
-                    PRESET="linux-clang-coverage"
-                else
-                    PRESET="linux-clang-debug"
-                fi
+            if [[ "$DO_COVERAGE" -eq 1 ]]; then
+                PRESET="linux-clang-coverage"
             else
-                if [[ "$DO_COVERAGE" -eq 1 ]]; then
-                    PRESET="linux-gcc-coverage"
-                else
-                    PRESET="linux-gcc-debug"
-                fi
+                PRESET="linux-clang-debug"
             fi
             ;;
         *)
@@ -133,45 +74,46 @@ else
     echo "preset: $PRESET"
 fi
 
-BUILD_DIR="${ROOT_DIR}/build/${PRESET}"
-
-# ── LLVM_PREFIX（macos-llvmclang-* preset 需要）────────────────────
-if [[ "$PRESET" == macos-llvmclang-* ]]; then
-    if [[ -z "${LLVM_PREFIX:-}" ]]; then
-        # 从 clang++ 实际路径推导：clang++ -> .../bin/clang++ -> ...
-        _clang_bin="$(command -v clang++ 2>/dev/null || true)"
-        if [[ -n "$_clang_bin" ]]; then
-            LLVM_PREFIX="$(cd "$(dirname "$_clang_bin")/.." && pwd)"
-        else
-            echo "error: LLVM_PREFIX is not set and clang++ not found in PATH" >&2
-            exit 1
-        fi
+if [[ "$DO_COVERAGE" -eq 1 && "$PRESET" != *"coverage"* ]]; then
+    echo "error: --coverage requires a coverage-enabled preset, got '$PRESET'" >&2
+    if [[ "$USER_SET_PRESET" -eq 1 ]]; then
+        echo "hint: use a preset such as linux-clang-coverage, linux-gcc-coverage, or macos-appleclang-coverage" >&2
     fi
-    export LLVM_PREFIX
-    echo "LLVM_PREFIX: $LLVM_PREFIX"
+    exit 1
 fi
 
-# ── clean ─────────────────────────────────────────────────────────
+BUILD_DIR="${ROOT_DIR}/build/${PRESET}"
+
 if [[ "$DO_CLEAN" -eq 1 && -d "$BUILD_DIR" ]]; then
     echo "clean: removing $BUILD_DIR"
     rm -rf "$BUILD_DIR"
 fi
 
-# ── configure ────────────────────────────────────────────────────
-cd "$ROOT_DIR"
 cmake --preset "$PRESET"
-
-# ── build ─────────────────────────────────────────────────────────
 cmake --build --preset "$PRESET"
 
-# ── test ──────────────────────────────────────────────────────────
 if [[ "$RUN_TEST" -eq 1 ]]; then
-    ctest --preset "$PRESET"
+    if [[ "$PRESET" == *"coverage"* && -f "${BUILD_DIR}/qppjs-build-meta.json" ]]; then
+        COVERAGE_BACKEND="$(python3 - <<'PY' "${BUILD_DIR}/qppjs-build-meta.json"
+import json
+import sys
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
+    data = json.load(f)
+print(data.get('coverage_backend', ''))
+PY
+)"
+        if [[ "$COVERAGE_BACKEND" == "llvm-cov" ]]; then
+            LLVM_PROFILE_FILE="${BUILD_DIR}/default.profraw" ctest --preset "$PRESET"
+        else
+            ctest --preset "$PRESET"
+        fi
+    else
+        ctest --preset "$PRESET"
+    fi
 fi
 
-# ── coverage ──────────────────────────────────────────────────────
 if [[ "$DO_COVERAGE" -eq 1 ]]; then
-    COVERAGE_ARGS=("$PRESET")
+    COVERAGE_ARGS=("$BUILD_DIR")
     [[ "$DO_OPEN" -eq 1 ]] && COVERAGE_ARGS+=("--open")
     "${SCRIPT_DIR}/coverage.sh" "${COVERAGE_ARGS[@]}"
 fi

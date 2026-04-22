@@ -5,12 +5,15 @@ namespace qppjs {
 ObjectKind JSObject::object_kind() const { return ObjectKind::kOrdinary; }
 
 Value JSObject::get_property(const std::string& key) const {
-    // Walk prototype chain
     const JSObject* cur = this;
     while (cur != nullptr) {
         auto it = cur->index_map_.find(key);
         if (it != cur->index_map_.end()) {
             return cur->properties_[it->second].value;
+        }
+        if (key == "constructor" && cur->has_constructor_property_) {
+            auto constructor = cur->constructor_property_.lock();
+            return constructor ? Value::object(std::move(constructor)) : Value::undefined();
         }
         cur = cur->proto_.get();
     }
@@ -28,8 +31,14 @@ void JSObject::set_property(const std::string& key, Value value) {
     }
 }
 
+void JSObject::set_constructor_property(ObjectPtr value) {
+    constructor_property_ = std::move(value);
+    has_constructor_property_ = true;
+}
+
 bool JSObject::has_own_property(const std::string& key) const {
-    return index_map_.find(key) != index_map_.end();
+    return key == "constructor" ? has_constructor_property_ || index_map_.contains(key)
+                                : index_map_.contains(key);
 }
 
 }  // namespace qppjs

@@ -12,6 +12,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(QPPJS_BUILD_TESTS "Build QppJS tests" ON)
 
+qppjs_setup_project_targets()
+
 add_subdirectory(src)
 
 if(QPPJS_BUILD_TESTS)
@@ -20,3 +22,5 @@ if(QPPJS_BUILD_TESTS)
     qppjs_setup_googletest()
     add_subdirectory(tests)
 endif()
+
+qppjs_write_build_metadata()

@@ -941,7 +941,7 @@ Value Interpreter::make_function_value(std::optional<std::string> name, std::vec
     Value fn_val = Value::object(fn);
     auto proto_obj = std::make_shared<JSObject>();
     proto_obj->set_proto(object_prototype_);
-    proto_obj->set_property("constructor", fn_val);
+    proto_obj->set_constructor_property(fn);
     fn->set_prototype_obj(proto_obj);
 
     return fn_val;

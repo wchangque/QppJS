@@ -6,27 +6,21 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 usage() {
     cat <<EOF
-Usage: coverage.sh <preset> [--open] [--help]
+Usage: coverage.sh <build-dir> [--open] [--help]
 
-  preset    CMake configure preset name (must be a coverage variant)
+  build-dir  CMake build directory with qppjs-build-meta.json
 
 Options:
   --open      Open the HTML report in browser after generation
   --help, -h  Show this help message
 
-Coverage presets:
-  macos-appleclang-coverage
-  linux-gcc-coverage
-  linux-clang-coverage
-
 Examples:
-  coverage.sh macos-appleclang-coverage
-  coverage.sh macos-appleclang-coverage --open
+  coverage.sh build/linux-gcc-coverage
+  coverage.sh build/linux-clang-coverage --open
 EOF
 }
 
-# ── 参数解析 ──────────────────────────────────────────────────────
-PRESET=""
+BUILD_DIR=""
 DO_OPEN=0
 
 for arg in "$@"; do
@@ -34,49 +28,81 @@ for arg in "$@"; do
         --open)    DO_OPEN=1 ;;
         --help|-h) usage; exit 0 ;;
         --*)       echo "error: unknown option: $arg" >&2; echo; usage >&2; exit 1 ;;
-        *)         PRESET="$arg" ;;
+        *)         BUILD_DIR="$arg" ;;
     esac
 done
 
-if [[ -z "$PRESET" ]]; then
-    echo "error: preset is required" >&2
+if [[ -z "$BUILD_DIR" ]]; then
+    echo "error: build directory is required" >&2
     echo
     usage >&2
     exit 1
 fi
 
-BUILD_DIR="${ROOT_DIR}/build/${PRESET}"
+case "$BUILD_DIR" in
+    /*) ;;
+    *) BUILD_DIR="${ROOT_DIR}/${BUILD_DIR}" ;;
+esac
 
-# ── 前置检查 ──────────────────────────────────────────────────────
+META_FILE="${BUILD_DIR}/qppjs-build-meta.json"
+if [[ ! -f "$META_FILE" ]]; then
+    echo "error: build metadata not found: $META_FILE" >&2
+    echo "hint: run cmake configure/build first" >&2
+    exit 1
+fi
+
+meta_value() {
+    local key="$1"
+    python3 - <<'PY' "$META_FILE" "$key"
+import json
+import sys
+path, key = sys.argv[1], sys.argv[2]
+with open(path, 'r', encoding='utf-8') as f:
+    data = json.load(f)
+value = data.get(key, "")
+if isinstance(value, bool):
+    print("true" if value else "false")
+else:
+    print(value)
+PY
+}
+
+COVERAGE_ENABLED="$(meta_value coverage_enabled)"
+COVERAGE_BACKEND="$(meta_value coverage_backend)"
+PLATFORM="$(meta_value platform)"
+TEST_BINARY="$(meta_value test_binary)"
+
+if [[ "$COVERAGE_ENABLED" != "true" ]]; then
+    echo "error: coverage is not enabled for build directory: $BUILD_DIR" >&2
+    exit 1
+fi
+
 if [[ ! -d "$BUILD_DIR" ]]; then
     echo "error: build directory not found: $BUILD_DIR" >&2
-    echo "hint: run 'build.sh ${PRESET} --test' first" >&2
-    exit 1
-fi
-
-if [[ -z "$(find "$BUILD_DIR" -name "*.gcno" 2>/dev/null | head -1)" ]]; then
-    echo "error: no .gcno files found in $BUILD_DIR" >&2
-    echo "hint: make sure the preset has QPPJS_ENABLE_COVERAGE=ON and the project is built" >&2
-    exit 1
-fi
-
-if [[ -z "$(find "$BUILD_DIR" -name "*.gcda" 2>/dev/null | head -1)" ]]; then
-    echo "error: no .gcda files found in $BUILD_DIR" >&2
-    echo "hint: run tests first with 'build.sh ${PRESET} --test'" >&2
     exit 1
 fi
 
 for tool in lcov genhtml; do
     if ! command -v "$tool" &>/dev/null; then
         echo "error: '$tool' not found" >&2
-        echo "hint: brew install lcov" >&2
+        echo "hint: install lcov" >&2
         exit 1
     fi
 done
 
-# ── gcov 工具选择 ─────────────────────────────────────────────────
+RAW_INFO="${BUILD_DIR}/coverage_raw.info"
+FILTERED_INFO="${BUILD_DIR}/coverage.info"
+REPORT_DIR="${BUILD_DIR}/coverage"
 GCOV_TOOL=""
 WRAPPER=""
+LLVM_PROFILE_FILE="${BUILD_DIR}/default.profraw"
+
+cleanup() {
+    if [[ -n "$WRAPPER" ]]; then
+        rm -f "$WRAPPER"
+    fi
+}
+trap cleanup EXIT
 
 make_llvm_cov_wrapper() {
     local llvm_cov_bin="$1"
@@ -86,80 +112,72 @@ make_llvm_cov_wrapper() {
 exec "${llvm_cov_bin}" gcov "\$@"
 EOF
     chmod +x "$WRAPPER"
-    # shellcheck disable=SC2064
-    trap "rm -f '${WRAPPER}'" EXIT
     GCOV_TOOL="$WRAPPER"
 }
 
-case "$(uname -s)" in
-    Darwin)
-        if [[ "$PRESET" == *"llvmclang"* ]]; then
-            HOMEBREW_LLVM_COV="/opt/homebrew/opt/llvm/bin/llvm-cov"
-            if [[ -x "$HOMEBREW_LLVM_COV" ]]; then
-                make_llvm_cov_wrapper "$HOMEBREW_LLVM_COV"
-            else
-                echo "error: Homebrew llvm-cov not found: $HOMEBREW_LLVM_COV" >&2
-                echo "hint: brew install llvm" >&2
-                exit 1
-            fi
-        else
-            XCRUN_LLVM_COV="$(xcrun --find llvm-cov 2>/dev/null || echo "")"
-            if [[ -n "$XCRUN_LLVM_COV" ]]; then
-                make_llvm_cov_wrapper "$XCRUN_LLVM_COV"
-            else
-                echo "warning: xcrun llvm-cov not found, falling back to system gcov" >&2
-                GCOV_TOOL="$(command -v gcov)"
-            fi
+case "$COVERAGE_BACKEND" in
+    gcov)
+        if [[ -z "$(find "$BUILD_DIR" -name "*.gcno" 2>/dev/null | head -1)" ]]; then
+            echo "error: no .gcno files found in $BUILD_DIR" >&2
+            exit 1
         fi
+        if [[ -z "$(find "$BUILD_DIR" -name "*.gcda" 2>/dev/null | head -1)" ]]; then
+            echo "error: no .gcda files found in $BUILD_DIR" >&2
+            exit 1
+        fi
+        GCOV_TOOL="$(command -v gcov)"
         ;;
-    Linux)
-        if [[ "$PRESET" == *"gcc"* ]]; then
-            GCOV_TOOL="$(command -v gcov)"
-        else
-            LLVM_COV_BIN="$(command -v llvm-cov 2>/dev/null || echo "")"
-            if [[ -n "$LLVM_COV_BIN" ]]; then
-                make_llvm_cov_wrapper "$LLVM_COV_BIN"
-            else
-                echo "warning: llvm-cov not found, falling back to system gcov" >&2
-                GCOV_TOOL="$(command -v gcov)"
-            fi
+    llvm-cov)
+        if [[ ! -f "$LLVM_PROFILE_FILE" ]]; then
+            echo "error: llvm profile data not found: $LLVM_PROFILE_FILE" >&2
+            echo "hint: run tests with LLVM_PROFILE_FILE=${LLVM_PROFILE_FILE}" >&2
+            exit 1
         fi
+        if [[ -z "$TEST_BINARY" || ! -x "$TEST_BINARY" ]]; then
+            echo "error: test binary not found: $TEST_BINARY" >&2
+            exit 1
+        fi
+        LLVM_COV_BIN="$(command -v llvm-cov 2>/dev/null || echo "")"
+        LLVM_PROFDATA_BIN="$(command -v llvm-profdata 2>/dev/null || echo "")"
+        if [[ -z "$LLVM_COV_BIN" || -z "$LLVM_PROFDATA_BIN" ]]; then
+            echo "error: llvm-cov/llvm-profdata not found" >&2
+            exit 1
+        fi
+        "$LLVM_PROFDATA_BIN" merge -sparse "$LLVM_PROFILE_FILE" -o "${BUILD_DIR}/default.profdata"
+        "$LLVM_COV_BIN" export "$TEST_BINARY" -instr-profile="${BUILD_DIR}/default.profdata" -format=lcov > "$RAW_INFO"
         ;;
     *)
-        echo "error: unsupported platform: $(uname -s)" >&2
+        echo "error: unsupported coverage backend '$COVERAGE_BACKEND' on platform '$PLATFORM'" >&2
         exit 1
         ;;
 esac
 
-echo "gcov tool: $GCOV_TOOL"
-
-# ── 收集覆盖率数据 ────────────────────────────────────────────────
-RAW_INFO="${BUILD_DIR}/coverage_raw.info"
-FILTERED_INFO="${BUILD_DIR}/coverage.info"
-REPORT_DIR="${BUILD_DIR}/coverage"
-
-echo "collecting coverage data..."
-lcov \
-    --gcov-tool "$GCOV_TOOL" \
-    --capture \
-    --directory "$BUILD_DIR" \
-    --output-file "$RAW_INFO" \
-    --ignore-errors mismatch,empty,inconsistent,unsupported,format \
-    --rc branch_coverage=1 \
-    --rc derive_function_end_line=0
+if [[ "$COVERAGE_BACKEND" == "gcov" ]]; then
+    echo "collecting coverage data..."
+    lcov \
+        --gcov-tool "$GCOV_TOOL" \
+        --capture \
+        --directory "$BUILD_DIR" \
+        --output-file "$RAW_INFO" \
+        --ignore-errors mismatch,empty,inconsistent,unsupported,format,gcov \
+        --rc branch_coverage=1 \
+        --rc derive_function_end_line=0 \
+        --rc geninfo_unexecuted_blocks=1
+fi
 
 echo "filtering coverage data..."
 lcov \
-    --gcov-tool "$GCOV_TOOL" \
+    ${GCOV_TOOL:+--gcov-tool "$GCOV_TOOL"} \
     --remove "$RAW_INFO" \
     '*/tests/*' \
     '*/_deps/*' \
     '*/usr/*' \
     '*/opt/homebrew/*' \
     --output-file "$FILTERED_INFO" \
-    --ignore-errors unused,inconsistent,unsupported,format \
+    --ignore-errors unused,unused,unused,inconsistent,unsupported,format \
     --rc branch_coverage=1 \
-    --rc derive_function_end_line=0
+    --rc derive_function_end_line=0 \
+    --rc geninfo_unexecuted_blocks=1
 
 echo "generating HTML report..."
 genhtml \
@@ -169,7 +187,8 @@ genhtml \
     --title "QppJS Coverage" \
     --ignore-errors inconsistent,unsupported,corrupt,category \
     --rc branch_coverage=1 \
-    --rc derive_function_end_line=0
+    --rc derive_function_end_line=0 \
+    --rc geninfo_unexecuted_blocks=1
 
 echo ""
 echo "report: ${REPORT_DIR}/index.html"
