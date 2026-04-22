@@ -3,14 +3,18 @@
 #include "qppjs/frontend/ast.h"
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/environment.h"
-#include "qppjs/runtime/value.h"
+#include "qppjs/vm/bytecode.h"
+#include "qppjs/vm/opcode.h"
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace qppjs {
 
+class Compiler;
 class JSObject;
 class JSFunction;
 
@@ -52,6 +56,7 @@ private:
 
     // Hoist var declarations; var_target is the function-level env to receive var bindings.
     void hoist_vars(const std::vector<StmtNode>& stmts, Environment& var_target);
+    BindingMap collect_visible_bindings() const;
 
     // Create a JSFunction value with eager prototype initialization.
     Value make_function_value(std::optional<std::string> name, std::vector<std::string> params,
@@ -59,7 +64,7 @@ private:
 
     // Execute a function with given this_val and args.
     // Returns StmtResult so callers can distinguish explicit return from natural completion.
-    StmtResult call_function(JSFunction* fn, Value this_val, std::vector<Value> args);
+    StmtResult call_function(std::shared_ptr<JSFunction> fn, Value this_val, std::vector<Value> args);
 
     // RAII scope switcher; optionally increments call_depth_ and restores on destruction.
     struct ScopeGuard {

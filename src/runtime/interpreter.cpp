@@ -218,6 +218,21 @@ void Interpreter::hoist_vars(const std::vector<StmtNode>& stmts, Environment& va
     }
 }
 
+BindingMap Interpreter::collect_visible_bindings() const {
+    BindingMap visible;
+    for (auto env = current_env_; env != nullptr; env = env->outer()) {
+        if (env == global_env_) {
+            continue;
+        }
+        for (const auto& [name, binding] : env->bindings()) {
+            if (visible.count(name) == 0) {
+                visible.emplace(name, binding);
+            }
+        }
+    }
+    return visible;
+}
+
 // ---- exec ----
 
 EvalResult Interpreter::exec(const Program& program) {
@@ -932,10 +947,10 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
 Value Interpreter::make_function_value(std::optional<std::string> name, std::vector<std::string> params,
                                         std::shared_ptr<std::vector<StmtNode>> body) {
     auto fn = std::make_shared<JSFunction>();
-    fn->set_name(std::move(name));
+    fn->set_name(name);
     fn->set_params(std::move(params));
     fn->set_body(std::move(body));
-    fn->set_closure_env(current_env_);
+    fn->set_captured_bindings(collect_visible_bindings());
 
     // Eager prototype initialization: F.prototype = { constructor: F }
     Value fn_val = Value::object(fn);
@@ -947,8 +962,19 @@ Value Interpreter::make_function_value(std::optional<std::string> name, std::vec
     return fn_val;
 }
 
-StmtResult Interpreter::call_function(JSFunction* fn, Value this_val, std::vector<Value> args) {
-    auto fn_env = std::make_shared<Environment>(fn->closure_env());
+StmtResult Interpreter::call_function(std::shared_ptr<JSFunction> fn, Value this_val,
+                                      std::vector<Value> args) {
+    auto fn_env = std::make_shared<Environment>(global_env_);
+    for (const auto& [name, binding] : fn->captured_bindings()) {
+        fn_env->define_binding(name, binding);
+    }
+    if (fn->name().has_value() && fn_env->lookup(fn->name().value()) == nullptr) {
+        fn_env->define(fn->name().value(), VarKind::Const);
+        auto init_result = fn_env->initialize(fn->name().value(), Value::object(fn));
+        if (!init_result.is_ok()) {
+            return StmtResult::err(init_result.error());
+        }
+    }
 
     const auto& params = fn->params();
     for (size_t i = 0; i < params.size(); ++i) {
@@ -1038,7 +1064,10 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
         callee_val.as_object()->object_kind() != ObjectKind::kFunction) {
         return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: value is not a function"));
     }
-    auto* fn = static_cast<JSFunction*>(callee_val.as_object().get());
+    auto fn = std::dynamic_pointer_cast<JSFunction>(callee_val.as_object());
+    if (!fn) {
+        return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: value is not a function"));
+    }
 
     std::vector<Value> args;
     args.reserve(expr.arguments.size());
@@ -1072,7 +1101,10 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
         callee_val.as_object()->object_kind() != ObjectKind::kFunction) {
         return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: value is not a constructor"));
     }
-    auto* fn = static_cast<JSFunction*>(callee_val.as_object().get());
+    auto fn = std::dynamic_pointer_cast<JSFunction>(callee_val.as_object());
+    if (!fn) {
+        return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: value is not a constructor"));
+    }
 
     // Determine prototype for new object
     std::shared_ptr<JSObject> proto = fn->prototype_obj() ? fn->prototype_obj() : object_prototype_;

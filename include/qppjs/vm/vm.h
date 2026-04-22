@@ -35,7 +35,7 @@ private:
     EvalResult run(size_t exit_depth = 0);
 
     // Push a new CallFrame. Returns error if call depth exceeded.
-    EvalResult push_call_frame(JSFunction* fn, Value this_val, std::vector<Value> args,
+    EvalResult push_call_frame(std::shared_ptr<JSFunction> fn, Value this_val, std::vector<Value> args,
                                bool is_new = false, Value new_instance = Value::undefined());
 
     static bool to_boolean(const Value& v);
@@ -49,6 +49,7 @@ private:
     static constexpr int kMaxCallDepth = 500;
 
     std::shared_ptr<JSObject> object_prototype_;
+    std::shared_ptr<Environment> global_env_;
 };
 
 }  // namespace qppjs

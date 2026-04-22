@@ -21,14 +21,17 @@ public:
     const std::optional<std::string>& name() const { return name_; }
     const std::vector<std::string>& params() const { return params_; }
     const std::shared_ptr<std::vector<StmtNode>>& body() const { return body_; }
-    const std::shared_ptr<Environment>& closure_env() const { return closure_env_; }
+    const BindingMap& captured_bindings() const { return captured_bindings_; }
     const std::shared_ptr<JSObject>& prototype_obj() const { return prototype_; }
     const std::shared_ptr<BytecodeFunction>& bytecode() const { return bytecode_; }
 
     void set_name(std::optional<std::string> v) { name_ = std::move(v); }
     void set_params(std::vector<std::string> v) { params_ = std::move(v); }
     void set_body(std::shared_ptr<std::vector<StmtNode>> v) { body_ = std::move(v); }
-    void set_closure_env(std::shared_ptr<Environment> v) { closure_env_ = std::move(v); }
+    void set_captured_bindings(BindingMap v) { captured_bindings_ = std::move(v); }
+    void set_captured_binding(const std::string& name, const Binding& binding) {
+        captured_bindings_.insert_or_assign(name, binding);
+    }
     void set_prototype_obj(std::shared_ptr<JSObject> v) { prototype_ = std::move(v); }
     void set_bytecode(std::shared_ptr<BytecodeFunction> v) { bytecode_ = std::move(v); }
 
@@ -36,7 +39,7 @@ private:
     std::optional<std::string> name_;
     std::vector<std::string> params_;
     std::shared_ptr<std::vector<StmtNode>> body_;
-    std::shared_ptr<Environment> closure_env_;
+    BindingMap captured_bindings_;
     std::shared_ptr<JSObject> prototype_;  // F.prototype (not [[Prototype]] of the function itself)
     std::shared_ptr<BytecodeFunction> bytecode_;
 };

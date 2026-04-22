@@ -5,7 +5,7 @@
 ## 1. 当前阶段
 
 - 当前阶段：Phase 6 已全部完成，下一阶段为 Phase 7
-- 最近更新时间：2026-04-23（构建系统脚本已收缩为固定职责入口，CMake option 已统一收口到 `cmake/Options.cmake`，全局编译/链接选项改为根 `CMakeLists.txt` 统一注入并在 `CompilerFlags.cmake` 直接用 `set/list(APPEND)` 组装，UT 脚本已切到 debug 构建链路并与 CLI 测试分离，macOS 覆盖率链路已验证通过，LeakSanitizer 已打开且无泄露）
+- 最近更新时间：2026-04-23（构建系统脚本已收缩为固定职责入口，CMake option 已统一收口到 `cmake/Options.cmake`，全局编译/链接选项改为根 `CMakeLists.txt` 统一注入并在 `CompilerFlags.cmake` 直接用 `set/list(APPEND)` 组装，UT 脚本已切到 debug 构建链路并与 CLI 测试分离，macOS 覆盖率链路已验证通过；当前正在收尾函数/闭包路径的 ASAN/LSan 泄露修复，已完成 Cell 化绑定与 interpreter/vm 捕获模型切换，单例泄露样例已消失，但函数相关批量回归仍需继续收敛）
 
 ## 2. 当前任务状态
 
@@ -76,7 +76,7 @@
   - 529（interpreter）+ 134（VM）= 663 个测试全部通过
 
 ### 进行中
-- 暂无
+- 函数/闭包 ASAN 泄露修复：已将 `Environment::Binding` 改为共享 `Cell`，`JSFunction` 从 `closure_env` 切到 `captured_bindings`，Interpreter/VM 已能编译并通过单个泄露样例 `FunctionTest.BasicFunctionDeclarationAndCall`；但递归/互递归/兄弟函数互引场景仍存在残余泄露，尚未完成 focused function/vm 回归
 
 ### 未开始
 - [ ] Phase 7：控制流扩展（break/continue/throw/try/catch/finally）
@@ -85,6 +85,13 @@
 - 暂无
 
 ## 3. 最近完成内容
+
+- 正在收尾函数/闭包路径的 ASAN/LSan 泄露修复：
+  - `include/qppjs/runtime/environment.h`、`src/runtime/environment.cpp`：`Binding` 改为共享 `Cell` 持值，新增 `BindingMap` 与 `define_binding()`
+  - `include/qppjs/runtime/js_function.h`：移除 `closure_env_`，改为 `captured_bindings_`
+  - `include/qppjs/runtime/interpreter.h`、`src/runtime/interpreter.cpp`：新增可见绑定收集，函数调用改为“全局环境 + 捕获绑定 + 参数/局部绑定”模型
+  - `include/qppjs/vm/vm.h`、`src/vm/vm.cpp`：同步对齐为 `captured_bindings` 闭包模型，并补上 VM 侧 `global_env_`
+  - 当前验证状态：debug + ASAN 构建恢复可编译，`FunctionTest.BasicFunctionDeclarationAndCall` 已不再触发泄露；但 focused function/vm 批量回归仍有残余泄露，根因进一步收敛到递归/互递归函数通过 captured binding 自引用形成的新强环，尚未完全修复
 
 - 已完成构建系统重构收尾验证与脚本职责收缩：
   - 移除 `CMakePresets.json`
@@ -112,6 +119,7 @@
 
 ## 4. 当前风险与待决策项
 
+- 当前最高优先级风险：函数/闭包 captured binding 模型仍有残余 shared_ptr 环，主要集中在递归、互递归与兄弟函数互引场景；Phase 7 前应先完成该问题收尾并恢复函数相关 ASAN 回归
 - 需确认原生 CMake 工作流在 Windows/MSVC 多配置生成器上 configure/build/test 不回归
 - macOS 若要继续使用 Homebrew LLVM + libc++ / LSan，需要在原生 CMake 命令里显式传 `CMAKE_CXX_COMPILER` 与相关 flags；不再由 preset 自动选中
 - JSFunction::body_ 字段继续保留（AST Interpreter 使用）
@@ -123,7 +131,8 @@
 新 session 开始时，优先做以下动作：
 1. 读取本文件
 2. 读取 `docs/plans/02-next-phase.md`
-3. 直接进入 Phase 7：控制流扩展（构建脚本已收缩为固定职责入口）
+3. 先继续收尾函数/闭包路径的 ASAN/LSan 泄露修复，重点检查递归/互递归与兄弟函数互引场景
+4. 函数相关 ASAN 回归恢复后，再进入 Phase 7：控制流扩展
 
 ## 6. 收尾检查清单
 

@@ -19,6 +19,25 @@
 
 namespace qppjs {
 
+namespace {
+
+BindingMap CollectVisibleBindings(const std::shared_ptr<Environment>& current_env) {
+    BindingMap visible;
+    for (auto env = current_env; env != nullptr; env = env->outer()) {
+        if (env->outer() == nullptr) {
+            continue;
+        }
+        for (const auto& [name, binding] : env->bindings()) {
+            if (visible.count(name) == 0) {
+                visible.emplace(name, binding);
+            }
+        }
+    }
+    return visible;
+}
+
+}  // namespace
+
 // ============================================================
 // Type conversion helpers
 // ============================================================
@@ -151,17 +170,17 @@ VM::VM() : object_prototype_(std::make_shared<JSObject>()) {}
 // ============================================================
 
 EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
-    auto global_env = std::make_shared<Environment>(nullptr);
+    global_env_ = std::make_shared<Environment>(nullptr);
 
     // Pre-define var_decls for the top-level scope
     for (uint16_t idx : bytecode->var_decls) {
-        global_env->define_initialized(bytecode->names[idx]);
+        global_env_->define_initialized(bytecode->names[idx]);
     }
 
     CallFrame frame;
     frame.bytecode = bytecode.get();
     frame.pc = 0;
-    frame.env = global_env;
+    frame.env = global_env_;
     frame.this_val = Value::undefined();
 
     call_stack_.push_back(std::move(frame));
@@ -195,7 +214,7 @@ static int32_t read_i32(const BytecodeFunction* bc, size_t& pc) {
 // push_call_frame
 // ============================================================
 
-EvalResult VM::push_call_frame(JSFunction* fn, Value this_val, std::vector<Value> args,
+EvalResult VM::push_call_frame(std::shared_ptr<JSFunction> fn, Value this_val, std::vector<Value> args,
                                bool is_new, Value new_instance) {
     if (call_depth_ >= kMaxCallDepth) {
         return EvalResult::err(Error(ErrorKind::Runtime, "RangeError: Maximum call stack size exceeded"));
@@ -208,7 +227,18 @@ EvalResult VM::push_call_frame(JSFunction* fn, Value this_val, std::vector<Value
         return EvalResult::err(Error(ErrorKind::Runtime, "Internal: function has no bytecode"));
     }
 
-    auto fn_env = std::make_shared<Environment>(fn->closure_env());
+    auto fn_env = std::make_shared<Environment>(global_env_);
+    for (const auto& [name, binding] : fn->captured_bindings()) {
+        fn_env->define_binding(name, binding);
+    }
+    if (fn->name().has_value() && fn_env->lookup(fn->name().value()) == nullptr) {
+        fn_env->define(fn->name().value(), VarKind::Const);
+        auto init_result = fn_env->initialize(fn->name().value(), Value::object(fn));
+        if (!init_result.is_ok()) {
+            call_depth_--;
+            return init_result;
+        }
+    }
 
     // Bind parameters
     const auto& params = fn->params();
@@ -499,7 +529,7 @@ EvalResult VM::run(size_t exit_depth) {
             fn->set_name(fn_bc->name);
             fn->set_params(fn_bc->params);
             fn->set_bytecode(fn_bc);
-            fn->set_closure_env(env);
+            fn->set_captured_bindings(CollectVisibleBindings(env));
             auto proto_obj = std::make_shared<JSObject>();
             proto_obj->set_proto(object_prototype_);
             proto_obj->set_constructor_property(fn);
@@ -528,7 +558,7 @@ EvalResult VM::run(size_t exit_depth) {
                 return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: not a function"));
             }
             // Push new frame; the flat loop will execute it, then return value lands on our stack
-            auto push_res = push_call_frame(fn.get(), Value::undefined(), std::move(args));
+            auto push_res = push_call_frame(fn, Value::undefined(), std::move(args));
             if (!push_res.is_ok()) return push_res;
             break;
         }
@@ -554,7 +584,7 @@ EvalResult VM::run(size_t exit_depth) {
             if (!fn) {
                 return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: not a function"));
             }
-            auto push_res = push_call_frame(fn.get(), std::move(receiver), std::move(args));
+            auto push_res = push_call_frame(fn, std::move(receiver), std::move(args));
             if (!push_res.is_ok()) return push_res;
             break;
         }
@@ -590,7 +620,7 @@ EvalResult VM::run(size_t exit_depth) {
             Value instance_val = Value::object(std::move(instance));
             Value instance_copy = instance_val;  // keep a copy for do_new logic
 
-            auto push_res = push_call_frame(fn.get(), instance_val, std::move(args),
+            auto push_res = push_call_frame(fn, instance_val, std::move(args),
                                             /*is_new=*/true, std::move(instance_copy));
             if (!push_res.is_ok()) return push_res;
             break;
@@ -833,7 +863,7 @@ EvalResult VM::run(size_t exit_depth) {
                 return EvalResult::err(Error(ErrorKind::Runtime,
                     "ReferenceError: Cannot access '" + name + "' before initialization"));
             }
-            const Value& v = b->value;
+            const Value& v = b->cell->value;
             std::string type_str;
             switch (v.kind()) {
             case ValueKind::Undefined: type_str = "undefined"; break;

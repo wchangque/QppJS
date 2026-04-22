@@ -4,18 +4,26 @@
 
 namespace qppjs {
 
+namespace {
+
+CellPtr MakeCell(Value value) {
+    return std::make_shared<Cell>(Cell{std::move(value)});
+}
+
+}  // namespace
+
 Environment::Environment(std::shared_ptr<Environment> outer) : outer_(std::move(outer)) {}
 
 void Environment::define(const std::string& name, VarKind kind) {
     switch (kind) {
     case VarKind::Var:
-        bindings_.insert_or_assign(name, Binding{Value::undefined(), true, true});
+        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined()), true, true});
         break;
     case VarKind::Let:
-        bindings_.insert_or_assign(name, Binding{Value::undefined(), true, false});
+        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined()), true, false});
         break;
     case VarKind::Const:
-        bindings_.insert_or_assign(name, Binding{Value::undefined(), false, false});
+        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined()), false, false});
         break;
     }
 }
@@ -24,7 +32,11 @@ void Environment::define_initialized(const std::string& name) {
     if (bindings_.count(name) != 0) {
         return;
     }
-    bindings_.emplace(name, Binding{Value::undefined(), true, true});
+    bindings_.emplace(name, Binding{MakeCell(Value::undefined()), true, true});
+}
+
+void Environment::define_binding(const std::string& name, const Binding& binding) {
+    bindings_.insert_or_assign(name, binding);
 }
 
 Binding* Environment::lookup(const std::string& name) {
@@ -47,7 +59,7 @@ EvalResult Environment::get(const std::string& name) {
         return EvalResult::err(
             Error(ErrorKind::Runtime, "ReferenceError: Cannot access '" + name + "' before initialization"));
     }
-    return EvalResult::ok(b->value);
+    return EvalResult::ok(b->cell->value);
 }
 
 EvalResult Environment::set(const std::string& name, Value value) {
@@ -58,8 +70,8 @@ EvalResult Environment::set(const std::string& name, Value value) {
     if (!b->mutable_) {
         return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: Assignment to constant variable."));
     }
-    b->value = std::move(value);
-    return EvalResult::ok(b->value);
+    b->cell->value = std::move(value);
+    return EvalResult::ok(b->cell->value);
 }
 
 EvalResult Environment::initialize(const std::string& name, Value value) {
@@ -68,8 +80,8 @@ EvalResult Environment::initialize(const std::string& name, Value value) {
         return EvalResult::err(Error(ErrorKind::Runtime, "ReferenceError: " + name + " is not defined"));
     }
     b->initialized = true;
-    b->value = std::move(value);
-    return EvalResult::ok(b->value);
+    b->cell->value = std::move(value);
+    return EvalResult::ok(b->cell->value);
 }
 
 }  // namespace qppjs

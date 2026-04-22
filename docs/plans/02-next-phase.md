@@ -25,10 +25,9 @@
 - Function（Phase 4）：闭包、递归、var 提升
 - 原型链、this、new（Phase 5）
 - Bytecode VM（Phase 6）：49 条指令，含函数调用、对象属性、原型链
-- 665/665 测试全部通过（529 Interpreter + 134 VM + 2 CLI）
+- 功能基线历史上已达到 665/665 测试通过，但当前主线正插入函数/闭包路径 ASAN/LSan 泄露修复，Phase 7 前需先收尾该问题并恢复相关回归
 - 当前构建配置已收口：`cmake/Options.cmake` 统一管理 options，warning 默认当作 error，全局编译选项由根 `CMakeLists.txt` 统一注入
 - 当前脚本职责已进一步明确：`scripts/build_debug.sh` 负责本地 debug 测试构建，`scripts/build_test.sh` 负责 coverage 构建，`scripts/run_ut.sh` 负责仅执行 UT（排除 CLI 测试），`scripts/coverage.sh` 在此基础上收集覆盖率
-- LeakSanitizer 已打开且无泄露（Homebrew LLVM clang 调试构建）
 
 ## 4. 设计方向（待 agent team 细化）
 

@@ -7,14 +7,23 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace qppjs {
 
-struct Binding {
+struct Cell {
     Value value;
+};
+
+using CellPtr = std::shared_ptr<Cell>;
+
+struct Binding {
+    CellPtr cell;
     bool mutable_;      // false for const
     bool initialized;   // false means TDZ
 };
+
+using BindingMap = std::unordered_map<std::string, Binding>;
 
 class Environment {
 public:
@@ -28,6 +37,7 @@ public:
 
     // Declare an already-initialized binding (for var hoisting); idempotent.
     void define_initialized(const std::string& name);
+    void define_binding(const std::string& name, const Binding& binding);
 
     // Walk the outer chain; returns nullptr if not found.
     Binding* lookup(const std::string& name);
@@ -42,9 +52,10 @@ public:
     EvalResult initialize(const std::string& name, Value value);
 
     std::shared_ptr<Environment> outer() const { return outer_; }
+    const BindingMap& bindings() const { return bindings_; }
 
 private:
-    std::unordered_map<std::string, Binding> bindings_;
+    BindingMap bindings_;
     std::shared_ptr<Environment> outer_;
 };
 
