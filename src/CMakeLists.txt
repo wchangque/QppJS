@@ -14,11 +14,9 @@ add_library(qppjs_core
 )
 
 target_include_directories(qppjs_core PUBLIC "${PROJECT_SOURCE_DIR}/include")
-qppjs_configure_project_target(qppjs_core)
 
 add_executable(qppjs
     main/main.cpp
 )
 
 target_link_libraries(qppjs PRIVATE qppjs_core)
-qppjs_configure_project_target(qppjs)

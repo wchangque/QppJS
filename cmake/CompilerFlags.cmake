@@ -1,8 +1,3 @@
-option(QPPJS_ENABLE_ASAN "Enable AddressSanitizer" OFF)
-option(QPPJS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
-option(QPPJS_WARNINGS_AS_ERRORS "Treat warnings as errors" ON)
-option(QPPJS_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
-
 if(QPPJS_ENABLE_COVERAGE AND QPPJS_ENABLE_ASAN)
     message(FATAL_ERROR "QPPJS_ENABLE_COVERAGE and QPPJS_ENABLE_ASAN cannot both be ON")
 endif()
@@ -11,15 +6,9 @@ function(qppjs_set_build_metadata name value)
     set(${name} "${value}" CACHE INTERNAL "QppJS build metadata")
 endfunction()
 
-function(qppjs_setup_project_targets)
-    if(TARGET qppjs_project_options)
-        return()
-    endif()
-
-    add_library(qppjs_project_options INTERFACE)
-    add_library(qppjs_project_warnings INTERFACE)
-
-    target_compile_features(qppjs_project_options INTERFACE cxx_std_20)
+function(qppjs_setup_project_configuration)
+    set(QPPJS_GLOBAL_COMPILER_OPTIONS)
+    set(QPPJS_GLOBAL_LINK_OPTIONS)
 
     if(WIN32)
         qppjs_set_build_metadata(QPPJS_PLATFORM windows)
@@ -41,10 +30,7 @@ function(qppjs_setup_project_targets)
         qppjs_set_build_metadata(QPPJS_COMPILER_FAMILY msvc)
         qppjs_set_build_metadata(QPPJS_COVERAGE_BACKEND unsupported)
 
-        target_compile_options(qppjs_project_warnings INTERFACE /W4 /utf-8)
-        if(QPPJS_WARNINGS_AS_ERRORS)
-            target_compile_options(qppjs_project_warnings INTERFACE /WX)
-        endif()
+        set(QPPJS_GLOBAL_COMPILER_OPTIONS /W4 /utf-8 /WX)
     else()
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
             qppjs_set_build_metadata(QPPJS_COMPILER_FAMILY gcc)
@@ -60,43 +46,34 @@ function(qppjs_setup_project_targets)
             qppjs_set_build_metadata(QPPJS_COVERAGE_BACKEND unsupported)
         endif()
 
-        target_compile_options(qppjs_project_warnings INTERFACE
-            -Wall
-            -Wextra
-            -Wpedantic
-            -Wno-unused-parameter
-        )
-        if(QPPJS_WARNINGS_AS_ERRORS)
-            target_compile_options(qppjs_project_warnings INTERFACE -Werror)
-        endif()
+        set(QPPJS_GLOBAL_COMPILER_OPTIONS -Wall -Wextra -Wpedantic -Wno-unused-parameter -Werror)
 
         if(QPPJS_ENABLE_ASAN)
-            target_compile_options(qppjs_project_options INTERFACE -fsanitize=address -fno-omit-frame-pointer)
-            target_link_options(qppjs_project_options INTERFACE -fsanitize=address)
+            list(APPEND QPPJS_GLOBAL_COMPILER_OPTIONS -fsanitize=address -fno-omit-frame-pointer)
+            list(APPEND QPPJS_GLOBAL_LINK_OPTIONS -fsanitize=address)
         endif()
         if(QPPJS_ENABLE_UBSAN)
-            target_compile_options(qppjs_project_options INTERFACE -fsanitize=undefined)
-            target_link_options(qppjs_project_options INTERFACE -fsanitize=undefined)
+            list(APPEND QPPJS_GLOBAL_COMPILER_OPTIONS -fsanitize=undefined)
+            list(APPEND QPPJS_GLOBAL_LINK_OPTIONS -fsanitize=undefined)
         endif()
         if(QPPJS_ENABLE_COVERAGE)
             if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-                target_compile_options(qppjs_project_options INTERFACE --coverage -O0 -g)
-                target_link_options(qppjs_project_options INTERFACE --coverage)
+                list(APPEND QPPJS_GLOBAL_COMPILER_OPTIONS --coverage -O0 -g)
+                list(APPEND QPPJS_GLOBAL_LINK_OPTIONS --coverage)
             elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
-                target_compile_options(qppjs_project_options INTERFACE -fprofile-instr-generate -fcoverage-mapping -O0 -g)
-                target_link_options(qppjs_project_options INTERFACE -fprofile-instr-generate -fcoverage-mapping)
+                list(APPEND QPPJS_GLOBAL_COMPILER_OPTIONS -fprofile-instr-generate -fcoverage-mapping -O0 -g)
+                list(APPEND QPPJS_GLOBAL_LINK_OPTIONS -fprofile-instr-generate -fcoverage-mapping)
             else()
                 message(FATAL_ERROR "QPPJS_ENABLE_COVERAGE is unsupported for compiler ${CMAKE_CXX_COMPILER_ID}")
             endif()
         endif()
     endif()
-endfunction()
 
-function(qppjs_configure_project_target target)
-    target_link_libraries(${target}
-        PUBLIC qppjs_project_options
-        PRIVATE qppjs_project_warnings
-    )
+    set(QPPJS_GLOBAL_COMPILER_OPTIONS "${QPPJS_GLOBAL_COMPILER_OPTIONS}" PARENT_SCOPE)
+    set(QPPJS_GLOBAL_LINK_OPTIONS "${QPPJS_GLOBAL_LINK_OPTIONS}" PARENT_SCOPE)
+    
+    add_compile_options(${QPPJS_GLOBAL_COMPILER_OPTIONS})
+    add_link_options(${QPPJS_GLOBAL_LINK_OPTIONS})
 endfunction()
 
 function(qppjs_write_build_metadata)
@@ -111,5 +88,5 @@ function(qppjs_write_build_metadata)
     endif()
 
     file(GENERATE OUTPUT "${metadata_path}" CONTENT
-"{\n  \"platform\": \"${QPPJS_PLATFORM}\",\n  \"compiler_family\": \"${QPPJS_COMPILER_FAMILY}\",\n  \"generator\": \"${QPPJS_GENERATOR_NAME}\",\n  \"is_multi_config\": ${QPPJS_IS_MULTI_CONFIG},\n  \"coverage_enabled\": $<IF:$<BOOL:${QPPJS_ENABLE_COVERAGE}>,true,false>,\n  \"coverage_backend\": \"${QPPJS_COVERAGE_BACKEND}\",\n  \"test_binary\": \"${test_binary}\",\n  \"source_dir\": \"${PROJECT_SOURCE_DIR}\",\n  \"build_dir\": \"${CMAKE_BINARY_DIR}\"\n}\n")
+        "{\n  \"platform\": \"${QPPJS_PLATFORM}\",\n  \"compiler_family\": \"${QPPJS_COMPILER_FAMILY}\",\n  \"generator\": \"${QPPJS_GENERATOR_NAME}\",\n  \"is_multi_config\": ${QPPJS_IS_MULTI_CONFIG},\n  \"coverage_enabled\": $<IF:$<BOOL:${QPPJS_ENABLE_COVERAGE}>,true,false>,\n  \"coverage_backend\": \"${QPPJS_COVERAGE_BACKEND}\",\n  \"test_binary\": \"${test_binary}\",\n  \"source_dir\": \"${PROJECT_SOURCE_DIR}\",\n  \"build_dir\": \"${CMAKE_BINARY_DIR}\"\n}\n")
 endfunction()

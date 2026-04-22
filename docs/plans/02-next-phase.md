@@ -26,7 +26,8 @@
 - 原型链、this、new（Phase 5）
 - Bytecode VM（Phase 6）：49 条指令，含函数调用、对象属性、原型链
 - 665/665 测试全部通过（529 Interpreter + 134 VM + 2 CLI）
-- macOS 覆盖率报告端到端可生成（Homebrew LLVM clang 覆盖率构建，行 82%，函数 94%，分支 73%）
+- 当前构建配置已收口：`cmake/Options.cmake` 统一管理 options，warning 默认当作 error，全局编译选项由根 `CMakeLists.txt` 统一注入
+- 当前脚本职责已进一步明确：`scripts/build_debug.sh` 负责本地 debug 测试构建，`scripts/build_test.sh` 负责 coverage 构建，`scripts/run_ut.sh` 负责仅执行 UT（排除 CLI 测试），`scripts/coverage.sh` 在此基础上收集覆盖率
 - LeakSanitizer 已打开且无泄露（Homebrew LLVM clang 调试构建）
 
 ## 4. 设计方向（待 agent team 细化）

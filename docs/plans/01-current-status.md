@@ -5,7 +5,7 @@
 ## 1. 当前阶段
 
 - 当前阶段：Phase 6 已全部完成，下一阶段为 Phase 7
-- 最近更新时间：2026-04-22（构建系统脚本已收缩为固定职责入口，构建重构映射文档已删除，macOS 覆盖率链路已验证通过，LeakSanitizer 已打开且无泄露）
+- 最近更新时间：2026-04-23（构建系统脚本已收缩为固定职责入口，CMake option 已统一收口到 `cmake/Options.cmake`，全局编译/链接选项改为根 `CMakeLists.txt` 统一注入并在 `CompilerFlags.cmake` 直接用 `set/list(APPEND)` 组装，UT 脚本已切到 debug 构建链路并与 CLI 测试分离，macOS 覆盖率链路已验证通过，LeakSanitizer 已打开且无泄露）
 
 ## 2. 当前任务状态
 
@@ -22,7 +22,7 @@
 - [x] 0.6 建立测试基线
 - [x] 0.7 建立调试输出入口
 - [x] 0.8 建立覆盖率报告链路（lcov + genhtml，HTML 行/分支覆盖率）
-- [x] 构建系统重构：完成 CMake 公共配置架构重构（`qppjs_project_options` / `qppjs_project_warnings` / `qppjs_configure_project_target`）、构建 metadata 导出、移除 `CMakePresets.json`、构建脚本收缩为 `build_release.sh` / `build_debug.sh` / `build_test.sh` / `coverage.sh` 四个固定入口
+- [x] 构建系统重构：完成 CMake 公共配置收口（`cmake/Options.cmake` 统一管理 options，根 `CMakeLists.txt` 通过 `QPPJS_GLOBAL_COMPILER_OPTIONS` + `add_compile_options()` 注入全局编译选项，按需通过 `add_link_options()` 注入全局链接选项）、构建 metadata 导出、移除 `CMakePresets.json`、构建脚本收缩为 `build_release.sh` / `build_debug.sh` / `build_test.sh` / `run_ut.sh` / `coverage.sh` 固定入口
 
 - [x] Phase 1：Lexer + Parser + AST（已全部完成）
   - [x] 1.1 实现 Tokenizer 基础结构（TokenKind、Token、SourceRange、SourceLocation、LexerState、next_token 最小实现）
@@ -88,10 +88,11 @@
 
 - 已完成构建系统重构收尾验证与脚本职责收缩：
   - 移除 `CMakePresets.json`
-  - 构建入口收缩为四个固定脚本：`scripts/build_release.sh`、`scripts/build_debug.sh`、`scripts/build_test.sh`、`scripts/coverage.sh`
+  - 构建入口收缩为五个固定脚本：`scripts/build_release.sh`、`scripts/build_debug.sh`、`scripts/build_test.sh`、`scripts/run_ut.sh`、`scripts/coverage.sh`
   - `scripts/build_release.sh`：固定构建 `build/release`，Release，关闭 `QPPJS_BUILD_TESTS`
   - `scripts/build_debug.sh`：固定构建 `build/debug`，Debug，开启 `QPPJS_BUILD_TESTS` 与 `QPPJS_ENABLE_ASAN`
-  - `scripts/build_test.sh`：固定构建 `build/test`，Debug，开启 `QPPJS_BUILD_TESTS` 与 `QPPJS_ENABLE_COVERAGE`，关闭 `QPPJS_WARNINGS_AS_ERRORS`
+  - `scripts/build_test.sh`：固定构建 `build/test`，Debug，开启 `QPPJS_BUILD_TESTS` 与 `QPPJS_ENABLE_COVERAGE`；warning 默认视为 error，不再提供单独关闭开关
+  - `scripts/run_ut.sh`：先调用 `build_debug.sh`，再以 `ctest --test-dir build/debug -E '^qppjs_cli_'` 仅执行 UT（排除 2 个 CLI 测试）
   - `scripts/coverage.sh`：先调用 `build_test.sh`，再执行 UT，并基于 build metadata 收集覆盖率
   - 历史 macOS 验证结论保持有效：Homebrew LLVM clang 调试构建 665/665 测试通过，LeakSanitizer 已激活且无泄露；覆盖率报告端到端生成成功（行 82.0%、函数 93.9%、分支 73.2%），`--open` 可打开浏览器
 

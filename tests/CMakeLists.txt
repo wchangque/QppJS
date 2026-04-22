@@ -14,7 +14,6 @@ add_executable(qppjs_unit_tests
 )
 
 target_link_libraries(qppjs_unit_tests PRIVATE qppjs_core GTest::gtest_main)
-qppjs_configure_project_target(qppjs_unit_tests)
 
 include(GoogleTest)
 gtest_discover_tests(qppjs_unit_tests)
