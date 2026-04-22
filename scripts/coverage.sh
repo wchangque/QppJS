@@ -95,7 +95,7 @@ FILTERED_INFO="${BUILD_DIR}/coverage.info"
 REPORT_DIR="${BUILD_DIR}/coverage"
 GCOV_TOOL=""
 WRAPPER=""
-LLVM_PROFILE_FILE="${BUILD_DIR}/default.profraw"
+LLVM_PROFILE_PATTERN="${BUILD_DIR}/default-*.profraw"
 
 cleanup() {
     if [[ -n "$WRAPPER" ]]; then
@@ -128,9 +128,10 @@ case "$COVERAGE_BACKEND" in
         GCOV_TOOL="$(command -v gcov)"
         ;;
     llvm-cov)
-        if [[ ! -f "$LLVM_PROFILE_FILE" ]]; then
-            echo "error: llvm profile data not found: $LLVM_PROFILE_FILE" >&2
-            echo "hint: run tests with LLVM_PROFILE_FILE=${LLVM_PROFILE_FILE}" >&2
+        PROFRAW_FILES=( ${LLVM_PROFILE_PATTERN} )
+        if [[ ${#PROFRAW_FILES[@]} -eq 0 || ! -f "${PROFRAW_FILES[0]}" ]]; then
+            echo "error: no llvm profile data found matching: $LLVM_PROFILE_PATTERN" >&2
+            echo "hint: run tests with LLVM_PROFILE_FILE=${BUILD_DIR}/default-%p.profraw" >&2
             exit 1
         fi
         if [[ -z "$TEST_BINARY" || ! -x "$TEST_BINARY" ]]; then
@@ -143,7 +144,8 @@ case "$COVERAGE_BACKEND" in
             echo "error: llvm-cov/llvm-profdata not found" >&2
             exit 1
         fi
-        "$LLVM_PROFDATA_BIN" merge -sparse "$LLVM_PROFILE_FILE" -o "${BUILD_DIR}/default.profdata"
+        echo "merging ${#PROFRAW_FILES[@]} profraw file(s)..."
+        "$LLVM_PROFDATA_BIN" merge -sparse "${PROFRAW_FILES[@]}" -o "${BUILD_DIR}/default.profdata"
         "$LLVM_COV_BIN" export "$TEST_BINARY" -instr-profile="${BUILD_DIR}/default.profdata" -format=lcov > "$RAW_INFO"
         ;;
     *)
@@ -187,8 +189,7 @@ genhtml \
     --title "QppJS Coverage" \
     --ignore-errors inconsistent,unsupported,corrupt,category \
     --rc branch_coverage=1 \
-    --rc derive_function_end_line=0 \
-    --rc geninfo_unexecuted_blocks=1
+    --rc derive_function_end_line=0
 
 echo ""
 echo "report: ${REPORT_DIR}/index.html"

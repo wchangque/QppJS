@@ -4,224 +4,162 @@
 
 ## 1. 下一阶段
 
-- 下一阶段：Phase 7：控制流扩展（break/continue/throw/try/catch/finally）
+- 下一阶段：Phase 7：异常与复杂控制流（break/continue/throw/try/catch/finally）
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 
 ## 2. 阶段目标
 
 在 AST Interpreter 和 Bytecode VM 上同步支持以下特性：
-- break/continue 语句（含 labeled）
-- throw 语句
-- try/catch/finally 语句
-- Error 对象（new Error(msg)）
+- `break` / `continue` 语句（含 labeled）
+- `throw` 语句
+- `try / catch / finally` 语句
+- `Error` 对象（`new Error(msg)`，基础 built-in）
 
 ## 3. 进入前提
 
 当前已具备：
 - 完整 Lexer、Parser、AST（Phase 1）
 - AST Interpreter，含 Environment/Scope、表达式求值、语句执行（Phase 2）
-- Object Model（Phase 3）：JSObject、属性读写、对象字面量、成员访问
-- Function（Phase 4）：JSFunction、函数声明/表达式、调用表达式、闭包、递归、var 提升
-- 原型链、this、new（Phase 5）：proto_ 链、ScopeGuard this 绑定、NewExpression
-- 531/531 测试全部通过
+- Object Model（Phase 3）
+- Function（Phase 4）：闭包、递归、var 提升
+- 原型链、this、new（Phase 5）
+- Bytecode VM（Phase 6）：49 条指令，含函数调用、对象属性、原型链
+- 665/665 测试全部通过（529 Interpreter + 134 VM + 2 CLI）
+- macOS 覆盖率报告端到端可生成（`macos-llvmclang-coverage`，行 82%，函数 94%，分支 73%）
+- LeakSanitizer 已打开且无泄露（`macos-llvmclang-debug`）
 
-## 4. 设计方案摘要
+## 4. 设计方向（待 agent team 细化）
 
-### 4.1 指令集（49 条）
+以下是初步方向，需要 ES Spec Agent + QuickJS Research Agent + Design Agent 完成后再细化。
 
-**值加载（7）**：LoadUndefined, LoadNull, LoadTrue, LoadFalse, LoadNumber(u16), LoadString(u16), LoadThis
+### 4.1 AST Interpreter 侧
 
-**变量（6）**：GetVar(u16), SetVar(u16), DefVar(u16), DefLet(u16), DefConst(u16), InitVar(u16)
+- `CompletionType` 扩展：新增 `kBreak`、`kContinue`、`kThrow`
+- `StmtResult` 携带 label（break/continue with label）和 thrown value（throw）
+- `try / catch / finally` 执行语义：finally 必须执行，catch 捕获 thrown value
+- `break` / `continue` 在 while/for 内的穿透与截断
 
-**作用域（2）**：PushScope, PopScope
+### 4.2 Bytecode VM 侧
 
-**对象属性（5）**：NewObject, GetProp(u16), SetProp(u16), GetElem, SetElem
+新增指令（初步，需 Design Agent 确认）：
+- `Throw`：弹出栈顶值，抛出异常
+- `EnterTry(offset)`：注册 catch 处理器，offset 指向 catch 块入口
+- `LeaveTry`：退出 try 块（正常路径）
+- `EnterFinally(offset)`：注册 finally 处理器
+- `LeaveFinally`：退出 finally 块，恢复挂起的控制流
+- `Break(label_id)` / `Continue(label_id)`：带 label 的跳出
 
-**函数与调用（6）**：MakeFunction(u16), Call(u8), CallMethod(u8), NewCall(u8), Return, ReturnUndefined
+### 4.3 Error 内建对象
 
-**算术（5）**：Add, Sub, Mul, Div, Mod
-
-**一元（4）**：Neg, Pos, BitNot, Not
-
-**比较（8）**：Lt, LtEq, Gt, GtEq, Eq, NEq, StrictEq, StrictNEq
-
-**类型（2）**：Typeof, TypeofVar(u16)
-
-**控制流（3）**：Jump(i32), JumpIfFalse(i32), JumpIfTrue(i32)
-
-**栈操作（2）**：Pop, Dup
-
-操作数格式：u8=1字节无符号、u16=2字节大端无符号、i32=4字节大端有符号（跳转偏移，相对跳转指令末尾）
-
-### 4.2 BytecodeFunction 结构
-
-```cpp
-struct BytecodeFunction {
-    std::vector<uint8_t> code;                                 // 指令流
-    std::vector<Value> constants;                              // 常量池（number/string）
-    std::vector<std::string> names;                            // 名称池（变量名/属性名）
-    std::vector<std::shared_ptr<BytecodeFunction>> functions;  // 嵌套函数池
-    std::vector<std::string> params;                           // 参数名列表
-    std::optional<std::string> name;                           // 函数名（调试用）
-    std::vector<uint16_t> var_decls;                           // var 声明的 names 索引
-};
-```
-
-### 4.3 CallFrame 结构
-
-```cpp
-struct CallFrame {
-    const BytecodeFunction* bytecode;   // 当前字节码（非拥有）
-    size_t pc;                          // 程序计数器（字节偏移）
-    std::vector<Value> stack;           // 操作数栈
-    std::shared_ptr<Environment> env;   // 当前词法环境
-    Value this_val;                     // 当前 this 绑定
-};
-```
-
-### 4.4 新增文件
-
-| 文件 | 职责 |
-|---|---|
-| `include/qppjs/vm/opcode.h` | Opcode 枚举（X-Macro）|
-| `include/qppjs/vm/bytecode.h` | BytecodeFunction 结构体 |
-| `include/qppjs/vm/compiler.h` | Compiler 类声明 |
-| `src/vm/compiler.cpp` | Compiler 完整实现 |
-| `include/qppjs/vm/vm.h` | VM 类声明 + CallFrame 结构体 |
-| `src/vm/vm.cpp` | VM 完整实现（dispatch loop）|
-| `tests/unit/vm_test.cpp` | VM 路径全量行为测试 |
-
-**修改现有文件**：
-- `include/qppjs/runtime/js_function.h`：增加 `bytecode_` 字段
-- `include/qppjs/runtime/environment.h`：增加 `outer()` accessor
-- `src/main/main.cpp`：增加 `--vm` 执行路径
-- `src/CMakeLists.txt`、`tests/CMakeLists.txt`：注册新文件
+- `Error` 构造函数：`new Error(msg)` 创建带 `message` 属性的对象
+- `error.message`、`error.name` 属性
+- 暂不实现 stack trace
 
 ## 5. 本阶段任务分解
 
-### 6.1 指令集定义 + BytecodeFunction 骨架
+### 7.1 规范调研 + 设计
 
 目标：
-- 新建 `include/qppjs/vm/opcode.h`：Opcode 枚举（X-Macro 形式，49 条指令）
-- 新建 `include/qppjs/vm/bytecode.h`：BytecodeFunction 结构体（code/constants/names/functions/params/name/var_decls）
-- 项目可编译通过
-- 不需要任何运行时测试
+- ES Spec Agent 输出 `throw` / `try/catch/finally` / `break` / `continue` 的语义规则与边界条件
+- QuickJS Research Agent 输出 QuickJS 在异常处理和控制流上的实现取舍
+- Design Agent 综合产出 QppJS Phase 7 实现方案（含新增 AST 节点、Completion 模型扩展、VM 新增指令集）
 
-### 6.2 Compiler 框架 + 字面量 + 算术表达式
-
-目标：
-- 新建 `include/qppjs/vm/compiler.h` + `src/vm/compiler.cpp`：Compiler 类骨架（emit/add_constant/add_name/emit_jump/patch_jump 等辅助函数）
-- 编译 NumberLiteral/StringLiteral/BooleanLiteral/NullLiteral → LoadNumber/LoadString/LoadTrue/LoadFalse/LoadNull/LoadUndefined
-- 编译 BinaryExpression（算术 + 比较 + 相等）
-- 编译 UnaryExpression（Neg/Pos/BitNot/Not）
-- 编译 ExpressionStatement（追加 Pop）
-- 新建 `include/qppjs/vm/vm.h` + `src/vm/vm.cpp`：VM 骨架（dispatch loop，处理上述指令）
-- 测试：`1 + 2` 编译并在 VM 中执行返回 3
-
-### 6.3 变量、作用域、控制流
+### 7.2 AST 扩展 + Parser
 
 目标：
-- 编译 VariableDeclaration（let/const/var）→ DefLet/DefConst/DefVar + InitVar
-- 编译 Identifier → GetVar；赋值 → SetVar/InitVar
-- 编译 BlockStatement → PushScope/PopScope（Environment::outer() accessor 需同步开放）
-- 编译 IfStatement → JumpIfFalse + patch
-- 编译 WhileStatement → 回跳 + patch
-- 编译 LogicalExpression（&& / ||）→ Dup + JumpIfFalse/JumpIfTrue + Pop
-- VM 实现对应指令
-- 完成后：interpreter_test.cpp 中的变量/控制流用例在 VM 上全部通过
+- 新增 `ThrowStatement`、`TryStatement`（含 catch/finally 子节点）、`BreakStatement`、`ContinueStatement`、`LabeledStatement` AST 节点
+- Parser 支持解析上述语句
+- AST dump 扩展
+- 项目可编译，无运行时测试
 
-### 6.4 函数声明与调用
+### 7.3 AST Interpreter 实现
 
 目标：
-- compile_function_body（参数绑定、var 提升预扫描 hoist_vars_scan、发射 var_decls、编译函数体）
-- 编译 FunctionDeclaration → 子函数编译 + MakeFunction + SetVar（提升到函数体入口）
-- 编译 FunctionExpression → 子函数编译 + MakeFunction
-- 编译 CallExpression → Call 指令
-- 编译 ReturnStatement → Return 指令
-- VM do_call（建立新 CallFrame、参数绑定、执行子函数、弹帧）
-- VM Return/ReturnUndefined 处理
-- 完成后：function_test.cpp 的函数调用/闭包/递归/var 提升用例在 VM 上通过
+- `CompletionType` 扩展（kBreak/kContinue/kThrow）
+- `eval_throw_stmt`、`eval_try_stmt`、`eval_break_stmt`、`eval_continue_stmt`
+- while/for 循环内正确截断 break/continue
+- finally 块无论何种完成类型都必须执行
+- 完成后：interpreter 侧相关测试全部通过
 
-### 6.5 对象、属性、方法调用、this、new
+### 7.4 VM 编译器 + 指令集扩展
 
 目标：
-- 编译 ObjectExpression → NewObject + SetProp × N
-- 编译 MemberExpression → GetProp / GetElem
-- 编译 MemberAssignmentExpression → SetProp / SetElem
-- 编译方法调用（CallMethod：obj + callee + args 的栈布局）
-- 编译 NewExpression → NewCall
-- 编译 LoadThis（this 标识符 → LoadThis 指令）
-- VM 实现 CallMethod（receiver 绑定 this）、NewCall（do_new）、GetProp/SetProp/GetElem/SetElem
-- 完成后：object_test.cpp + proto_test.cpp 中的端到端用例在 VM 上通过
+- 新增 Throw、EnterTry、LeaveTry、EnterFinally、LeaveFinally 等指令
+- Compiler 实现 compile_throw、compile_try、compile_break、compile_continue
+- VM 实现对应指令的 dispatch 逻辑
+- 完成后：VM 侧相关测试全部通过
 
-### 6.6 typeof 特殊处理
+### 7.5 Error 内建对象
 
 目标：
-- 增加 TypeofVar(u16) 指令：安全 lookup，未声明返回 "undefined"
-- compile_unary 中，typeof identifier → TypeofVar，其他 typeof expr → compile_expr + Typeof
-- VM 实现 TypeofVar
-- 完成后：typeof 系列测试在 VM 上全部通过（包括 typeof undeclaredVar）
+- 注册全局 `Error` 构造函数（支持 `new Error(msg)`）
+- `error.message` 属性可读
+- `error.name` 返回 `"Error"`
+- 在 Interpreter 和 VM 两侧均可使用
 
-### 6.7 全量 VM 测试 + main.cpp 集成
+### 7.6 全量测试 + 回归验证
 
 目标：
-- 新建 `tests/unit/vm_test.cpp`：将现有 531 个测试用例复制并适配 VM 执行路径（替换 run 函数）
-- `main.cpp` 增加 `--vm` flag
-- 全量 VM 测试全部通过（531 个用例）
-- 原有 531 个 Interpreter 测试继续通过（无回归）
-- 总测试数：531（Interpreter）+ 531（VM）= 1062 个全部通过
+- 补充 Phase 7 专项测试（throw/try/catch/finally/break/continue/Error）
+- 原有 665 个测试无回归
+- 覆盖率报告更新
 
 ## 6. 建议执行顺序
 
-6.1 → 6.2 → 6.3 → 6.4 → 6.5 → 6.6 → 6.7，每完成一个子任务跑全量测试确认无回归。
+7.1 → 7.2 → 7.3 → 7.4 → 7.5 → 7.6，每完成一个子任务跑全量测试确认无回归。
 
-## 7. 验证方式
+## 7. 验证样例
 
-Phase 6 完成后，应至少能验证：
+Phase 7 完成后，应至少能验证：
 
 ```js
-// 原型链 + this + new
-function Animal(name) { this.name = name; }
-Animal.prototype.speak = function() { return this.name; };
-let a = new Animal("Cat");
-a.speak()  // → "Cat"（通过 VM 执行）
-
-// 闭包
-function make_counter() {
-    let n = 0;
-    return function() { n = n + 1; return n; };
+// throw + catch
+function divide(a, b) {
+    if (b === 0) throw new Error("division by zero");
+    return a / b;
 }
-let c = make_counter();
-c(); c(); c()  // → 3
+try {
+    divide(1, 0);
+} catch (e) {
+    e.message  // → "division by zero"
+}
 
-// 控制流
+// finally
+function f() {
+    try { return 1; } finally { /* must execute */ }
+}
+f()  // → 1
+
+// break/continue
 let sum = 0;
-let i = 1;
-while (i <= 10) { sum = sum + i; i = i + 1; }
-sum  // → 55
+for (let i = 0; i < 10; i++) {
+    if (i === 5) break;
+    sum = sum + i;
+}
+sum  // → 10
+
+// nested try
+try {
+    try { throw new Error("inner"); }
+    catch (e) { throw new Error("rethrow"); }
+} catch (e) {
+    e.message  // → "rethrow"
+}
 ```
 
 ## 8. 暂不处理内容
 
-- 字节码序列化/反序列化
-- QuickJS 字节码兼容
-- upvalue 优化（继续用 Environment 链）
-- NaN boxing
-- atom 系统
+- `for` 循环（Phase 7 以 while 为主，for 可选）
+- `for...in` / `for...of`
+- generator / iterator
+- 完整 Error 子类（TypeError、RangeError 等）—— Phase 8 处理
+- stack trace
 
-## 9. 进入 Phase 7 前的前置收尾
+## 9. 退出条件
 
-在正式开始 Phase 7 前，先完成以下构建系统收尾项：
-- 验证 `scripts/coverage.sh` 在 `linux-clang-coverage`（`llvm-cov`）与 `linux-gcc-coverage`（`gcov`）下都能端到端生成 HTML 报告
-- 确认 `linux-clang-debug` 非 coverage 构建不会生成 coverage 产物
-- 至少确认精简后的 preset 在 Windows/MSVC 与 macOS/AppleClang 上 configure/build 路径不因本轮重构失效
-
-## 10. 退出条件
-
-满足以下条件即可进入 Phase 7 实质实现：
-- 上述构建系统收尾验证已完成并同步到 `docs/plans/01-current-status.md`
-- vm_test.cpp 中 531 个用例全部通过
-- 原有 531 个 Interpreter 测试无回归
-- main.cpp 支持 `--vm` flag 切换执行路径
-- Phase 6 设计方案中的所有风险点均已处理或明确推迟
+满足以下条件即可进入 Phase 8：
+- throw/try/catch/finally/break/continue 在 Interpreter 和 VM 两侧均通过测试
+- `new Error(msg)` 可用，`error.message` 可读
+- 原有 665 个测试无回归
+- 状态文档已同步

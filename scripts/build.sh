@@ -51,10 +51,18 @@ fi
 if [[ -z "$PRESET" ]]; then
     case "$(uname -s)" in
         Darwin)
-            if [[ "$DO_COVERAGE" -eq 1 ]]; then
-                PRESET="macos-appleclang-coverage"
+            if [[ -x "/opt/homebrew/opt/llvm/bin/clang++" ]]; then
+                if [[ "$DO_COVERAGE" -eq 1 ]]; then
+                    PRESET="macos-llvmclang-coverage"
+                else
+                    PRESET="macos-llvmclang-debug"
+                fi
             else
-                PRESET="macos-appleclang-debug"
+                if [[ "$DO_COVERAGE" -eq 1 ]]; then
+                    PRESET="macos-appleclang-coverage"
+                else
+                    PRESET="macos-appleclang-debug"
+                fi
             fi
             ;;
         Linux)
@@ -74,12 +82,28 @@ else
     echo "preset: $PRESET"
 fi
 
+KNOWN_COVERAGE_PRESETS=(
+    macos-llvmclang-coverage
+    macos-appleclang-coverage
+    linux-clang-coverage
+    linux-gcc-coverage
+)
+
 if [[ "$DO_COVERAGE" -eq 1 && "$PRESET" != *"coverage"* ]]; then
-    echo "error: --coverage requires a coverage-enabled preset, got '$PRESET'" >&2
-    if [[ "$USER_SET_PRESET" -eq 1 ]]; then
-        echo "hint: use a preset such as linux-clang-coverage, linux-gcc-coverage, or macos-appleclang-coverage" >&2
+    COVERAGE_PRESET="${PRESET/debug/coverage}"
+    COVERAGE_PRESET="${COVERAGE_PRESET/release/coverage}"
+    VALID=0
+    for p in "${KNOWN_COVERAGE_PRESETS[@]}"; do
+        [[ "$COVERAGE_PRESET" == "$p" ]] && VALID=1 && break
+    done
+    if [[ "$VALID" -eq 1 ]]; then
+        echo "info: switching preset to $COVERAGE_PRESET for --coverage"
+        PRESET="$COVERAGE_PRESET"
+    else
+        echo "error: --coverage requires a coverage-enabled preset, got '$PRESET'" >&2
+        echo "hint: use a preset such as macos-llvmclang-coverage, linux-clang-coverage, or linux-gcc-coverage" >&2
+        exit 1
     fi
-    exit 1
 fi
 
 BUILD_DIR="${ROOT_DIR}/build/${PRESET}"
@@ -103,7 +127,8 @@ print(data.get('coverage_backend', ''))
 PY
 )"
         if [[ "$COVERAGE_BACKEND" == "llvm-cov" ]]; then
-            LLVM_PROFILE_FILE="${BUILD_DIR}/default.profraw" ctest --preset "$PRESET"
+            rm -f "${BUILD_DIR}"/default-*.profraw
+            LLVM_PROFILE_FILE="${BUILD_DIR}/default-%p.profraw" ctest --preset "$PRESET"
         else
             ctest --preset "$PRESET"
         fi
