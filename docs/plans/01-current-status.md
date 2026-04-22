@@ -5,7 +5,7 @@
 ## 1. 当前阶段
 
 - 当前阶段：Phase 6 已全部完成，下一阶段为 Phase 7
-- 最近更新时间：2026-04-22（构建系统重构收尾验证已完成，macOS 覆盖率链路已验证通过，LeakSanitizer 已打开且无泄露）
+- 最近更新时间：2026-04-22（构建系统脚本已收缩为固定职责入口，构建重构映射文档已删除，macOS 覆盖率链路已验证通过，LeakSanitizer 已打开且无泄露）
 
 ## 2. 当前任务状态
 
@@ -22,7 +22,7 @@
 - [x] 0.6 建立测试基线
 - [x] 0.7 建立调试输出入口
 - [x] 0.8 建立覆盖率报告链路（lcov + genhtml，HTML 行/分支覆盖率）
-- [x] 构建系统重构：完成 CMake 公共配置架构重构（`qppjs_project_options` / `qppjs_project_warnings` / `qppjs_configure_project_target`）、构建 metadata 导出、preset 精简、`scripts/build.sh`/`scripts/coverage.sh` 职责收缩
+- [x] 构建系统重构：完成 CMake 公共配置架构重构（`qppjs_project_options` / `qppjs_project_warnings` / `qppjs_configure_project_target`）、构建 metadata 导出、移除 `CMakePresets.json`、构建脚本收缩为 `build_release.sh` / `build_debug.sh` / `build_test.sh` / `coverage.sh` 四个固定入口
 
 - [x] Phase 1：Lexer + Parser + AST（已全部完成）
   - [x] 1.1 实现 Tokenizer 基础结构（TokenKind、Token、SourceRange、SourceLocation、LexerState、next_token 最小实现）
@@ -86,13 +86,14 @@
 
 ## 3. 最近完成内容
 
-- 已完成构建系统重构收尾验证（macOS）：
-  - 新增 `macos-llvmclang-debug` / `macos-llvmclang-coverage` preset，使用 Homebrew LLVM（`/opt/homebrew/opt/llvm/bin/clang++`），显式链接 Homebrew libc++
-  - 去掉 `linux-clang-debug` 和 `macos-appleclang-debug` testPreset 中的 `ASAN_OPTIONS=detect_leaks=0`
-  - `scripts/build.sh`：macOS 自动检测优先选 `macos-llvmclang-*`（Homebrew LLVM 存在时），llvm-cov 模式改用 `%p` 多进程 profraw 模式
-  - `scripts/coverage.sh`：llvm-cov 分支改为 glob 合并所有 `default-*.profraw`，去掉 `genhtml` 里无效的 `--rc geninfo_unexecuted_blocks=1`
-  - 已验证 macOS 上 `macos-llvmclang-debug` 665/665 测试通过，LeakSanitizer 已激活且无泄露
-  - 已验证 macOS 上 `macos-llvmclang-coverage` 覆盖率报告端到端生成成功（行 82.0%、函数 93.9%、分支 73.2%），`--open` 可打开浏览器
+- 已完成构建系统重构收尾验证与脚本职责收缩：
+  - 移除 `CMakePresets.json`
+  - 构建入口收缩为四个固定脚本：`scripts/build_release.sh`、`scripts/build_debug.sh`、`scripts/build_test.sh`、`scripts/coverage.sh`
+  - `scripts/build_release.sh`：固定构建 `build/release`，Release，关闭 `QPPJS_BUILD_TESTS`
+  - `scripts/build_debug.sh`：固定构建 `build/debug`，Debug，开启 `QPPJS_BUILD_TESTS` 与 `QPPJS_ENABLE_ASAN`
+  - `scripts/build_test.sh`：固定构建 `build/test`，Debug，开启 `QPPJS_BUILD_TESTS` 与 `QPPJS_ENABLE_COVERAGE`，关闭 `QPPJS_WARNINGS_AS_ERRORS`
+  - `scripts/coverage.sh`：先调用 `build_test.sh`，再执行 UT，并基于 build metadata 收集覆盖率
+  - 历史 macOS 验证结论保持有效：Homebrew LLVM clang 调试构建 665/665 测试通过，LeakSanitizer 已激活且无泄露；覆盖率报告端到端生成成功（行 82.0%、函数 93.9%、分支 73.2%），`--open` 可打开浏览器
 
 - 已完成 Phase 6 Bytecode VM：
   - `include/qppjs/vm/opcode.h`（新建）：49 条指令，X-Macro 形式
@@ -110,8 +111,8 @@
 
 ## 4. 当前风险与待决策项
 
-- 需确认精简后的 preset 集合在 Windows/MSVC 上 configure/build 不回归
-- macOS 推荐使用 `macos-llvmclang-*` preset（Homebrew LLVM，支持 LSan）；`macos-appleclang-*` 保留备用（Apple Clang 不支持 LSan on macOS）
+- 需确认原生 CMake 工作流在 Windows/MSVC 多配置生成器上 configure/build/test 不回归
+- macOS 若要继续使用 Homebrew LLVM + libc++ / LSan，需要在原生 CMake 命令里显式传 `CMAKE_CXX_COMPILER` 与相关 flags；不再由 preset 自动选中
 - JSFunction::body_ 字段继续保留（AST Interpreter 使用）
 - VM 尚不支持 break/continue/throw/try/catch（Phase 7）
 - GetProp/SetProp 对 JSFunction 的非 prototype 属性当前静默忽略
@@ -121,7 +122,7 @@
 新 session 开始时，优先做以下动作：
 1. 读取本文件
 2. 读取 `docs/plans/02-next-phase.md`
-3. 直接进入 Phase 7：控制流扩展（构建系统收尾验证已完成）
+3. 直接进入 Phase 7：控制流扩展（构建脚本已收缩为固定职责入口）
 
 ## 6. 收尾检查清单
 

@@ -3,51 +3,34 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BUILD_DIR="${ROOT_DIR}/build/test"
+DO_OPEN=0
 
 usage() {
     cat <<EOF
-Usage: coverage.sh <build-dir> [--open] [--help]
-
-  build-dir  CMake build directory with qppjs-build-meta.json
+Usage: coverage.sh [--open] [--help]
 
 Options:
   --open      Open the HTML report in browser after generation
   --help, -h  Show this help message
-
-Examples:
-  coverage.sh build/linux-gcc-coverage
-  coverage.sh build/linux-clang-coverage --open
 EOF
 }
-
-BUILD_DIR=""
-DO_OPEN=0
 
 for arg in "$@"; do
     case "$arg" in
         --open)    DO_OPEN=1 ;;
         --help|-h) usage; exit 0 ;;
         --*)       echo "error: unknown option: $arg" >&2; echo; usage >&2; exit 1 ;;
-        *)         BUILD_DIR="$arg" ;;
+        *)         echo "error: coverage.sh does not accept positional arguments" >&2; echo; usage >&2; exit 1 ;;
     esac
 done
 
-if [[ -z "$BUILD_DIR" ]]; then
-    echo "error: build directory is required" >&2
-    echo
-    usage >&2
-    exit 1
-fi
-
-case "$BUILD_DIR" in
-    /*) ;;
-    *) BUILD_DIR="${ROOT_DIR}/${BUILD_DIR}" ;;
-esac
+"${SCRIPT_DIR}/build_test.sh"
 
 META_FILE="${BUILD_DIR}/qppjs-build-meta.json"
 if [[ ! -f "$META_FILE" ]]; then
     echo "error: build metadata not found: $META_FILE" >&2
-    echo "hint: run cmake configure/build first" >&2
+    echo "hint: build_test.sh must finish successfully first" >&2
     exit 1
 fi
 
@@ -71,14 +54,10 @@ COVERAGE_ENABLED="$(meta_value coverage_enabled)"
 COVERAGE_BACKEND="$(meta_value coverage_backend)"
 PLATFORM="$(meta_value platform)"
 TEST_BINARY="$(meta_value test_binary)"
+IS_MULTI_CONFIG="$(meta_value is_multi_config)"
 
 if [[ "$COVERAGE_ENABLED" != "true" ]]; then
     echo "error: coverage is not enabled for build directory: $BUILD_DIR" >&2
-    exit 1
-fi
-
-if [[ ! -d "$BUILD_DIR" ]]; then
-    echo "error: build directory not found: $BUILD_DIR" >&2
     exit 1
 fi
 
@@ -89,6 +68,11 @@ for tool in lcov genhtml; do
         exit 1
     fi
 done
+
+CTEST_ARGS=(--test-dir "$BUILD_DIR" --output-on-failure)
+if [[ "$IS_MULTI_CONFIG" == "true" ]]; then
+    CTEST_ARGS+=(-C Debug)
+fi
 
 RAW_INFO="${BUILD_DIR}/coverage_raw.info"
 FILTERED_INFO="${BUILD_DIR}/coverage.info"
@@ -117,6 +101,7 @@ EOF
 
 case "$COVERAGE_BACKEND" in
     gcov)
+        ctest "${CTEST_ARGS[@]}"
         if [[ -z "$(find "$BUILD_DIR" -name "*.gcno" 2>/dev/null | head -1)" ]]; then
             echo "error: no .gcno files found in $BUILD_DIR" >&2
             exit 1
@@ -128,10 +113,11 @@ case "$COVERAGE_BACKEND" in
         GCOV_TOOL="$(command -v gcov)"
         ;;
     llvm-cov)
+        rm -f "${BUILD_DIR}"/default-*.profraw
+        LLVM_PROFILE_FILE="${BUILD_DIR}/default-%p.profraw" ctest "${CTEST_ARGS[@]}"
         PROFRAW_FILES=( ${LLVM_PROFILE_PATTERN} )
         if [[ ${#PROFRAW_FILES[@]} -eq 0 || ! -f "${PROFRAW_FILES[0]}" ]]; then
             echo "error: no llvm profile data found matching: $LLVM_PROFILE_PATTERN" >&2
-            echo "hint: run tests with LLVM_PROFILE_FILE=${BUILD_DIR}/default-%p.profraw" >&2
             exit 1
         fi
         if [[ -z "$TEST_BINARY" || ! -x "$TEST_BINARY" ]]; then

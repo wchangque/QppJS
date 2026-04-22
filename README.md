@@ -24,11 +24,42 @@ QppJS 是一个从零开始实现的 JavaScript 引擎项目。
 
 ## 当前仓库状态
 
-当前仓库仍处于初始化阶段，尚未加入实际源码、构建系统或测试基础设施。
+当前仓库已包含实际源码、CMake 构建系统、单元测试与覆盖率脚本。
 
-后续建议优先补齐：
+## 构建与测试
 
-1. 顶层目录规划（如 `src/`、`include/`、`tests/`、`docs/`）
-2. 最小可用构建链路（如 CMake 或 Make）
-3. 第一阶段里程碑说明（例如 tokenizer / parser / runtime 的切分）
-4. 与 QuickJS 的对照阅读记录或模块映射
+默认情况下，编译器由原生 CMake 自行探测。
+
+### `scripts/build_release.sh`
+
+构建 release 版本，关闭 UT 编译。
+
+```bash
+./scripts/build_release.sh
+```
+
+### `scripts/build_debug.sh`
+
+构建 debug 版本，开启 UT 编译，默认打开 ASAN，不开启覆盖率统计。
+
+```bash
+./scripts/build_debug.sh
+ctest --test-dir build/debug --output-on-failure
+```
+
+### `scripts/build_test.sh`
+
+构建 test 版本，开启 UT 编译与覆盖率统计，默认不启用 ASAN。
+
+```bash
+./scripts/build_test.sh
+```
+
+### `scripts/coverage.sh`
+
+先调用 `build_test.sh`，再执行 UT 并生成覆盖率报告。
+
+```bash
+./scripts/coverage.sh
+./scripts/coverage.sh --open
+```

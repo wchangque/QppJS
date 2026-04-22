@@ -26,8 +26,8 @@
 - 原型链、this、new（Phase 5）
 - Bytecode VM（Phase 6）：49 条指令，含函数调用、对象属性、原型链
 - 665/665 测试全部通过（529 Interpreter + 134 VM + 2 CLI）
-- macOS 覆盖率报告端到端可生成（`macos-llvmclang-coverage`，行 82%，函数 94%，分支 73%）
-- LeakSanitizer 已打开且无泄露（`macos-llvmclang-debug`）
+- macOS 覆盖率报告端到端可生成（Homebrew LLVM clang 覆盖率构建，行 82%，函数 94%，分支 73%）
+- LeakSanitizer 已打开且无泄露（Homebrew LLVM clang 调试构建）
 
 ## 4. 设计方向（待 agent team 细化）
 
