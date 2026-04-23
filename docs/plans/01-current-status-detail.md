@@ -81,6 +81,10 @@
 
 ## 2. 最近完成内容
 
+- 完成构建脚本跨平台探测修复：
+  - `scripts/build_debug.sh`、`scripts/build_release.sh`、`scripts/build_test.sh`：仅在 `CC/CXX` 都未设置、平台为 `Darwin` 且 `brew` 存在时才探测 Homebrew LLVM；其他环境保持未设置 `CC/CXX`，交由 CMake/系统编译器选择，避免在 `set -euo pipefail` 下因缺少 `brew` 直接退出
+  - 当前 Linux/WSL 环境下已验证 `./scripts/build_debug.sh`、`./scripts/build_release.sh`、`./scripts/build_test.sh` 均可完成构建
+
 - 完成 Phase 8.1 — Error 子类（TypeError/ReferenceError/RangeError）+ instanceof 运算符：
   - **新增文件**：`include/qppjs/runtime/native_errors.h`（`NativeErrorType` 枚举 + `MakeNativeErrorValue` 工厂函数声明）、`src/runtime/native_errors.cpp`（工厂函数实现）
   - **新增 instanceof 支持**：`token.h` 添加 `KwInstanceof`；`ast.h` 添加 `BinaryOp::Instanceof`；`lexer.cpp` 注册关键字；`parser.cpp` 添加 lbp=10 和 led 处理；`ast_dump.cpp` 添加 case；`opcode.h` 添加 `kInstanceof`；`compiler.cpp` emit `kInstanceof`

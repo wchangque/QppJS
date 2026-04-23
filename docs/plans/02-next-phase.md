@@ -5,7 +5,7 @@
 ## 1. 下一阶段
 
 - 下一阶段：Phase 8（基础内建对象，进行中）
-- Phase 8.1 已完成（861/861 测试通过）
+- Phase 8.1 已完成（917/917 测试通过）
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 
@@ -23,7 +23,7 @@
 - 原型链、this、new（Phase 5）
 - Bytecode VM（Phase 6）：49 条指令，含函数调用、对象属性、原型链
 - 控制流扩展（Phase 7）：throw/try/catch/finally/break/continue/for/labeled/Error 基础内建
-- 功能基线：792/792 测试通过，ASAN/LSan 全量回归无泄露
+- 功能基线：917/917 测试通过，ASAN/LSan 全量回归无泄露
 
 ## 4. 已知遗留问题（Phase 7 P2）
 
@@ -31,7 +31,7 @@
 
 - **P2-1**：VM catch 参数与 catch 体共享同一 scope，规范要求两层独立作用域；`catch(e) { let e = 2; }` 在 VM 路径下会失败
 - **P2-2**：VM `compile_labeled_stmt` 对非循环体的 labeled break 触发 `assert(false)`；Interpreter 路径已正确实现
-- **P2-3**：内部运行时错误（ReferenceError/TypeError）以字符串值抛出，而非 Error 对象；影响 `instanceof` 等常见模式
+- **P2-3**：已在 Phase 8.1 修复，内部运行时错误（ReferenceError/TypeError）已升级为真正的 Error 子类实例
 
 ## 5. 本阶段任务分解
 
@@ -145,5 +145,5 @@ greet.call(null, "world")  // → "hi world"
 - Function.prototype.call / apply / bind 可用
 - VM catch 作用域与 Interpreter 行为对齐（P2-1）
 - VM labeled break 非循环体场景不再 assert 崩溃（P2-2）
-- 原有 792 个测试无回归
+- 原有 917 个测试无回归
 - 状态文档已同步

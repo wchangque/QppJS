@@ -15,12 +15,13 @@
 
 - **P2-1**：VM catch 参数与 catch 体共享同一 scope，规范要求两层独立作用域
 - **P2-2**：VM `compile_labeled_stmt` 对非循环体的 labeled break 触发 `assert(false)`
-- **P3-1**（新）：`JSString` 二次堆分配（`std::string` 成员），已知技术债务，Phase 9 优化
-- **P3-2**（新）：循环引用（proto 链、closure env）导致内存泄漏，Phase 9 GC 解决
+- **P3-1**：`JSString` 二次堆分配（`std::string` 成员），已知技术债务，Phase 9 优化
+- **P3-2**：循环引用（proto 链、closure env）导致内存泄漏，Phase 9 GC 解决
 
-## 进行中
+## 最近完成
 
 - [x] Phase 8.1：Error 子类（TypeError/ReferenceError/RangeError）+ instanceof — 完成（917/917，含 Review M1/M2/M3 修复）
+- [x] 构建脚本跨平台探测修复：无 brew 的 Linux/WSL 环境不再因 `brew --prefix llvm` 直接退出，3 个构建脚本验证通过
 
 ## 未开始
 
