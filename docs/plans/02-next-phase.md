@@ -4,18 +4,14 @@
 
 ## 1. 下一阶段
 
-- 下一阶段：Phase 8（待规划）
-- Phase 7 已全部完成（736/736 测试通过）
+- 下一阶段：Phase 8（基础内建对象）
+- Phase 7 已全部完成（792/792 测试通过）
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 
 ## 2. 阶段目标
 
-在 AST Interpreter 和 Bytecode VM 上同步支持以下特性：
-- `break` / `continue` 语句（含 labeled）
-- `throw` 语句
-- `try / catch / finally` 语句
-- `Error` 对象（`new Error(msg)`，基础 built-in）
+引入最小可用的内建对象集合，修复 Phase 7 遗留的规范偏差，在 AST Interpreter 和 Bytecode VM 两侧保持行为一致。
 
 ## 3. 进入前提
 
@@ -26,136 +22,128 @@
 - Function（Phase 4）：闭包、递归、var 提升
 - 原型链、this、new（Phase 5）
 - Bytecode VM（Phase 6）：49 条指令，含函数调用、对象属性、原型链
-- 功能基线：663/663 测试通过，ASAN/LSan 全量回归无泄露（函数/闭包 closure_env_ 模型已收尾）
-- 当前构建配置已收口：`cmake/Options.cmake` 统一管理 options，warning 默认当作 error，全局编译选项由根 `CMakeLists.txt` 统一注入
-- 当前脚本职责已进一步明确：`scripts/build_debug.sh` 负责本地 debug 测试构建，`scripts/build_test.sh` 负责 coverage 构建，`scripts/run_ut.sh` 负责仅执行 UT（排除 CLI 测试），`scripts/coverage.sh` 在此基础上收集覆盖率
+- 控制流扩展（Phase 7）：throw/try/catch/finally/break/continue/for/labeled/Error 基础内建
+- 功能基线：792/792 测试通过，ASAN/LSan 全量回归无泄露
 
-## 4. 已完成方向
+## 4. 已知遗留问题（Phase 7 P2）
 
-### 4.1 AST Interpreter 侧（7.3 已完成）
+以下问题在 Phase 8 中处理：
 
-- `CompletionType` 扩展：kBreak/kContinue/kThrow，Completion.target 字段
-- `eval_throw/try/break/continue/labeled/for` 全部实现
-- finally 块语义：无论何种 completion 均执行，finally abrupt 覆盖先前结果
-- break/continue with label：循环接受 label 参数，labeled statement 传入 label
-- NativeFn 机制 + Error 内建（Interpreter 侧）
-- 707/707 测试通过
-
-### 4.2 Bytecode VM 侧
-
-新增指令（初步，需 Design Agent 确认）：
-- `Throw`：弹出栈顶值，抛出异常
-- `EnterTry(offset)`：注册 catch 处理器，offset 指向 catch 块入口
-- `LeaveTry`：退出 try 块（正常路径）
-- `EnterFinally(offset)`：注册 finally 处理器
-- `LeaveFinally`：退出 finally 块，恢复挂起的控制流
-- `Break(label_id)` / `Continue(label_id)`：带 label 的跳出
-
-### 4.3 Error 内建对象
-
-- `Error` 构造函数：`new Error(msg)` 创建带 `message` 属性的对象
-- `error.message`、`error.name` 属性
-- 暂不实现 stack trace
+- **P2-1**：VM catch 参数与 catch 体共享同一 scope，规范要求两层独立作用域；`catch(e) { let e = 2; }` 在 VM 路径下会失败
+- **P2-2**：VM `compile_labeled_stmt` 对非循环体的 labeled break 触发 `assert(false)`；Interpreter 路径已正确实现
+- **P2-3**：内部运行时错误（ReferenceError/TypeError）以字符串值抛出，而非 Error 对象；影响 `instanceof` 等常见模式
 
 ## 5. 本阶段任务分解
 
-### 7.1 规范调研 + 设计
+### 8.1 Error 子类（优先）
 
 目标：
-- ES Spec Agent 输出 `throw` / `try/catch/finally` / `break` / `continue` 的语义规则与边界条件
-- QuickJS Research Agent 输出 QuickJS 在异常处理和控制流上的实现取舍
-- Design Agent 综合产出 QppJS Phase 7 实现方案（含新增 AST 节点、Completion 模型扩展、VM 新增指令集）
+- 将内部运行时错误从字符串改为真正的 Error 子类实例（TypeError、ReferenceError、RangeError）
+- 支持 `instanceof Error`、`instanceof TypeError` 等判断
+- Interpreter 和 VM 两侧均升级
+- 修复 P2-3
 
-### 7.2 AST 扩展 + Parser
-
-目标：
-- 新增 `ThrowStatement`、`TryStatement`（含 catch/finally 子节点）、`BreakStatement`、`ContinueStatement`、`LabeledStatement` AST 节点
-- Parser 支持解析上述语句
-- AST dump 扩展
-- 项目可编译，无运行时测试
-
-### 7.3 AST Interpreter 实现（已完成）
-
-已完成：CompletionType 扩展、6 个新 eval 方法、hoist_vars 扩展、NativeFn + Error 内建；707/707 通过
-
-### 7.4 VM 编译器 + 指令集扩展
+### 8.2 console 对象
 
 目标：
-- 新增 Throw、EnterTry、LeaveTry、EnterFinally、LeaveFinally 等指令
-- Compiler 实现 compile_throw、compile_try、compile_break、compile_continue
-- VM 实现对应指令的 dispatch 逻辑
-- 完成后：VM 侧相关测试全部通过
+- 注册全局 `console` 对象
+- 支持 `console.log(...args)`，多参数空格分隔输出到 stdout
+- Interpreter 和 VM 两侧均可用
 
-### 7.5 Error 内建对象
-
-目标：
-- 注册全局 `Error` 构造函数（支持 `new Error(msg)`）
-- `error.message` 属性可读
-- `error.name` 返回 `"Error"`
-- 在 Interpreter 和 VM 两侧均可使用
-
-### 7.6 全量测试 + 回归验证
+### 8.3 Array 基础
 
 目标：
-- 补充 Phase 7 专项测试（throw/try/catch/finally/break/continue/Error）
-- 原有 665 个测试无回归
-- 覆盖率报告更新
+- 数组字面量 `[1, 2, 3]`（Parser + AST + Interpreter + VM）
+- 下标读写 `arr[0]`、`arr[0] = x`
+- `arr.length` 属性
+- 最小方法：`push`、`pop`、`forEach`（或 `map`）
+
+### 8.4 Object 内建方法
+
+目标：
+- `Object.keys(obj)` 返回自有可枚举属性名数组
+- `Object.assign(target, source)` 浅拷贝属性
+- `Object.create(proto)` 以指定原型创建对象
+
+### 8.5 Function 内建方法
+
+目标：
+- `fn.call(thisArg, ...args)`
+- `fn.apply(thisArg, argsArray)`
+- `fn.bind(thisArg, ...args)` 返回绑定函数
+
+### 8.6 VM catch 作用域修复（P2-1）
+
+目标：
+- catch 参数绑定与 catch 体使用两层独立作用域
+- 使 `catch(e) { let e = 2; }` 在 VM 路径下正确报错（或正确隔离）
+- 与 Interpreter 行为对齐
+
+### 8.7 VM labeled break 修复（P2-2）
+
+目标：
+- `compile_labeled_stmt` 支持非循环体的 labeled break
+- 将 `assert(false)` 替换为正确实现或明确错误返回
+- 与 Interpreter 行为对齐
 
 ## 6. 建议执行顺序
 
-7.1 → 7.2 → 7.3 → 7.4 → 7.5 → 7.6，每完成一个子任务跑全量测试确认无回归。
+8.1 → 8.2 → 8.3 → 8.4 → 8.5 → 8.6 → 8.7
+
+每完成一个子任务跑全量测试确认无回归。
+
+8.1 优先级最高（规范偏差，影响 catch 中对错误类型的判断）。
+8.6、8.7 可在 8.1 完成后穿插进行，不阻塞 8.2～8.5。
 
 ## 7. 验证样例
 
-Phase 7 完成后，应至少能验证：
+Phase 8 完成后，应至少能验证：
 
 ```js
-// throw + catch
-function divide(a, b) {
-    if (b === 0) throw new Error("division by zero");
-    return a / b;
-}
+// Error 子类
 try {
-    divide(1, 0);
+    null.x;
 } catch (e) {
-    e.message  // → "division by zero"
+    e instanceof TypeError  // → true
+    e.message               // → 非空字符串
 }
 
-// finally
-function f() {
-    try { return 1; } finally { /* must execute */ }
-}
-f()  // → 1
+// console.log
+console.log("hello", 42);  // 输出: hello 42
 
-// break/continue
-let sum = 0;
-for (let i = 0; i < 10; i++) {
-    if (i === 5) break;
-    sum = sum + i;
-}
-sum  // → 10
+// Array
+let arr = [1, 2, 3];
+arr.push(4);
+arr.length  // → 4
+arr[0]      // → 1
 
-// nested try
-try {
-    try { throw new Error("inner"); }
-    catch (e) { throw new Error("rethrow"); }
-} catch (e) {
-    e.message  // → "rethrow"
-}
+// Object 内建
+let keys = Object.keys({a: 1, b: 2});
+keys[0]  // → "a"
+
+// Function 内建
+function greet(name) { return "hi " + name; }
+greet.call(null, "world")  // → "hi world"
 ```
 
 ## 8. 暂不处理内容
 
-- `for` 循环（Phase 7 以 while 为主，for 可选）
-- `for...in` / `for...of`
+- `for...in` / `for...of`（Phase 9 前考虑）
 - generator / iterator
-- 完整 Error 子类（TypeError、RangeError 等）—— Phase 8 处理
-- stack trace
+- Promise / async
+- 完整 property descriptor（configurable/enumerable/writable）
+- Array 稀疏表示优化
+- 完整 String 内建方法
 
 ## 9. 退出条件
 
-满足以下条件即可进入 Phase 8：
-- throw/try/catch/finally/break/continue 在 Interpreter 和 VM 两侧均通过测试
-- `new Error(msg)` 可用，`error.message` 可读
-- 原有 665 个测试无回归
+满足以下条件即可进入 Phase 9：
+- Error 子类（TypeError/ReferenceError）可用，`instanceof` 判断正确
+- `console.log` 可用
+- Array 基础可用（字面量、下标、length、push/pop）
+- Object.keys / Object.assign / Object.create 可用
+- Function.prototype.call / apply / bind 可用
+- VM catch 作用域与 Interpreter 行为对齐（P2-1）
+- VM labeled break 非循环体场景不再 assert 崩溃（P2-2）
+- 原有 792 个测试无回归
 - 状态文档已同步

@@ -2,7 +2,7 @@
 name: review-agent
 description: 独立审查当前实现是否符合规范与设计，并指出最值得优先修复的问题。
 tools: Read, Glob, Grep, Bash(node:*), Bash(git:*)
-model: sonnet
+model: opus
 ---
 
 你是 QppJS 的 Review Agent。

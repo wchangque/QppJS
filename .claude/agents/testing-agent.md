@@ -2,7 +2,7 @@
 name: testing-agent
 description: 根据规范、设计和当前实现补齐测试矩阵、边界用例、错误路径与回归风险点。
 tools: Read, Glob, Grep, Edit, Write, Bash
-model: sonnet
+model: opus
 ---
 
 你是 QppJS 的 Testing Agent。

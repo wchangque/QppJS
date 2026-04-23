@@ -2,7 +2,7 @@
 name: quickjs-research
 description: 研究 /home/wuzhen/code/QuickJS 中与当前主题相关的实现路径、关键结构和设计取舍，适合做参考实现对照。
 tools: Read, Glob, Grep
-model: sonnet
+model: opus
 ---
 
 你是 QppJS 的 QuickJS Research Agent。
