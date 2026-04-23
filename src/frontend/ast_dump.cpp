@@ -281,6 +281,71 @@ std::string dump_stmt(const StmtNode& node, int indent) {
                                result += dump_stmt(s, indent + 2);
                            }
                        },
+                       [&](const ThrowStatement& ts) {
+                           result = prefix + "ThrowStatement\n";
+                           result += ind(indent + 1) + "argument:\n";
+                           result += dump_expr(ts.argument, indent + 2);
+                       },
+                       [&](const TryStatement& trys) {
+                           result = prefix + "TryStatement\n";
+                           result += ind(indent + 1) + "block:\n";
+                           result += ind(indent + 2) + "BlockStatement\n";
+                           for (const auto& s : trys.block.body) {
+                               result += dump_stmt(s, indent + 3);
+                           }
+                           if (trys.handler.has_value()) {
+                               result += ind(indent + 1) + "catch (" + trys.handler->param + "):\n";
+                               result += ind(indent + 2) + "BlockStatement\n";
+                               for (const auto& s : trys.handler->body.body) {
+                                   result += dump_stmt(s, indent + 3);
+                               }
+                           }
+                           if (trys.finalizer.has_value()) {
+                               result += ind(indent + 1) + "finally:\n";
+                               result += ind(indent + 2) + "BlockStatement\n";
+                               for (const auto& s : trys.finalizer->body) {
+                                   result += dump_stmt(s, indent + 3);
+                               }
+                           }
+                       },
+                       [&](const BreakStatement& bs) {
+                           result = prefix + "BreakStatement";
+                           if (bs.label.has_value()) result += " " + *bs.label;
+                           result += "\n";
+                       },
+                       [&](const ContinueStatement& cs) {
+                           result = prefix + "ContinueStatement";
+                           if (cs.label.has_value()) result += " " + *cs.label;
+                           result += "\n";
+                       },
+                       [&](const LabeledStatement& ls) {
+                           result = prefix + "LabeledStatement " + ls.label + ":\n";
+                           result += ind(indent + 1) + "body:\n";
+                           result += dump_stmt(*ls.body, indent + 2);
+                       },
+                       [&](const ForStatement& fs) {
+                           result = prefix + "ForStatement\n";
+                           result += ind(indent + 1) + "init:\n";
+                           if (fs.init.has_value()) {
+                               result += dump_stmt(*fs.init.value(), indent + 2);
+                           } else {
+                               result += ind(indent + 2) + "(none)\n";
+                           }
+                           result += ind(indent + 1) + "test:\n";
+                           if (fs.test.has_value()) {
+                               result += dump_expr(*fs.test, indent + 2);
+                           } else {
+                               result += ind(indent + 2) + "(none)\n";
+                           }
+                           result += ind(indent + 1) + "update:\n";
+                           if (fs.update.has_value()) {
+                               result += dump_expr(*fs.update, indent + 2);
+                           } else {
+                               result += ind(indent + 2) + "(none)\n";
+                           }
+                           result += ind(indent + 1) + "body:\n";
+                           result += dump_stmt(*fs.body, indent + 2);
+                       },
                },
                node.v);
 

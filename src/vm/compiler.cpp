@@ -53,6 +53,27 @@ void Compiler::patch_jump(size_t pos) {
     current_->code[pos + 3] = static_cast<uint8_t>(u & 0xFF);
 }
 
+void Compiler::patch_jump_to(size_t pos, size_t target) {
+    // offset = target - (pos + 4), so that VM: pc = (pos+4) + offset = target
+    int32_t offset = static_cast<int32_t>(target) - static_cast<int32_t>(pos + 4);
+    uint32_t u = static_cast<uint32_t>(offset);
+    current_->code[pos]     = static_cast<uint8_t>((u >> 24) & 0xFF);
+    current_->code[pos + 1] = static_cast<uint8_t>((u >> 16) & 0xFF);
+    current_->code[pos + 2] = static_cast<uint8_t>((u >> 8) & 0xFF);
+    current_->code[pos + 3] = static_cast<uint8_t>(u & 0xFF);
+}
+
+void Compiler::emit_jump_to(Opcode op, size_t target) {
+    emit(op);
+    size_t pos = current_->code.size();
+    emit_i32(0);  // placeholder
+    patch_jump_to(pos, target);
+}
+
+size_t Compiler::current_offset() const {
+    return current_->code.size();
+}
+
 uint16_t Compiler::add_constant(Value v) {
     current_->constants.push_back(std::move(v));
     return static_cast<uint16_t>(current_->constants.size() - 1);
@@ -112,6 +133,22 @@ void Compiler::hoist_vars_scan_stmt(const StmtNode& stmt) {
     } else if (std::holds_alternative<WhileStatement>(stmt.v)) {
         const auto& while_stmt = std::get<WhileStatement>(stmt.v);
         if (while_stmt.body) hoist_vars_scan_stmt(*while_stmt.body);
+    } else if (std::holds_alternative<ForStatement>(stmt.v)) {
+        const auto& for_stmt = std::get<ForStatement>(stmt.v);
+        if (for_stmt.init.has_value()) hoist_vars_scan_stmt(**for_stmt.init);
+        if (for_stmt.body) hoist_vars_scan_stmt(*for_stmt.body);
+    } else if (std::holds_alternative<TryStatement>(stmt.v)) {
+        const auto& try_stmt = std::get<TryStatement>(stmt.v);
+        hoist_vars_scan(try_stmt.block.body);
+        if (try_stmt.handler.has_value()) {
+            hoist_vars_scan(try_stmt.handler->body.body);
+        }
+        if (try_stmt.finalizer.has_value()) {
+            hoist_vars_scan(try_stmt.finalizer->body);
+        }
+    } else if (std::holds_alternative<LabeledStatement>(stmt.v)) {
+        const auto& labeled = std::get<LabeledStatement>(stmt.v);
+        if (labeled.body) hoist_vars_scan_stmt(*labeled.body);
     }
     // Do NOT recurse into FunctionDeclaration/FunctionExpression bodies
 }
@@ -194,6 +231,12 @@ void Compiler::compile_stmt(const StmtNode& stmt) {
             [this](const WhileStatement& s) { compile_while_stmt(s); },
             [this](const ReturnStatement& s) { compile_return_stmt(s); },
             [this](const FunctionDeclaration& s) { compile_function_decl(s); },
+            [this](const ThrowStatement& s) { compile_throw_stmt(s); },
+            [this](const TryStatement& s) { compile_try_stmt(s); },
+            [this](const BreakStatement& s) { compile_break_stmt(s); },
+            [this](const ContinueStatement& s) { compile_continue_stmt(s); },
+            [this](const LabeledStatement& s) { compile_labeled_stmt(s); },
+            [this](const ForStatement& s) { compile_for_stmt(s); },
         },
         stmt.v);
 }
@@ -284,20 +327,52 @@ void Compiler::compile_if_stmt(const IfStatement& stmt) {
     }
 }
 
-void Compiler::compile_while_stmt(const WhileStatement& stmt) {
-    size_t loop_start = current_->code.size();
+void Compiler::compile_while_stmt(const WhileStatement& stmt, std::optional<std::string> label) {
+    size_t loop_start = current_offset();
     compile_expr(stmt.test);
-    size_t patch_pos = emit_jump(Opcode::kJumpIfFalse);
+    size_t exit_patch = emit_jump(Opcode::kJumpIfFalse);
+
+    loop_env_stack_.push_back({label, 0, {}, {}, {}});
+
     compile_stmt(*stmt.body);
-    // Back-jump to loop_start
-    emit(Opcode::kJump);
-    int32_t back_offset = static_cast<int32_t>(loop_start) - static_cast<int32_t>(current_->code.size() + 4);
-    emit_i32(back_offset);
-    patch_jump(patch_pos);
+
+    // continue target = loop_start
+    size_t continue_target = loop_start;
+    loop_env_stack_.back().continue_target = continue_target;
+    for (size_t p : loop_env_stack_.back().continue_patches) {
+        patch_jump_to(p, continue_target);
+    }
+
+    emit_jump_to(Opcode::kJump, loop_start);
+
+    size_t after_loop = current_offset();
+    patch_jump_to(exit_patch, after_loop);
+    for (size_t p : loop_env_stack_.back().break_patches) {
+        patch_jump_to(p, after_loop);
+    }
+
+    loop_env_stack_.pop_back();
 }
 
 void Compiler::compile_return_stmt(const ReturnStatement& stmt) {
-    if (stmt.argument.has_value()) {
+    if (!finally_info_stack_.empty()) {
+        // There are active finally blocks that must run before the function exits.
+        // Push the return value onto the stack first (kReturn always pops one value).
+        if (stmt.argument.has_value()) {
+            compile_expr(stmt.argument.value());
+        } else {
+            emit(Opcode::kLoadUndefined);
+        }
+        // For each active finally (innermost first), emit LeaveTry + Gosub.
+        // The Gosub placeholder is recorded in gosub_patches; compile_try_stmt patches it
+        // once the finally subroutine label is known.
+        for (auto fi_it = finally_info_stack_.rbegin(); fi_it != finally_info_stack_.rend(); ++fi_it) {
+            emit(Opcode::kLeaveTry);
+            size_t gosub_pos = emit_jump(Opcode::kGosub);
+            fi_it->gosub_patches.push_back(gosub_pos);
+        }
+        emit(Opcode::kReturn);
+    } else if (stmt.argument.has_value()) {
         compile_expr(stmt.argument.value());
         emit(Opcode::kReturn);
     } else {
@@ -553,6 +628,316 @@ void Compiler::compile_new_expr(const NewExpression& expr) {
     }
     emit(Opcode::kNewCall);
     emit_u8(static_cast<uint8_t>(expr.arguments.size()));
+}
+
+// ============================================================
+// Phase 7: throw / try / break / continue / labeled / for
+// ============================================================
+
+void Compiler::compile_throw_stmt(const ThrowStatement& stmt) {
+    compile_expr(stmt.argument);
+    emit(Opcode::kThrow);
+}
+
+void Compiler::compile_try_stmt(const TryStatement& stmt) {
+    bool has_catch = stmt.handler.has_value();
+    bool has_finally = stmt.finalizer.has_value();
+
+    if (has_finally) {
+        // Compile the finally subroutine after the main try/catch body.
+        // We use a forward jump to skip over the finally body during normal execution,
+        // then Gosub to invoke it.
+
+        if (has_catch) {
+            // try + catch + finally
+            //
+            // EnterTry [catch_label]
+            // <try block>
+            // LeaveTry
+            // Gosub [finally_label]
+            // Jump [after_finally]
+            //
+            // [catch_label]:
+            //   EnterTry [catch_rethrow_label]
+            //   PushScope
+            //   GetException
+            //   DefLet [param]
+            //   InitVar [param]
+            //   <catch body>
+            //   PopScope
+            //   LeaveTry
+            //   Gosub [finally_label]
+            //   Jump [after_finally]
+            //
+            // [catch_rethrow_label]:
+            //   Gosub [finally_label]
+            //   Throw
+            //
+            // [finally_label]:
+            //   <finally body>
+            //   Ret
+            //
+            // [after_finally]:
+
+            size_t enter_try_pos = emit_jump(Opcode::kEnterTry);
+            finally_info_stack_.push_back(FinallyInfo{});
+            // try block
+            for (const auto& s : stmt.block.body) {
+                compile_stmt(s);
+            }
+            // Capture gosub_patches before popping (break/continue inside try block may have
+            // emitted Gosub placeholders that need patching once finally_label is known).
+            std::vector<size_t> try_gosub_patches = std::move(finally_info_stack_.back().gosub_patches);
+            finally_info_stack_.pop_back();
+
+            emit(Opcode::kLeaveTry);
+            size_t gosub_finally_1 = emit_jump(Opcode::kGosub);
+            size_t jump_after_1 = emit_jump(Opcode::kJump);
+
+            // [catch_label]
+            size_t catch_label = current_offset();
+            patch_jump_to(enter_try_pos, catch_label);
+
+            // inner EnterTry for catch body (protect with finally on exception in catch)
+            size_t enter_try_catch_pos = emit_jump(Opcode::kEnterTry);
+            finally_info_stack_.push_back(FinallyInfo{});
+            emit(Opcode::kPushScope);
+            emit(Opcode::kGetException);
+            uint16_t param_idx = add_name(stmt.handler->param);
+            emit(Opcode::kDefLet);
+            emit_u16(param_idx);
+            emit(Opcode::kInitVar);
+            emit_u16(param_idx);
+            emit(Opcode::kPop);
+            for (const auto& s : stmt.handler->body.body) {
+                compile_stmt(s);
+            }
+            emit(Opcode::kPopScope);
+            std::vector<size_t> catch_gosub_patches = std::move(finally_info_stack_.back().gosub_patches);
+            finally_info_stack_.pop_back();
+            emit(Opcode::kLeaveTry);
+            size_t gosub_finally_2 = emit_jump(Opcode::kGosub);
+            size_t jump_after_2 = emit_jump(Opcode::kJump);
+
+            // [catch_rethrow_label]
+            size_t catch_rethrow_label = current_offset();
+            patch_jump_to(enter_try_catch_pos, catch_rethrow_label);
+            size_t gosub_finally_3 = emit_jump(Opcode::kGosub);
+            // After Gosub, finally_return_stack is empty — kRet will restore pending_throw.
+            emit(Opcode::kRet);
+
+            // [finally_label] — the subroutine
+            size_t finally_label = current_offset();
+            patch_jump_to(gosub_finally_1, finally_label);
+            patch_jump_to(gosub_finally_2, finally_label);
+            patch_jump_to(gosub_finally_3, finally_label);
+            // Patch Gosub placeholders from break/continue inside try and catch blocks
+            for (size_t p : try_gosub_patches) patch_jump_to(p, finally_label);
+            for (size_t p : catch_gosub_patches) patch_jump_to(p, finally_label);
+
+            for (const auto& s : stmt.finalizer->body) {
+                compile_stmt(s);
+            }
+            emit(Opcode::kRet);
+
+            // [after_finally]
+            size_t after_finally = current_offset();
+            patch_jump_to(jump_after_1, after_finally);
+            patch_jump_to(jump_after_2, after_finally);
+
+        } else {
+            // try + finally (no catch)
+            //
+            // EnterTry [finally_handler_label]
+            // <try block>
+            // LeaveTry
+            // Gosub [finally_label]
+            // Jump [after_finally]
+            //
+            // [finally_handler_label]:
+            //   Gosub [finally_label]
+            //   Throw
+            //
+            // [finally_label]:
+            //   <finally body>
+            //   Ret
+            //
+            // [after_finally]:
+
+            size_t enter_try_pos = emit_jump(Opcode::kEnterTry);
+            finally_info_stack_.push_back(FinallyInfo{});
+            for (const auto& s : stmt.block.body) {
+                compile_stmt(s);
+            }
+            std::vector<size_t> try_gosub_patches = std::move(finally_info_stack_.back().gosub_patches);
+            finally_info_stack_.pop_back();
+            emit(Opcode::kLeaveTry);
+            size_t gosub_finally_1 = emit_jump(Opcode::kGosub);
+            size_t jump_after = emit_jump(Opcode::kJump);
+
+            // [finally_handler_label]
+            size_t finally_handler_label = current_offset();
+            patch_jump_to(enter_try_pos, finally_handler_label);
+            size_t gosub_finally_2 = emit_jump(Opcode::kGosub);
+            // After Gosub, finally_return_stack is empty — kRet will restore pending_throw.
+            emit(Opcode::kRet);
+
+            // [finally_label]
+            size_t finally_label = current_offset();
+            patch_jump_to(gosub_finally_1, finally_label);
+            patch_jump_to(gosub_finally_2, finally_label);
+            for (size_t p : try_gosub_patches) patch_jump_to(p, finally_label);
+
+            for (const auto& s : stmt.finalizer->body) {
+                compile_stmt(s);
+            }
+            emit(Opcode::kRet);
+
+            // [after_finally]
+            size_t after_finally = current_offset();
+            patch_jump_to(jump_after, after_finally);
+        }
+
+    } else {
+        // try + catch (no finally)
+        //
+        // EnterTry [catch_label]
+        // <try block>
+        // LeaveTry
+        // Jump [after_catch]
+        //
+        // [catch_label]:
+        //   PushScope
+        //   GetException
+        //   DefLet [param]
+        //   InitVar [param]
+        //   <catch body>
+        //   PopScope
+        //
+        // [after_catch]:
+
+        size_t enter_try_pos = emit_jump(Opcode::kEnterTry);
+        for (const auto& s : stmt.block.body) {
+            compile_stmt(s);
+        }
+        emit(Opcode::kLeaveTry);
+        size_t jump_after = emit_jump(Opcode::kJump);
+
+        // [catch_label]
+        size_t catch_label = current_offset();
+        patch_jump_to(enter_try_pos, catch_label);
+        emit(Opcode::kPushScope);
+        emit(Opcode::kGetException);
+        uint16_t param_idx = add_name(stmt.handler->param);
+        emit(Opcode::kDefLet);
+        emit_u16(param_idx);
+        emit(Opcode::kInitVar);
+        emit_u16(param_idx);
+        emit(Opcode::kPop);
+        for (const auto& s : stmt.handler->body.body) {
+            compile_stmt(s);
+        }
+        emit(Opcode::kPopScope);
+
+        // [after_catch]
+        size_t after_catch = current_offset();
+        patch_jump_to(jump_after, after_catch);
+    }
+}
+
+void Compiler::compile_break_stmt(const BreakStatement& stmt) {
+    for (auto it = loop_env_stack_.rbegin(); it != loop_env_stack_.rend(); ++it) {
+        bool matches = !stmt.label.has_value() || (it->label == stmt.label);
+        if (matches) {
+            // For each active finally being crossed (innermost first), emit:
+            //   LeaveTry (clear the EnterTry handler)
+            //   Gosub [finally_label] (run the finally subroutine)
+            for (auto fi_it = finally_info_stack_.rbegin(); fi_it != finally_info_stack_.rend(); ++fi_it) {
+                emit(Opcode::kLeaveTry);
+                size_t gosub_pos = emit_jump(Opcode::kGosub);
+                fi_it->gosub_patches.push_back(gosub_pos);
+            }
+            size_t patch_pos = emit_jump(Opcode::kJump);
+            it->break_patches.push_back(patch_pos);
+            return;
+        }
+    }
+    assert(false && "break: no matching loop");
+}
+
+void Compiler::compile_continue_stmt(const ContinueStatement& stmt) {
+    for (auto it = loop_env_stack_.rbegin(); it != loop_env_stack_.rend(); ++it) {
+        bool matches = !stmt.label.has_value() || (it->label == stmt.label);
+        if (matches) {
+            // Same LeaveTry + Gosub pattern as break.
+            for (auto fi_it = finally_info_stack_.rbegin(); fi_it != finally_info_stack_.rend(); ++fi_it) {
+                emit(Opcode::kLeaveTry);
+                size_t gosub_pos = emit_jump(Opcode::kGosub);
+                fi_it->gosub_patches.push_back(gosub_pos);
+            }
+            size_t patch_pos = emit_jump(Opcode::kJump);
+            it->continue_patches.push_back(patch_pos);
+            return;
+        }
+    }
+    assert(false && "continue: no matching loop");
+}
+
+void Compiler::compile_labeled_stmt(const LabeledStatement& stmt) {
+    if (std::holds_alternative<ForStatement>(stmt.body->v)) {
+        compile_for_stmt(std::get<ForStatement>(stmt.body->v), stmt.label);
+    } else if (std::holds_alternative<WhileStatement>(stmt.body->v)) {
+        compile_while_stmt(std::get<WhileStatement>(stmt.body->v), stmt.label);
+    } else {
+        compile_stmt(*stmt.body);
+    }
+}
+
+void Compiler::compile_for_stmt(const ForStatement& stmt, std::optional<std::string> label) {
+    emit(Opcode::kPushScope);
+
+    if (stmt.init.has_value()) {
+        compile_stmt(*stmt.init.value());
+    }
+
+    size_t loop_start = current_offset();
+
+    size_t exit_patch = 0;
+    bool has_test = stmt.test.has_value();
+    if (has_test) {
+        compile_expr(*stmt.test);
+        exit_patch = emit_jump(Opcode::kJumpIfFalse);
+    }
+
+    loop_env_stack_.push_back({label, 0, {}, {}, {}});
+
+    compile_stmt(*stmt.body);
+
+    // continue target = update expression start (or loop_start if no update)
+    size_t continue_target = current_offset();
+    loop_env_stack_.back().continue_target = continue_target;
+    for (size_t p : loop_env_stack_.back().continue_patches) {
+        patch_jump_to(p, continue_target);
+    }
+
+    if (stmt.update.has_value()) {
+        compile_expr(*stmt.update);
+        emit(Opcode::kPop);
+    }
+
+    emit_jump_to(Opcode::kJump, loop_start);
+
+    size_t after_loop = current_offset();
+    if (has_test) {
+        patch_jump_to(exit_patch, after_loop);
+    }
+    for (size_t p : loop_env_stack_.back().break_patches) {
+        patch_jump_to(p, after_loop);
+    }
+
+    loop_env_stack_.pop_back();
+
+    emit(Opcode::kPopScope);
 }
 
 }  // namespace qppjs

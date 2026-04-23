@@ -234,6 +234,12 @@ static SourceRange stmt_range(const StmtNode& s) {
                               [](const WhileStatement& n) { return n.range; },
                               [](const ReturnStatement& n) { return n.range; },
                               [](const FunctionDeclaration& n) { return n.range; },
+                              [](const ThrowStatement& n) { return n.range; },
+                              [](const TryStatement& n) { return n.range; },
+                              [](const BreakStatement& n) { return n.range; },
+                              [](const ContinueStatement& n) { return n.range; },
+                              [](const LabeledStatement& n) { return n.range; },
+                              [](const ForStatement& n) { return n.range; },
                       },
                       s.v);
 }
@@ -938,6 +944,191 @@ struct Parser {
                 std::move(body_ptr), span(kw.range.offset, fn_end)}});
     }
 
+    ParseResult<StmtNode> parse_throw_stmt() {
+        Token kw = cur;
+        advance();
+        // throw 后若立即换行则为语法错误
+        if (got_lf) {
+            return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "illegal newline after throw"));
+        }
+        auto arg = parse_expr(0);
+        if (!arg.ok()) return ParseResult<StmtNode>::Err(arg.error());
+        auto semi = consume_semicolon();
+        if (!semi.ok()) return ParseResult<StmtNode>::Err(semi.error());
+        uint32_t end = range_end(semi.value().range);
+        if (end == semi.value().range.offset) {
+            end = range_end(expr_range(arg.value()));
+        }
+        return ParseResult<StmtNode>::Ok(
+                StmtNode{ThrowStatement{std::move(arg.value()), span(kw.range.offset, end)}});
+    }
+
+    // 解析 block statement 并返回 BlockStatement（不包装为 StmtNode）
+    ParseResult<BlockStatement> parse_block() {
+        Token lbrace = cur;
+        advance();  // 消费 {
+        std::vector<StmtNode> body;
+        while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
+            auto stmt = parse_stmt();
+            if (!stmt.ok()) return ParseResult<BlockStatement>::Err(stmt.error());
+            body.push_back(std::move(stmt.value()));
+        }
+        auto rb = expect(TokenKind::RBrace);
+        if (!rb.ok()) return ParseResult<BlockStatement>::Err(rb.error());
+        SourceRange range{lbrace.range.offset, rb.value().range.offset + 1 - lbrace.range.offset};
+        return ParseResult<BlockStatement>::Ok(BlockStatement{std::move(body), range});
+    }
+
+    ParseResult<StmtNode> parse_try_stmt() {
+        Token kw = cur;
+        advance();  // 消费 try
+        if (cur.kind != TokenKind::LBrace) {
+            return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected '{' after try"));
+        }
+        auto block = parse_block();
+        if (!block.ok()) return ParseResult<StmtNode>::Err(block.error());
+
+        std::optional<CatchClause> handler;
+        std::optional<BlockStatement> finalizer;
+
+        if (cur.kind == TokenKind::KwCatch) {
+            Token catch_tok = cur;
+            advance();  // 消费 catch
+            auto lp = expect(TokenKind::LParen);
+            if (!lp.ok()) return ParseResult<StmtNode>::Err(lp.error());
+            if (cur.kind != TokenKind::Ident) {
+                return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected catch parameter"));
+            }
+            std::string param{token_text(cur)};
+            advance();
+            auto rp = expect(TokenKind::RParen);
+            if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
+            if (cur.kind != TokenKind::LBrace) {
+                return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected '{' after catch(...)"));
+            }
+            auto catch_body = parse_block();
+            if (!catch_body.ok()) return ParseResult<StmtNode>::Err(catch_body.error());
+            SourceRange catch_range = span(catch_tok.range.offset, range_end(catch_body.value().range));
+            handler = CatchClause{std::move(param), std::move(catch_body.value()), catch_range};
+        }
+
+        if (cur.kind == TokenKind::KwFinally) {
+            advance();  // 消费 finally
+            if (cur.kind != TokenKind::LBrace) {
+                return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected '{' after finally"));
+            }
+            auto fin = parse_block();
+            if (!fin.ok()) return ParseResult<StmtNode>::Err(fin.error());
+            finalizer = std::move(fin.value());
+        }
+
+        if (!handler.has_value() && !finalizer.has_value()) {
+            return ParseResult<StmtNode>::Err(
+                    make_parse_error(source, cur, "try statement must have catch or finally"));
+        }
+
+        uint32_t try_end = finalizer.has_value() ? range_end(finalizer->range)
+                                                  : range_end(handler->range);
+        return ParseResult<StmtNode>::Ok(StmtNode{TryStatement{
+                std::move(block.value()), std::move(handler), std::move(finalizer),
+                span(kw.range.offset, try_end)}});
+    }
+
+    ParseResult<StmtNode> parse_break_stmt() {
+        Token kw = cur;
+        advance();
+        std::optional<std::string> label;
+        if (!got_lf && cur.kind == TokenKind::Ident) {
+            label = std::string(token_text(cur));
+            advance();
+        }
+        auto semi = consume_semicolon();
+        if (!semi.ok()) return ParseResult<StmtNode>::Err(semi.error());
+        uint32_t end = range_end(semi.value().range);
+        if (end == semi.value().range.offset) {
+            end = range_end(kw.range);
+        }
+        return ParseResult<StmtNode>::Ok(StmtNode{BreakStatement{std::move(label), span(kw.range.offset, end)}});
+    }
+
+    ParseResult<StmtNode> parse_continue_stmt() {
+        Token kw = cur;
+        advance();
+        std::optional<std::string> label;
+        if (!got_lf && cur.kind == TokenKind::Ident) {
+            label = std::string(token_text(cur));
+            advance();
+        }
+        auto semi = consume_semicolon();
+        if (!semi.ok()) return ParseResult<StmtNode>::Err(semi.error());
+        uint32_t end = range_end(semi.value().range);
+        if (end == semi.value().range.offset) {
+            end = range_end(kw.range);
+        }
+        return ParseResult<StmtNode>::Ok(StmtNode{ContinueStatement{std::move(label), span(kw.range.offset, end)}});
+    }
+
+    ParseResult<StmtNode> parse_for_stmt() {
+        Token kw = cur;
+        advance();  // 消费 for
+        auto lp = expect(TokenKind::LParen);
+        if (!lp.ok()) return ParseResult<StmtNode>::Err(lp.error());
+
+        // init（var/let/const 声明会内部消费分号；表达式 init 需要在外层消费分号）
+        std::optional<std::unique_ptr<StmtNode>> init;
+        bool var_decl_init = false;
+        if (cur.kind != TokenKind::Semicolon) {
+            if (cur.kind == TokenKind::KwLet || cur.kind == TokenKind::KwConst || cur.kind == TokenKind::KwVar) {
+                auto init_stmt = parse_var_decl();
+                if (!init_stmt.ok()) return init_stmt;
+                init = std::make_unique<StmtNode>(std::move(init_stmt.value()));
+                var_decl_init = true;
+            } else {
+                auto expr = parse_expr(0);
+                if (!expr.ok()) return ParseResult<StmtNode>::Err(expr.error());
+                SourceRange er = expr_range(expr.value());
+                init = std::make_unique<StmtNode>(StmtNode{ExpressionStatement{std::move(expr.value()), er}});
+            }
+        }
+        // 若 init 是 var_decl，分号已被 parse_var_decl 消费；否则显式消费
+        if (!var_decl_init) {
+            auto semi1 = expect(TokenKind::Semicolon);
+            if (!semi1.ok()) return ParseResult<StmtNode>::Err(semi1.error());
+        }
+
+        // test
+        std::optional<ExprNode> test;
+        if (cur.kind != TokenKind::Semicolon) {
+            auto t = parse_expr(0);
+            if (!t.ok()) return ParseResult<StmtNode>::Err(t.error());
+            test = std::move(t.value());
+        }
+        {
+            auto semi2 = expect(TokenKind::Semicolon);
+            if (!semi2.ok()) return ParseResult<StmtNode>::Err(semi2.error());
+        }
+
+        // update
+        std::optional<ExprNode> update;
+        if (cur.kind != TokenKind::RParen) {
+            auto u = parse_expr(0);
+            if (!u.ok()) return ParseResult<StmtNode>::Err(u.error());
+            update = std::move(u.value());
+        }
+        {
+            auto rp2 = expect(TokenKind::RParen);
+            if (!rp2.ok()) return ParseResult<StmtNode>::Err(rp2.error());
+        }
+
+        auto body = parse_stmt();
+        if (!body.ok()) return body;
+        uint32_t for_end = range_end(stmt_range(body.value()));
+        return ParseResult<StmtNode>::Ok(StmtNode{ForStatement{
+                std::move(init), std::move(test), std::move(update),
+                std::make_unique<StmtNode>(std::move(body.value())),
+                span(kw.range.offset, for_end)}});
+    }
+
     ParseResult<StmtNode> parse_stmt() {
         switch (cur.kind) {
             case TokenKind::KwLet:
@@ -954,6 +1145,55 @@ struct Parser {
                 return parse_return_stmt();
             case TokenKind::KwFunction:
                 return parse_function_decl_stmt();
+            case TokenKind::KwThrow:
+                return parse_throw_stmt();
+            case TokenKind::KwTry:
+                return parse_try_stmt();
+            case TokenKind::KwBreak:
+                return parse_break_stmt();
+            case TokenKind::KwContinue:
+                return parse_continue_stmt();
+            case TokenKind::KwFor:
+                return parse_for_stmt();
+            case TokenKind::Ident: {
+                // 向前看：若下一个 token 是 ':'，则解析为 LabeledStatement
+                Token ident_tok = cur;
+                advance();
+                if (cur.kind == TokenKind::Colon) {
+                    advance();  // 消费 :
+                    std::string lbl{token_text(ident_tok)};
+                    auto body = parse_stmt();
+                    if (!body.ok()) return body;
+                    uint32_t lbl_end = range_end(stmt_range(body.value()));
+                    return ParseResult<StmtNode>::Ok(StmtNode{LabeledStatement{
+                            std::move(lbl),
+                            std::make_unique<StmtNode>(std::move(body.value())),
+                            span(ident_tok.range.offset, lbl_end)}});
+                }
+                // 否则回退：将 ident_tok 作为表达式 nud 处理，继续走表达式语句路径
+                // 因为已经 advance 了，需要在当前 cur 基础上继续 parse_expr
+                Token start = ident_tok;
+                auto left = nud(ident_tok);
+                if (!left.ok()) return ParseResult<StmtNode>::Err(left.error());
+                // 继续 Pratt loop
+                while (true) {
+                    int bp = lbp(cur.kind);
+                    if (bp <= 0) break;
+                    Token op_tok2 = cur;
+                    advance();
+                    auto res = led(op_tok2, std::move(left.value()));
+                    if (!res.ok()) return ParseResult<StmtNode>::Err(res.error());
+                    left = std::move(res);
+                }
+                auto semi = consume_semicolon();
+                if (!semi.ok()) return ParseResult<StmtNode>::Err(semi.error());
+                uint32_t es_end = range_end(semi.value().range);
+                if (es_end == semi.value().range.offset) {
+                    es_end = range_end(expr_range(left.value()));
+                }
+                return ParseResult<StmtNode>::Ok(StmtNode{ExpressionStatement{
+                        std::move(left.value()), span(start.range.offset, es_end)}});
+            }
             default:
                 return parse_expr_stmt();
         }

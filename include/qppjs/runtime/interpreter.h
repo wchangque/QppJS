@@ -31,9 +31,18 @@ private:
     StmtResult eval_var_decl(const VariableDeclaration& decl);
     StmtResult eval_block_stmt(const BlockStatement& stmt);
     StmtResult eval_if_stmt(const IfStatement& stmt);
-    StmtResult eval_while_stmt(const WhileStatement& stmt);
+    StmtResult eval_while_stmt(const WhileStatement& stmt,
+                               std::optional<std::string> label = std::nullopt);
     StmtResult eval_return_stmt(const ReturnStatement& stmt);
     StmtResult eval_function_decl(const FunctionDeclaration& stmt);
+    StmtResult eval_throw_stmt(const ThrowStatement& stmt);
+    StmtResult eval_try_stmt(const TryStatement& stmt);
+    StmtResult eval_break_stmt(const BreakStatement& stmt);
+    StmtResult eval_continue_stmt(const ContinueStatement& stmt);
+    StmtResult eval_labeled_stmt(const LabeledStatement& stmt);
+    StmtResult eval_for_stmt(const ForStatement& stmt,
+                             std::optional<std::string> label = std::nullopt);
+    StmtResult exec_catch(const CatchClause& handler, Value thrown_val);
 
     // Expression evaluation
     EvalResult eval_expr(const ExprNode& expr);
@@ -56,6 +65,7 @@ private:
 
     // Hoist var declarations; var_target is the function-level env to receive var bindings.
     void hoist_vars(const std::vector<StmtNode>& stmts, Environment& var_target);
+    void hoist_vars_stmt(const StmtNode& stmt, Environment& var_target);
 
     // Create a JSFunction value with eager prototype initialization.
     Value make_function_value(std::optional<std::string> name, std::vector<std::string> params,
@@ -85,6 +95,12 @@ private:
     std::shared_ptr<JSObject> object_prototype_;  // global Object.prototype
     int call_depth_ = 0;
     static constexpr int kMaxCallDepth = 500;
+
+    // When a JS-level throw crosses an EvalResult boundary (e.g., from call_function),
+    // the thrown Value is stashed here and the error message is set to kPendingThrowSentinel.
+    // eval_try_stmt checks this sentinel before interpreting any EvalResult error.
+    std::optional<Value> pending_throw_;
+    static constexpr const char* kPendingThrowSentinel = "__qppjs_pending_throw__";
 };
 
 }  // namespace qppjs

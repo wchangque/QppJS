@@ -11,6 +11,10 @@ add_executable(qppjs_unit_tests
     unit/function_test.cpp
     unit/proto_test.cpp
     unit/vm_test.cpp
+    unit/interpreter_control_flow_test.cpp
+    unit/vm_control_flow_test.cpp
+    unit/interpreter_control_flow_edge_test.cpp
+    unit/vm_control_flow_edge_test.cpp
 )
 
 target_link_libraries(qppjs_unit_tests PRIVATE qppjs_core GTest::gtest_main)

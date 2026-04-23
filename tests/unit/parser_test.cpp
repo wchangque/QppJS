@@ -615,3 +615,127 @@ TEST(ParserErrorTest, ErrorMessageContainsDescription) {
     EXPECT_FALSE(result.error().message().empty());
     EXPECT_GT(result.error().message().size(), 20u);
 }
+
+// ---- Phase 7: throw / try / break / continue / for / labeled ----
+
+TEST(ParserControlFlow, ThrowNewError) {
+    auto result = parse_program("throw new Error(\"msg\");");
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<ThrowStatement>(result.value().body[0].v));
+    const auto& ts = std::get<ThrowStatement>(result.value().body[0].v);
+    ASSERT_TRUE(std::holds_alternative<NewExpression>(ts.argument.v));
+}
+
+TEST(ParserControlFlow, TryCatch) {
+    auto result = parse_program("try { } catch(e) { }");
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<TryStatement>(result.value().body[0].v));
+    const auto& trys = std::get<TryStatement>(result.value().body[0].v);
+    EXPECT_TRUE(trys.handler.has_value());
+    EXPECT_EQ(trys.handler->param, "e");
+    EXPECT_FALSE(trys.finalizer.has_value());
+}
+
+TEST(ParserControlFlow, TryCatchFinally) {
+    auto result = parse_program("try { } catch(e) { } finally { }");
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<TryStatement>(result.value().body[0].v));
+    const auto& trys = std::get<TryStatement>(result.value().body[0].v);
+    EXPECT_TRUE(trys.handler.has_value());
+    EXPECT_TRUE(trys.finalizer.has_value());
+}
+
+TEST(ParserControlFlow, TryFinally) {
+    auto result = parse_program("try { } finally { }");
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<TryStatement>(result.value().body[0].v));
+    const auto& trys = std::get<TryStatement>(result.value().body[0].v);
+    EXPECT_FALSE(trys.handler.has_value());
+    EXPECT_TRUE(trys.finalizer.has_value());
+}
+
+TEST(ParserControlFlow, TryNoCatchNoFinallyIsError) {
+    auto result = parse_program("try { }");
+    ASSERT_FALSE(result.ok());
+}
+
+TEST(ParserControlFlow, BreakSimple) {
+    auto result = parse_program("break;");
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<BreakStatement>(result.value().body[0].v));
+    const auto& bs = std::get<BreakStatement>(result.value().body[0].v);
+    EXPECT_FALSE(bs.label.has_value());
+}
+
+TEST(ParserControlFlow, BreakWithLabel) {
+    auto result = parse_program("break outer;");
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<BreakStatement>(result.value().body[0].v));
+    const auto& bs = std::get<BreakStatement>(result.value().body[0].v);
+    ASSERT_TRUE(bs.label.has_value());
+    EXPECT_EQ(*bs.label, "outer");
+}
+
+TEST(ParserControlFlow, ContinueSimple) {
+    auto result = parse_program("continue;");
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<ContinueStatement>(result.value().body[0].v));
+    const auto& cs = std::get<ContinueStatement>(result.value().body[0].v);
+    EXPECT_FALSE(cs.label.has_value());
+}
+
+TEST(ParserControlFlow, ContinueWithLabel) {
+    auto result = parse_program("continue outer;");
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<ContinueStatement>(result.value().body[0].v));
+    const auto& cs = std::get<ContinueStatement>(result.value().body[0].v);
+    ASSERT_TRUE(cs.label.has_value());
+    EXPECT_EQ(*cs.label, "outer");
+}
+
+TEST(ParserControlFlow, ForWithLetInit) {
+    auto result = parse_program("for (let i = 0; i < 10; i = i + 1) { }");
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<ForStatement>(result.value().body[0].v));
+    const auto& fs = std::get<ForStatement>(result.value().body[0].v);
+    EXPECT_TRUE(fs.init.has_value());
+    EXPECT_TRUE(fs.test.has_value());
+    EXPECT_TRUE(fs.update.has_value());
+    EXPECT_TRUE(fs.body != nullptr);
+}
+
+TEST(ParserControlFlow, ForEmpty) {
+    auto result = parse_program("for (;;) { }");
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<ForStatement>(result.value().body[0].v));
+    const auto& fs = std::get<ForStatement>(result.value().body[0].v);
+    EXPECT_FALSE(fs.init.has_value());
+    EXPECT_FALSE(fs.test.has_value());
+    EXPECT_FALSE(fs.update.has_value());
+}
+
+TEST(ParserControlFlow, LabeledStatement) {
+    auto result = parse_program("outer: while (true) { break outer; }");
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.value().body.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<LabeledStatement>(result.value().body[0].v));
+    const auto& ls = std::get<LabeledStatement>(result.value().body[0].v);
+    EXPECT_EQ(ls.label, "outer");
+    ASSERT_TRUE(ls.body != nullptr);
+    ASSERT_TRUE(std::holds_alternative<WhileStatement>(ls.body->v));
+}
+
+TEST(ParserControlFlow, ThrowAfterNewlineIsError) {
+    auto result = parse_program("throw\n1");
+    ASSERT_FALSE(result.ok());
+}

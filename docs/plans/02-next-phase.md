@@ -4,7 +4,8 @@
 
 ## 1. 下一阶段
 
-- 下一阶段：Phase 7：异常与复杂控制流（break/continue/throw/try/catch/finally）
+- 下一阶段：Phase 8（待规划）
+- Phase 7 已全部完成（736/736 测试通过）
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 
@@ -29,16 +30,16 @@
 - 当前构建配置已收口：`cmake/Options.cmake` 统一管理 options，warning 默认当作 error，全局编译选项由根 `CMakeLists.txt` 统一注入
 - 当前脚本职责已进一步明确：`scripts/build_debug.sh` 负责本地 debug 测试构建，`scripts/build_test.sh` 负责 coverage 构建，`scripts/run_ut.sh` 负责仅执行 UT（排除 CLI 测试），`scripts/coverage.sh` 在此基础上收集覆盖率
 
-## 4. 设计方向（待 agent team 细化）
+## 4. 已完成方向
 
-以下是初步方向，需要 ES Spec Agent + QuickJS Research Agent + Design Agent 完成后再细化。
+### 4.1 AST Interpreter 侧（7.3 已完成）
 
-### 4.1 AST Interpreter 侧
-
-- `CompletionType` 扩展：新增 `kBreak`、`kContinue`、`kThrow`
-- `StmtResult` 携带 label（break/continue with label）和 thrown value（throw）
-- `try / catch / finally` 执行语义：finally 必须执行，catch 捕获 thrown value
-- `break` / `continue` 在 while/for 内的穿透与截断
+- `CompletionType` 扩展：kBreak/kContinue/kThrow，Completion.target 字段
+- `eval_throw/try/break/continue/labeled/for` 全部实现
+- finally 块语义：无论何种 completion 均执行，finally abrupt 覆盖先前结果
+- break/continue with label：循环接受 label 参数，labeled statement 传入 label
+- NativeFn 机制 + Error 内建（Interpreter 侧）
+- 707/707 测试通过
 
 ### 4.2 Bytecode VM 侧
 
@@ -73,14 +74,9 @@
 - AST dump 扩展
 - 项目可编译，无运行时测试
 
-### 7.3 AST Interpreter 实现
+### 7.3 AST Interpreter 实现（已完成）
 
-目标：
-- `CompletionType` 扩展（kBreak/kContinue/kThrow）
-- `eval_throw_stmt`、`eval_try_stmt`、`eval_break_stmt`、`eval_continue_stmt`
-- while/for 循环内正确截断 break/continue
-- finally 块无论何种完成类型都必须执行
-- 完成后：interpreter 侧相关测试全部通过
+已完成：CompletionType 扩展、6 个新 eval 方法、hoist_vars 扩展、NativeFn + Error 内建；707/707 通过
 
 ### 7.4 VM 编译器 + 指令集扩展
 

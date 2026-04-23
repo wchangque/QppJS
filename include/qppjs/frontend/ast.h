@@ -199,11 +199,56 @@ struct FunctionDeclaration {
     SourceRange range;
 };
 
+struct ThrowStatement {
+    ExprNode argument;
+    SourceRange range;
+};
+
+// catch(e) { body }（辅助结构，不进 variant）
+struct CatchClause {
+    std::string param;
+    BlockStatement body;
+    SourceRange range;
+};
+
+struct TryStatement {
+    BlockStatement block;
+    std::optional<CatchClause> handler;
+    std::optional<BlockStatement> finalizer;
+    SourceRange range;
+};
+
+struct BreakStatement {
+    std::optional<std::string> label;
+    SourceRange range;
+};
+
+struct ContinueStatement {
+    std::optional<std::string> label;
+    SourceRange range;
+};
+
+struct LabeledStatement {
+    std::string label;
+    std::unique_ptr<StmtNode> body;
+    SourceRange range;
+};
+
+struct ForStatement {
+    std::optional<std::unique_ptr<StmtNode>> init;
+    std::optional<ExprNode> test;
+    std::optional<ExprNode> update;
+    std::unique_ptr<StmtNode> body;
+    SourceRange range;
+};
+
 // ---- StmtNode 完整定义（必须在所有语句 struct 定义之后）----
 
 struct StmtNode {
     std::variant<ExpressionStatement, VariableDeclaration, BlockStatement, IfStatement, WhileStatement,
-                 ReturnStatement, FunctionDeclaration>
+                 ReturnStatement, FunctionDeclaration,
+                 ThrowStatement, TryStatement, BreakStatement, ContinueStatement,
+                 LabeledStatement, ForStatement>
             v;
 
     StmtNode() = default;

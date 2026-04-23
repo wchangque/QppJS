@@ -4,8 +4,8 @@
 
 ## 1. 当前阶段
 
-- 当前阶段：Phase 6 已全部完成，下一阶段为 Phase 7
-- 最近更新时间：2026-04-23（函数/闭包 ASAN/LSan 泄露修复彻底完成：JSFunction 闭包改为 closure_env_ 持 env 链引用，消除了 captured_bindings 快照模型的 shared_ptr 强环与提升函数捕获不到 let 变量的问题；build_debug.sh / build_test.sh 修复为优先使用环境变量 CC/CXX，其次 Homebrew LLVM，最后 fallback 系统 Apple Clang；663/663 ASAN 全量回归通过）
+- 当前阶段：Phase 7 已完成，可进入 Phase 8
+- 最近更新时间：2026-04-23（P1-1 缺陷修复完成：compile_return_stmt 增加 finally 穿越逻辑，2 个 DISABLED 测试启用，792/792 全量通过）
 
 ## 2. 当前任务状态
 
@@ -75,16 +75,70 @@
   - [x] 6.7 全量 VM 测试（134 个测试）+ main.cpp --vm flag
   - 529（interpreter）+ 134（VM）= 663 个测试全部通过
 
-### 进行中
-- 暂无
+### 已完成（续）
+- [x] Phase 7：控制流扩展（break/continue/throw/try/catch/finally）
+  - [x] 7.1 规范调研 + 设计
+  - [x] 7.2 AST 节点扩展 + Parser 扩展
+  - [x] 7.3 AST Interpreter 实现（CompletionType 扩展、6 个新 eval 方法、NativeFn + Error 内建）
+  - [x] 7.4 VM 编译器扩展（本轮完成）：6 条新 opcode、Compiler 实现、VM dispatch 扩展、Error 内建 VM 侧注册
+  - [x] 7.5 Error 内建对象（Interpreter 7.3 已含，VM 7.4 补充）
+  - [x] 7.6 全量测试回归（736/736 通过）
+  - [x] 7.7 边界测试补充（Testing Agent）：新增 56 个边界测试，790/790 通过（原 736 + 新增 56），2 个已知 VM 缺陷（return 穿越 finally）标注 DISABLED
+  - [x] 7.8 P1-1 缺陷修复：compile_return_stmt 增加 finally_info_stack_ 穿越逻辑（LeaveTry + Gosub），792/792 全量通过
 
 ### 未开始
-- [ ] Phase 7：控制流扩展（break/continue/throw/try/catch/finally）
+- [ ] Phase 8（待规划）
 
 ### 阻塞
 - 暂无
 
 ## 3. 最近完成内容
+
+- 完成 Phase 7 P1-1 缺陷修复（7.8）：
+  - `src/vm/compiler.cpp`：`compile_return_stmt` 在 `finally_info_stack_` 非空时，对每个活跃 finally 从内到外 emit `kLeaveTry` + `kGosub`（patch 位置记录到 `gosub_patches`，由 `compile_try_stmt` 统一 patch），最后 emit `kReturn`；无参 return 情形先 emit `kLoadUndefined` 再走相同路径
+  - `tests/unit/vm_phase7_edge_test.cpp`：去掉 `DISABLED_` 前缀启用 `FinallyReturnOverridesTryReturn` 和 `FinallyNormalSideEffectWithTryReturn` 两个测试
+  - 792/792 全量通过（原 790 + 新启用 2，0 回归）
+
+- 完成 Phase 7 子任务 7.4：VM 编译器扩展：
+  - `include/qppjs/vm/opcode.h`：新增 6 条指令（Throw/EnterTry/LeaveTry/GetException/Gosub/Ret）
+  - `include/qppjs/vm/vm.h`：CallFrame 新增 ExceptionHandler 结构体、handler_stack/pending_throw/caught_exception/finally_return_stack/scope_depth 字段
+  - `include/qppjs/vm/compiler.h`：新增 LoopEnv/FinallyInfo 结构体、loop_env_stack_/finally_info_stack_ 字段、6 个新 compile_* 方法声明、patch_jump_to/emit_jump_to/current_offset 辅助方法
+  - `src/vm/compiler.cpp`：
+    - 新增 patch_jump_to/emit_jump_to/current_offset
+    - hoist_vars_scan_stmt 扩展（ForStatement/TryStatement/LabeledStatement）
+    - compile_while_stmt 重构（接入 LoopEnv）
+    - compile_throw_stmt/compile_try_stmt（三分支：try+catch、try+finally、try+catch+finally）
+    - compile_break_stmt/compile_continue_stmt（含 LeaveTry + Gosub finally 穿越）
+    - compile_labeled_stmt/compile_for_stmt
+    - compile_stmt dispatch 替换 assert(false) 为实际调用
+  - `src/vm/vm.cpp`：
+    - VM 构造函数拆分，新增 init_global_env() 注册 Error 内建（NativeFn）
+    - run() 循环顶部新增 exception_handler 逻辑（找 handler/跨 frame 传播，goto dispatch_begin）
+    - kPushScope/kPopScope 维护 scope_depth
+    - kGetVar/kSetVar/kInitVar/kGetProp/kCall/kCallMethod/kNewCall 内部错误改为 pending_throw + continue
+    - kCall/kCallMethod/kNewCall 新增 is_native() 路径支持 native function 调用
+    - 新增 kThrow/kEnterTry/kLeaveTry/kGetException/kGosub/kRet handler
+  - `tests/unit/vm_phase7_test.cpp`（新建）：29 个 VM Phase 7 测试
+  - `tests/CMakeLists.txt`：注册新测试文件
+  - 736/736 全量通过（原有 707 个 + 新增 29 个）
+
+- 完成 Phase 7 子任务 7.2：AST 节点扩展 + Parser 扩展：
+  - `include/qppjs/frontend/ast.h`：新增 ThrowStatement、CatchClause（辅助结构）、TryStatement、BreakStatement、ContinueStatement、LabeledStatement、ForStatement 共 7 个结构；StmtNode variant 扩展到 13 个类型
+  - `src/frontend/parser.cpp`：新增 parse_throw_stmt / parse_block（内部辅助）/ parse_try_stmt / parse_break_stmt / parse_continue_stmt / parse_for_stmt；parse_stmt 扩展分发 KwThrow、KwTry、KwBreak、KwContinue、KwFor、Ident+Colon（LabeledStatement）；stmt_range 扩展覆盖新节点
+  - `src/frontend/ast_dump.cpp`：dump_stmt 新增 6 个 dump 分支（Throw/Try/Break/Continue/Labeled/For）
+  - `src/runtime/interpreter.cpp`：eval_stmt 的 std::visit 新增 6 个占位分支（返回 "not yet implemented" 错误）
+
+- 完成 Phase 7 子任务 7.3：AST Interpreter 实现：
+  - `include/qppjs/runtime/completion.h`：CompletionType 扩展（kThrow/kBreak/kContinue），Completion 新增 target 字段，新增 throw_/break_/continue_/is_throw/is_break/is_continue/is_abrupt
+  - `include/qppjs/runtime/js_function.h`：新增 NativeFn 类型别名和 JSFunction::native_fn_ 字段（is_native/native_fn/set_native_fn）
+  - `include/qppjs/runtime/interpreter.h`：新增 6 个 eval 方法声明、exec_catch、hoist_vars_stmt；新增 pending_throw_ 字段和 kPendingThrowSentinel；eval_while_stmt/eval_for_stmt 增加可选 label 参数
+  - `src/runtime/interpreter.cpp`：全部 6 个新 eval 实现（eval_throw_stmt/eval_try_stmt/exec_catch/eval_break_stmt/eval_continue_stmt/eval_labeled_stmt/eval_for_stmt）；eval_block_stmt/eval_if_stmt/eval_while_stmt 修正 abrupt 传播；exec 和 call_function 传播 kThrow；hoist_vars 拆分为 hoist_vars_stmt + hoist_vars，递归扫描 ForStatement/TryStatement/LabeledStatement；Interpreter 构造函数注册 Error 内建（NativeFn 机制）
+  - `tests/unit/interpreter_phase7_test.cpp`（新建）：31 个 Phase 7 测试
+  - `tests/CMakeLists.txt`：注册新测试文件
+  - 707/707 全量通过（原 676 + 新增 31）
+  - `src/vm/compiler.cpp`：compile_stmt 的 std::visit 新增 6 个占位分支（assert false）
+  - `tests/unit/parser_test.cpp`：新增 13 个 Phase 7 Parser 测试，全部通过
+  - 676/676 全量回归通过（原 663 + 新增 13）
 
 - 完成函数/闭包 ASAN/LSan 泄露修复（彻底收尾）：
   - `include/qppjs/runtime/js_function.h`：将 `captured_bindings_`（BindingMap 快照）改回 `closure_env_`（`shared_ptr<Environment>`），捕获 env 链引用而非 binding 副本
@@ -117,13 +171,12 @@
   - `tests/unit/vm_test.cpp`（新建）：134 个 VM 路径行为测试
   - 663/663 测试全部通过
 
-## 4. 当前风险与待决策项
+## 4. 风险与待决策项
 
-- 当前最高优先级风险：函数/闭包 captured binding 模型仍有残余 shared_ptr 环，主要集中在递归、互递归与兄弟函数互引场景；Phase 7 前应先完成该问题收尾并恢复函数相关 ASAN 回归
-- 需确认原生 CMake 工作流在 Windows/MSVC 多配置生成器上 configure/build/test 不回归
-- macOS 若要继续使用 Homebrew LLVM + libc++ / LSan，需要在原生 CMake 命令里显式传 `CMAKE_CXX_COMPILER` 与相关 flags；不再由 preset 自动选中
+- P2-1（已知，暂不处理）：VM catch 参数与 catch 体共享同一 scope，规范要求两层独立作用域；`catch(e) { let e = 2; }` 在 VM 路径下会失败
+- P2-2（已知，暂不处理）：VM `compile_labeled_stmt` 对非循环体的 labeled break 会触发 `assert(false)`；Interpreter 路径已正确实现
+- 内部运行时错误（ReferenceError/TypeError）以字符串值抛出，而非 Error 对象；Phase 8 升级为真正的 Error 子类
 - JSFunction::body_ 字段继续保留（AST Interpreter 使用）
-- VM 尚不支持 break/continue/throw/try/catch（Phase 7）
 - GetProp/SetProp 对 JSFunction 的非 prototype 属性当前静默忽略
 
 ## 5. 下次进入点
@@ -131,8 +184,7 @@
 新 session 开始时，优先做以下动作：
 1. 读取本文件
 2. 读取 `docs/plans/02-next-phase.md`
-3. 先继续收尾函数/闭包路径的 ASAN/LSan 泄露修复，重点检查递归/互递归与兄弟函数互引场景
-4. 函数相关 ASAN 回归恢复后，再进入 Phase 7：控制流扩展
+3. 进入 Phase 8（待规划：可能包括 for...in/of、正则、模块、更完整的内建对象等）
 
 ## 6. 收尾检查清单
 

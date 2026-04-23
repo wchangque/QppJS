@@ -68,7 +68,14 @@ namespace qppjs {
     X(JumpIfTrue, 4)                    \
     /* Stack */                         \
     X(Pop, 0)                           \
-    X(Dup, 0)
+    X(Dup, 0)                           \
+    /* Exception control flow */        \
+    X(Throw, 0)                         \
+    X(EnterTry, 4)                      \
+    X(LeaveTry, 0)                      \
+    X(GetException, 0)                  \
+    X(Gosub, 4)                         \
+    X(Ret, 0)
 
 enum class Opcode : uint8_t {
 #define X(name, _operand_bytes) k##name,

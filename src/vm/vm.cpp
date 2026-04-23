@@ -144,7 +144,46 @@ bool VM::abstract_eq(const Value& a, const Value& b) {
 // VM constructor
 // ============================================================
 
-VM::VM() : object_prototype_(std::make_shared<JSObject>()) {}
+VM::VM() : object_prototype_(std::make_shared<JSObject>()) {
+    global_env_ = std::make_shared<Environment>(nullptr);
+}
+
+void VM::init_global_env() {
+    // Register Error constructor as a native function
+    auto error_fn = std::make_shared<JSFunction>();
+    error_fn->set_name(std::string("Error"));
+    error_fn->set_native_fn([](std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
+        std::string msg = args.empty() ? "" : [&]() -> std::string {
+            const Value& v = args[0];
+            if (v.is_string()) return v.as_string();
+            if (v.is_undefined()) return "";
+            if (v.is_null()) return "null";
+            if (v.is_bool()) return v.as_bool() ? "true" : "false";
+            if (v.is_number()) {
+                double n = v.as_number();
+                if (std::isnan(n)) return "NaN";
+                if (std::isinf(n)) return n > 0 ? "Infinity" : "-Infinity";
+                if (n == static_cast<double>(static_cast<long long>(n)) && std::abs(n) < 1e15) {
+                    std::ostringstream oss;
+                    oss << static_cast<long long>(n);
+                    return oss.str();
+                }
+                std::ostringstream oss;
+                oss << n;
+                return oss.str();
+            }
+            return "[object Object]";
+        }();
+        auto obj = std::make_shared<JSObject>();
+        obj->set_property("message", Value::string(msg));
+        obj->set_property("name", Value::string("Error"));
+        return EvalResult::ok(Value::object(std::move(obj)));
+    });
+    auto error_proto = std::make_shared<JSObject>();
+    error_fn->set_prototype_obj(error_proto);
+    global_env_->define("Error", VarKind::Const);
+    global_env_->initialize("Error", Value::object(std::move(error_fn)));
+}
 
 // ============================================================
 // exec (public entry)
@@ -152,6 +191,7 @@ VM::VM() : object_prototype_(std::make_shared<JSObject>()) {}
 
 EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
     global_env_ = std::make_shared<Environment>(nullptr);
+    init_global_env();
 
     // Pre-define var_decls for the top-level scope
     for (uint16_t idx : bytecode->var_decls) {
@@ -258,6 +298,68 @@ EvalResult VM::run(size_t exit_depth) {
     while (call_stack_.size() > exit_depth) {
         // Re-fetch the top frame each iteration to avoid stale references after push_back
         CallFrame& frame = call_stack_.back();
+
+        // ---- Exception propagation check ----
+        // If pending_throw is set at the top of the loop, try to find a handler.
+        if (frame.pending_throw.has_value()) {
+            if (!frame.handler_stack.empty()) {
+                ExceptionHandler handler = frame.handler_stack.back();
+                frame.handler_stack.pop_back();
+                // Restore operand stack depth (truncate — stack_depth <= current size)
+                while (frame.stack.size() > handler.stack_depth) {
+                    frame.stack.pop_back();
+                }
+                // Restore scope depth (pop extra scopes)
+                while (frame.scope_depth > handler.scope_depth) {
+                    frame.env = frame.env->outer();
+                    frame.scope_depth--;
+                }
+                frame.pc = handler.catch_target;
+                // Transfer pending_throw to caught_exception so that
+                // pending_throw is cleared (dispatch can run without re-triggering exception logic),
+                // and GetException can retrieve the value.
+                frame.caught_exception = std::move(frame.pending_throw);
+                frame.pending_throw = std::nullopt;
+                goto dispatch_begin;
+            } else {
+                // No handler in current frame — propagate to caller
+                Value thrown = std::move(*frame.pending_throw);
+                frame.pending_throw = std::nullopt;
+                bool is_top = (call_stack_.size() <= exit_depth + 1);
+                call_stack_.pop_back();
+                call_depth_--;
+                if (!is_top && call_stack_.size() > exit_depth) {
+                    // Set pending_throw in the caller frame
+                    call_stack_.back().pending_throw = std::move(thrown);
+                    continue;
+                }
+                // Reached top level — convert to EvalResult error
+                std::string msg;
+                if (thrown.is_string()) {
+                    msg = thrown.as_string();
+                } else if (thrown.is_number()) {
+                    msg = to_string_val(thrown);
+                } else if (thrown.is_object()) {
+                    auto obj = std::dynamic_pointer_cast<JSObject>(thrown.as_object());
+                    if (obj) {
+                        Value m = obj->get_property("message");
+                        if (m.is_string()) {
+                            msg = m.as_string();
+                        } else {
+                            msg = "[object Object]";
+                        }
+                    } else {
+                        msg = "[object]";
+                    }
+                } else {
+                    msg = to_string_val(thrown);
+                }
+                return EvalResult::err(Error(ErrorKind::Runtime, msg));
+            }
+        }
+
+        dispatch_begin:
+
         const BytecodeFunction* bc = frame.bytecode;
 
         if (frame.pc >= bc->code.size()) {
@@ -332,7 +434,10 @@ EvalResult VM::run(size_t exit_depth) {
                 break;
             }
             auto result = env->get(name);
-            if (!result.is_ok()) return result;
+            if (!result.is_ok()) {
+                frame.pending_throw = Value::string(result.error().message());
+                continue;
+            }
             stack.push_back(result.value());
             break;
         }
@@ -341,7 +446,10 @@ EvalResult VM::run(size_t exit_depth) {
             uint16_t idx = read_u16(bc, pc);
             const std::string& name = bc->names[idx];
             auto result = env->set(name, stack.back());
-            if (!result.is_ok()) return result;
+            if (!result.is_ok()) {
+                frame.pending_throw = Value::string(result.error().message());
+                continue;
+            }
             // value stays on stack
             break;
         }
@@ -369,7 +477,10 @@ EvalResult VM::run(size_t exit_depth) {
             Value val = std::move(stack.back());
             stack.pop_back();
             auto result = env->initialize(bc->names[idx], val);
-            if (!result.is_ok()) return result;
+            if (!result.is_ok()) {
+                frame.pending_throw = Value::string(result.error().message());
+                continue;
+            }
             stack.push_back(result.value());
             break;
         }
@@ -378,10 +489,12 @@ EvalResult VM::run(size_t exit_depth) {
 
         case Opcode::kPushScope:
             env = std::make_shared<Environment>(env);
+            frame.scope_depth++;
             break;
 
         case Opcode::kPopScope:
             env = env->outer();
+            frame.scope_depth--;
             break;
 
         // ---- Object properties ----
@@ -399,8 +512,9 @@ EvalResult VM::run(size_t exit_depth) {
             Value obj_val = std::move(stack.back());
             stack.pop_back();
             if (obj_val.is_undefined() || obj_val.is_null()) {
-                return EvalResult::err(Error(ErrorKind::Runtime,
-                    "TypeError: Cannot read property '" + name + "' of " + to_string_val(obj_val)));
+                frame.pending_throw = Value::string(
+                    "TypeError: Cannot read property '" + name + "' of " + to_string_val(obj_val));
+                continue;
             }
             if (!obj_val.is_object()) {
                 stack.push_back(Value::undefined());
@@ -530,15 +644,29 @@ EvalResult VM::run(size_t exit_depth) {
             stack.pop_back();
 
             if (!callee_val.is_object()) {
-                return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: not a function"));
+                frame.pending_throw = Value::string("TypeError: not a function");
+                continue;
             }
             auto fn = std::dynamic_pointer_cast<JSFunction>(callee_val.as_object());
             if (!fn) {
-                return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: not a function"));
+                frame.pending_throw = Value::string("TypeError: not a function");
+                continue;
+            }
+            if (fn->is_native()) {
+                auto res = fn->native_fn()(std::move(args), /*is_new_call=*/false);
+                if (!res.is_ok()) {
+                    frame.pending_throw = Value::string(res.error().message());
+                    continue;
+                }
+                stack.push_back(res.value());
+                break;
             }
             // Push new frame; the flat loop will execute it, then return value lands on our stack
             auto push_res = push_call_frame(fn, Value::undefined(), std::move(args));
-            if (!push_res.is_ok()) return push_res;
+            if (!push_res.is_ok()) {
+                frame.pending_throw = Value::string(push_res.error().message());
+                continue;
+            }
             break;
         }
 
@@ -557,14 +685,28 @@ EvalResult VM::run(size_t exit_depth) {
             stack.pop_back();
 
             if (!callee_val.is_object()) {
-                return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: not a function"));
+                frame.pending_throw = Value::string("TypeError: not a function");
+                continue;
             }
             auto fn = std::dynamic_pointer_cast<JSFunction>(callee_val.as_object());
             if (!fn) {
-                return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: not a function"));
+                frame.pending_throw = Value::string("TypeError: not a function");
+                continue;
+            }
+            if (fn->is_native()) {
+                auto res = fn->native_fn()(std::move(args), /*is_new_call=*/false);
+                if (!res.is_ok()) {
+                    frame.pending_throw = Value::string(res.error().message());
+                    continue;
+                }
+                stack.push_back(res.value());
+                break;
             }
             auto push_res = push_call_frame(fn, std::move(receiver), std::move(args));
-            if (!push_res.is_ok()) return push_res;
+            if (!push_res.is_ok()) {
+                frame.pending_throw = Value::string(push_res.error().message());
+                continue;
+            }
             break;
         }
 
@@ -581,11 +723,22 @@ EvalResult VM::run(size_t exit_depth) {
             stack.pop_back();
 
             if (!ctor_val.is_object()) {
-                return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: not a constructor"));
+                frame.pending_throw = Value::string("TypeError: not a constructor");
+                continue;
             }
             auto fn = std::dynamic_pointer_cast<JSFunction>(ctor_val.as_object());
             if (!fn) {
-                return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: not a constructor"));
+                frame.pending_throw = Value::string("TypeError: not a constructor");
+                continue;
+            }
+            if (fn->is_native()) {
+                auto res = fn->native_fn()(std::move(args), /*is_new_call=*/true);
+                if (!res.is_ok()) {
+                    frame.pending_throw = Value::string(res.error().message());
+                    continue;
+                }
+                stack.push_back(res.value());
+                break;
             }
 
             // Create instance
@@ -601,7 +754,10 @@ EvalResult VM::run(size_t exit_depth) {
 
             auto push_res = push_call_frame(fn, instance_val, std::move(args),
                                             /*is_new=*/true, std::move(instance_copy));
-            if (!push_res.is_ok()) return push_res;
+            if (!push_res.is_ok()) {
+                frame.pending_throw = Value::string(push_res.error().message());
+                continue;
+            }
             break;
         }
 
@@ -895,6 +1051,65 @@ EvalResult VM::run(size_t exit_depth) {
         case Opcode::kDup:
             stack.push_back(stack.back());
             break;
+
+        // ---- Exception control flow ----
+
+        case Opcode::kThrow: {
+            Value thrown = std::move(stack.back());
+            stack.pop_back();
+            frame.pending_throw = std::move(thrown);
+            continue;  // re-enter loop top to trigger exception handler
+        }
+
+        case Opcode::kEnterTry: {
+            int32_t offset = read_i32(bc, pc);
+            // catch_target = pc + offset  (pc is already past the operand)
+            size_t catch_target = static_cast<size_t>(static_cast<int64_t>(pc) + offset);
+            frame.handler_stack.push_back({
+                catch_target,
+                frame.stack.size(),
+                frame.scope_depth
+            });
+            break;
+        }
+
+        case Opcode::kLeaveTry: {
+            if (!frame.handler_stack.empty()) {
+                frame.handler_stack.pop_back();
+            }
+            break;
+        }
+
+        case Opcode::kGetException: {
+            Value exc = frame.caught_exception.value_or(Value::undefined());
+            frame.caught_exception = std::nullopt;
+            stack.push_back(std::move(exc));
+            break;
+        }
+
+        case Opcode::kGosub: {
+            int32_t offset = read_i32(bc, pc);
+            // push return address (= pc after reading the operand)
+            frame.finally_return_stack.push_back(pc);
+            // jump to finally subroutine
+            pc = static_cast<size_t>(static_cast<int64_t>(pc) + offset);
+            break;
+        }
+
+        case Opcode::kRet: {
+            if (!frame.finally_return_stack.empty()) {
+                pc = frame.finally_return_stack.back();
+                frame.finally_return_stack.pop_back();
+            } else {
+                // Reached via exception path (finally_handler_label + Gosub + Ret):
+                // finally completed normally; restore pending_throw from caught_exception
+                // and continue exception propagation.
+                frame.pending_throw = std::move(frame.caught_exception);
+                frame.caught_exception = std::nullopt;
+                continue;  // re-enter loop top → exception_handler will propagate
+            }
+            break;
+        }
 
         default:
             return EvalResult::err(Error(ErrorKind::Runtime, "Internal: unknown opcode"));

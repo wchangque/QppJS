@@ -23,13 +23,37 @@ namespace qppjs {
 // Completion
 // ============================================================
 
-Completion Completion::normal(Value v) { return Completion{CompletionType::kNormal, std::move(v)}; }
+Completion Completion::normal(Value v) {
+    return Completion{CompletionType::kNormal, std::move(v), std::nullopt};
+}
 
-Completion Completion::return_(Value v) { return Completion{CompletionType::kReturn, std::move(v)}; }
+Completion Completion::return_(Value v) {
+    return Completion{CompletionType::kReturn, std::move(v), std::nullopt};
+}
+
+Completion Completion::throw_(Value v) {
+    return Completion{CompletionType::kThrow, std::move(v), std::nullopt};
+}
+
+Completion Completion::break_(std::optional<std::string> label) {
+    return Completion{CompletionType::kBreak, Value::undefined(), std::move(label)};
+}
+
+Completion Completion::continue_(std::optional<std::string> label) {
+    return Completion{CompletionType::kContinue, Value::undefined(), std::move(label)};
+}
 
 bool Completion::is_normal() const { return type == CompletionType::kNormal; }
 
 bool Completion::is_return() const { return type == CompletionType::kReturn; }
+
+bool Completion::is_throw() const { return type == CompletionType::kThrow; }
+
+bool Completion::is_break() const { return type == CompletionType::kBreak; }
+
+bool Completion::is_continue() const { return type == CompletionType::kContinue; }
+
+bool Completion::is_abrupt() const { return type != CompletionType::kNormal; }
 
 // ============================================================
 // EvalResult
@@ -104,6 +128,25 @@ Interpreter::Interpreter()
       current_this_(Value::undefined()),
       object_prototype_(std::make_shared<JSObject>()) {
     // object_prototype_.proto_ stays nullptr (end of chain)
+
+    // Register built-in Error constructor
+    auto error_fn = std::make_shared<JSFunction>();
+    error_fn->set_name(std::string("Error"));
+    auto proto_obj = std::make_shared<JSObject>();
+    proto_obj->set_proto(object_prototype_);
+    proto_obj->set_constructor_property(error_fn);
+    error_fn->set_prototype_obj(proto_obj);
+    error_fn->set_native_fn([this](std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
+        auto obj = std::make_shared<JSObject>();
+        obj->set_proto(object_prototype_);
+        obj->set_property("name", Value::string("Error"));
+        std::string msg = args.empty() ? "" : to_string_val(args[0]);
+        obj->set_property("message", Value::string(std::move(msg)));
+        return EvalResult::ok(Value::object(obj));
+    });
+    Value error_val = Value::object(error_fn);
+    global_env_->define_initialized("Error");
+    global_env_->set("Error", error_val);
 }
 
 // ---- Type conversions ----
@@ -199,22 +242,47 @@ std::string Interpreter::to_string_val(const Value& v) {
 
 // ---- Var hoisting ----
 
+void Interpreter::hoist_vars_stmt(const StmtNode& stmt, Environment& var_target) {
+    if (std::holds_alternative<VariableDeclaration>(stmt.v)) {
+        const auto& decl = std::get<VariableDeclaration>(stmt.v);
+        if (decl.kind == VarKind::Var) {
+            var_target.define_initialized(decl.name);
+        } else {
+            current_env_->define(decl.name, decl.kind);
+        }
+    } else if (std::holds_alternative<FunctionDeclaration>(stmt.v)) {
+        const auto& fdecl = std::get<FunctionDeclaration>(stmt.v);
+        var_target.define_initialized(fdecl.name);
+    } else if (std::holds_alternative<ForStatement>(stmt.v)) {
+        const auto& for_stmt = std::get<ForStatement>(stmt.v);
+        if (for_stmt.init.has_value()) {
+            const auto& init_node = *for_stmt.init.value();
+            if (std::holds_alternative<VariableDeclaration>(init_node.v)) {
+                const auto& decl = std::get<VariableDeclaration>(init_node.v);
+                if (decl.kind == VarKind::Var) {
+                    var_target.define_initialized(decl.name);
+                }
+            }
+        }
+        hoist_vars_stmt(*for_stmt.body, var_target);
+    } else if (std::holds_alternative<TryStatement>(stmt.v)) {
+        const auto& try_stmt = std::get<TryStatement>(stmt.v);
+        hoist_vars(try_stmt.block.body, var_target);
+        if (try_stmt.handler.has_value()) {
+            hoist_vars(try_stmt.handler->body.body, var_target);
+        }
+        if (try_stmt.finalizer.has_value()) {
+            hoist_vars(try_stmt.finalizer->body, var_target);
+        }
+    } else if (std::holds_alternative<LabeledStatement>(stmt.v)) {
+        const auto& labeled = std::get<LabeledStatement>(stmt.v);
+        hoist_vars_stmt(*labeled.body, var_target);
+    }
+}
+
 void Interpreter::hoist_vars(const std::vector<StmtNode>& stmts, Environment& var_target) {
     for (const auto& stmt : stmts) {
-        if (std::holds_alternative<VariableDeclaration>(stmt.v)) {
-            const auto& decl = std::get<VariableDeclaration>(stmt.v);
-            if (decl.kind == VarKind::Var) {
-                var_target.define_initialized(decl.name);
-            } else {
-                // let / const: pre-declare TDZ binding so access before the declaration throws ReferenceError
-                current_env_->define(decl.name, decl.kind);
-            }
-        } else if (std::holds_alternative<FunctionDeclaration>(stmt.v)) {
-            // function declarations are hoisted to var_target (not TDZ)
-            const auto& fdecl = std::get<FunctionDeclaration>(stmt.v);
-            var_target.define_initialized(fdecl.name);
-        }
-        // Do not recurse into BlockStatement for var hoisting at top-level
+        hoist_vars_stmt(stmt, var_target);
     }
 }
 
@@ -232,6 +300,10 @@ EvalResult Interpreter::exec(const Program& program) {
         const Completion& c = result.completion();
         if (c.is_return()) {
             return EvalResult::ok(c.value);
+        }
+        if (c.is_throw()) {
+            // Uncaught throw at top level → propagate as error
+            return EvalResult::err(Error(ErrorKind::Runtime, to_string_val(c.value)));
         }
         if (c.is_normal()) {
             last = c.value;
@@ -252,6 +324,12 @@ StmtResult Interpreter::eval_stmt(const StmtNode& stmt) {
             [this](const WhileStatement& s) { return eval_while_stmt(s); },
             [this](const ReturnStatement& s) { return eval_return_stmt(s); },
             [this](const FunctionDeclaration& s) { return eval_function_decl(s); },
+            [this](const ThrowStatement& s) { return eval_throw_stmt(s); },
+            [this](const TryStatement& s) { return eval_try_stmt(s); },
+            [this](const BreakStatement& s) { return eval_break_stmt(s); },
+            [this](const ContinueStatement& s) { return eval_continue_stmt(s); },
+            [this](const LabeledStatement& s) { return eval_labeled_stmt(s); },
+            [this](const ForStatement& s) { return eval_for_stmt(s); },
         },
         stmt.v);
 }
@@ -310,8 +388,8 @@ StmtResult Interpreter::eval_block_stmt(const BlockStatement& stmt) {
             return result;
         }
         const Completion& c = result.completion();
-        if (c.is_return()) {
-            return result;  // propagate return upward
+        if (c.is_abrupt()) {
+            return result;  // propagate any abrupt completion upward
         }
         last = c.value;
     }
@@ -325,23 +403,16 @@ StmtResult Interpreter::eval_if_stmt(const IfStatement& stmt) {
     }
     bool cond = to_boolean(test_result.value());
     if (cond) {
-        auto result = eval_stmt(*stmt.consequent);
-        if (!result.is_ok() || result.completion().is_return()) {
-            return result;
-        }
-        return result;
+        return eval_stmt(*stmt.consequent);
     }
     if (stmt.alternate != nullptr) {
-        auto result = eval_stmt(*stmt.alternate);
-        if (!result.is_ok() || result.completion().is_return()) {
-            return result;
-        }
-        return result;
+        return eval_stmt(*stmt.alternate);
     }
     return StmtResult::ok(Completion::normal(Value::undefined()));
 }
 
-StmtResult Interpreter::eval_while_stmt(const WhileStatement& stmt) {
+StmtResult Interpreter::eval_while_stmt(const WhileStatement& stmt,
+                                         std::optional<std::string> label) {
     while (true) {
         auto test_result = eval_expr(stmt.test);
         if (!test_result.is_ok()) {
@@ -354,7 +425,21 @@ StmtResult Interpreter::eval_while_stmt(const WhileStatement& stmt) {
         if (!body_result.is_ok()) {
             return body_result;
         }
-        if (body_result.completion().is_return()) {
+        const Completion& c = body_result.completion();
+        if (c.is_break()) {
+            if (!c.target.has_value() || c.target == label) {
+                // Unlabeled break or break targeting this loop's label
+                return StmtResult::ok(Completion::normal(Value::undefined()));
+            }
+            return body_result;  // Labeled break for outer loop, propagate up
+        }
+        if (c.is_continue()) {
+            if (!c.target.has_value() || c.target == label) {
+                continue;  // Unlabeled continue or continue targeting this loop's label
+            }
+            return body_result;  // Labeled continue for outer loop, propagate up
+        }
+        if (c.is_return() || c.is_throw()) {
             return body_result;
         }
     }
@@ -949,6 +1034,14 @@ Value Interpreter::make_function_value(std::optional<std::string> name, std::vec
 
 StmtResult Interpreter::call_function(std::shared_ptr<JSFunction> fn, Value this_val,
                                       std::vector<Value> args) {
+    if (fn->is_native()) {
+        auto r = fn->native_fn()(std::move(args), /*is_new_call=*/false);
+        if (!r.is_ok()) {
+            return StmtResult::err(r.error());
+        }
+        return StmtResult::ok(Completion::return_(r.value()));
+    }
+
     auto outer = fn->closure_env() ? fn->closure_env() : global_env_;
     auto fn_env = std::make_shared<Environment>(outer);
     if (fn->name().has_value() && fn_env->lookup(fn->name().value()) == nullptr) {
@@ -976,8 +1069,8 @@ StmtResult Interpreter::call_function(std::shared_ptr<JSFunction> fn, Value this
             return stmt_result;
         }
         const Completion& c = stmt_result.completion();
-        if (c.is_return()) {
-            return stmt_result;  // preserve kReturn so callers can distinguish
+        if (c.is_return() || c.is_throw()) {
+            return stmt_result;  // preserve kReturn/kThrow so callers can distinguish
         }
         result_val = c.value;
     }
@@ -991,6 +1084,199 @@ StmtResult Interpreter::eval_function_decl(const FunctionDeclaration& stmt) {
         return StmtResult::err(set_result.error());
     }
     return StmtResult::ok(Completion::normal(Value::undefined()));
+}
+
+// ---- Phase 7: throw / try / break / continue / labeled / for ----
+
+// Extract a pending throw value from either:
+//   (a) pending_throw_ sentinel (thrown Value from call boundary)
+//   (b) or create a string Value from the error message
+// Clears pending_throw_ after extraction.
+static Value extract_throw_value(std::optional<Value>& pending, const std::string& msg,
+                                  const char* sentinel) {
+    if (msg == sentinel && pending.has_value()) {
+        Value v = std::move(*pending);
+        pending = std::nullopt;
+        return v;
+    }
+    return Value::string(msg);
+}
+
+StmtResult Interpreter::eval_throw_stmt(const ThrowStatement& stmt) {
+    auto r = eval_expr(stmt.argument);
+    if (!r.is_ok()) {
+        Value thrown = extract_throw_value(pending_throw_, r.error().message(), kPendingThrowSentinel);
+        return StmtResult::ok(Completion::throw_(std::move(thrown)));
+    }
+    return StmtResult::ok(Completion::throw_(r.value()));
+}
+
+StmtResult Interpreter::exec_catch(const CatchClause& handler, Value thrown_val) {
+    auto catch_env = std::make_shared<Environment>(current_env_);
+    auto old_env = current_env_;
+    current_env_ = catch_env;
+
+    catch_env->define(handler.param, VarKind::Let);
+    catch_env->initialize(handler.param, thrown_val);
+
+    auto result = eval_block_stmt(handler.body);
+
+    current_env_ = old_env;
+    return result;
+}
+
+StmtResult Interpreter::eval_try_stmt(const TryStatement& stmt) {
+    // 1. Execute try block
+    StmtResult try_result = eval_block_stmt(stmt.block);
+
+    // Internal C++ error from try block → convert to ThrowCompletion
+    if (!try_result.is_ok()) {
+        Value thrown = extract_throw_value(pending_throw_, try_result.error().message(),
+                                           kPendingThrowSentinel);
+        try_result = StmtResult::ok(Completion::throw_(std::move(thrown)));
+    }
+
+    // 2. If there is a catch handler and try produced a throw, execute catch
+    if (stmt.handler.has_value()) {
+        if (try_result.is_ok() && try_result.completion().is_throw()) {
+            Value thrown_val = try_result.completion().value;
+            try_result = exec_catch(*stmt.handler, std::move(thrown_val));
+            // Internal error from catch → convert to ThrowCompletion
+            if (!try_result.is_ok()) {
+                Value thrown = extract_throw_value(pending_throw_, try_result.error().message(),
+                                                   kPendingThrowSentinel);
+                try_result = StmtResult::ok(Completion::throw_(std::move(thrown)));
+            }
+        }
+        // If try was not a throw, catch body is skipped
+    }
+
+    // 3. Finally block: always execute, may override prior completion
+    if (stmt.finalizer.has_value()) {
+        StmtResult finally_result = eval_block_stmt(*stmt.finalizer);
+
+        // Internal error from finally → replaces everything
+        if (!finally_result.is_ok()) {
+            return finally_result;
+        }
+
+        // Finally abrupt completion → replaces prior result
+        if (finally_result.completion().is_abrupt()) {
+            return finally_result;
+        }
+
+        // Finally normal completion → prior result wins
+        return try_result;
+    }
+
+    return try_result;
+}
+
+StmtResult Interpreter::eval_break_stmt(const BreakStatement& stmt) {
+    return StmtResult::ok(Completion::break_(stmt.label));
+}
+
+StmtResult Interpreter::eval_continue_stmt(const ContinueStatement& stmt) {
+    return StmtResult::ok(Completion::continue_(stmt.label));
+}
+
+StmtResult Interpreter::eval_labeled_stmt(const LabeledStatement& stmt) {
+    StmtResult result = StmtResult::ok(Completion::normal(Value::undefined()));
+
+    // Pass label directly to loops so they can handle labeled continue internally
+    if (std::holds_alternative<ForStatement>(stmt.body->v)) {
+        result = eval_for_stmt(std::get<ForStatement>(stmt.body->v), stmt.label);
+    } else if (std::holds_alternative<WhileStatement>(stmt.body->v)) {
+        result = eval_while_stmt(std::get<WhileStatement>(stmt.body->v), stmt.label);
+    } else {
+        result = eval_stmt(*stmt.body);
+    }
+
+    if (result.is_ok() && result.completion().is_break() &&
+        result.completion().target == stmt.label) {
+        return StmtResult::ok(Completion::normal(Value::undefined()));
+    }
+    return result;
+}
+
+StmtResult Interpreter::eval_for_stmt(const ForStatement& stmt,
+                                       std::optional<std::string> label) {
+    // Create outer scope for for-init variables
+    auto for_env = std::make_shared<Environment>(current_env_);
+    auto old_env = current_env_;
+    current_env_ = for_env;
+
+    // Execute init
+    if (stmt.init.has_value()) {
+        auto init_result = eval_stmt(*stmt.init.value());
+        if (!init_result.is_ok()) {
+            current_env_ = old_env;
+            return init_result;
+        }
+        if (init_result.completion().is_abrupt()) {
+            current_env_ = old_env;
+            return init_result;
+        }
+    }
+
+    StmtResult loop_result = StmtResult::ok(Completion::normal(Value::undefined()));
+
+    while (true) {
+        // Test condition
+        if (stmt.test.has_value()) {
+            auto test_r = eval_expr(*stmt.test);
+            if (!test_r.is_ok()) {
+                Value thrown = extract_throw_value(pending_throw_, test_r.error().message(),
+                                                   kPendingThrowSentinel);
+                current_env_ = old_env;
+                return StmtResult::ok(Completion::throw_(std::move(thrown)));
+            }
+            if (!to_boolean(test_r.value())) {
+                break;
+            }
+        }
+
+        // Execute body
+        auto body_result = eval_stmt(*stmt.body);
+        if (!body_result.is_ok()) {
+            current_env_ = old_env;
+            return body_result;
+        }
+        const Completion& c = body_result.completion();
+        if (c.is_break()) {
+            if (!c.target.has_value() || c.target == label) {
+                // Unlabeled break or break targeting this loop's label
+                break;
+            }
+            current_env_ = old_env;
+            return body_result;  // Labeled break for outer loop, propagate up
+        }
+        if (c.is_continue()) {
+            if (!c.target.has_value() || c.target == label) {
+                // Unlabeled continue or continue targeting this loop's label: fall through to update
+            } else {
+                current_env_ = old_env;
+                return body_result;  // Labeled continue for outer loop, propagate up
+            }
+        } else if (c.is_return() || c.is_throw()) {
+            current_env_ = old_env;
+            return body_result;
+        }
+
+        // Execute update
+        if (stmt.update.has_value()) {
+            auto update_r = eval_expr(*stmt.update);
+            if (!update_r.is_ok()) {
+                Value thrown = extract_throw_value(pending_throw_, update_r.error().message(),
+                                                   kPendingThrowSentinel);
+                current_env_ = old_env;
+                return StmtResult::ok(Completion::throw_(std::move(thrown)));
+            }
+        }
+    }
+
+    current_env_ = old_env;
+    return loop_result;
 }
 
 EvalResult Interpreter::eval_function_expr(const FunctionExpression& expr) {
@@ -1066,6 +1352,10 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
     if (!call_result.is_ok()) {
         return EvalResult::err(call_result.error());
     }
+    if (call_result.completion().is_throw()) {
+        pending_throw_ = call_result.completion().value;
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
     return EvalResult::ok(call_result.completion().value);
 }
 
@@ -1110,6 +1400,10 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
     auto call_result = call_function(fn, this_val, std::move(args));
     if (!call_result.is_ok()) {
         return EvalResult::err(call_result.error());
+    }
+    if (call_result.completion().is_throw()) {
+        pending_throw_ = call_result.completion().value;
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
 
     // Only an explicit return <Object> overrides this_val (ECMAScript §10.2.2 step 9)
