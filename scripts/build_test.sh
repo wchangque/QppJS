@@ -7,14 +7,14 @@ BUILD_DIR="${ROOT_DIR}/build/test"
 
 
 EXTRA_LINKER_FLAGS=""
-# if [ -z "${CC:-}" ] && [ -z "${CXX:-}" ]; then
-#     LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null)"
-#     if [ -n "$LLVM_PREFIX" ] && [ -x "${LLVM_PREFIX}/bin/clang" ]; then
-#         export CC="${LLVM_PREFIX}/bin/clang"
-#         export CXX="${LLVM_PREFIX}/bin/clang++"
-#         EXTRA_LINKER_FLAGS="-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,${LLVM_PREFIX}/lib/c++"
-#     fi
-# fi
+if [ -z "${CC:-}" ] && [ -z "${CXX:-}" ]; then
+    LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null)"
+    if [ -n "$LLVM_PREFIX" ] && [ -x "${LLVM_PREFIX}/bin/clang" ]; then
+        export CC="${LLVM_PREFIX}/bin/clang"
+        export CXX="${LLVM_PREFIX}/bin/clang++"
+        EXTRA_LINKER_FLAGS="-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,${LLVM_PREFIX}/lib/c++"
+    fi
+fi
 
 cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -G Ninja \
     ${EXTRA_LINKER_FLAGS:+-D CMAKE_EXE_LINKER_FLAGS="${EXTRA_LINKER_FLAGS}"} \

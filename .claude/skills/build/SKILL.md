@@ -1,82 +1,60 @@
 ---
 name: build
-description: Build, test, and generate coverage reports for QppJS using scripts/build.sh. Use this skill whenever the user wants to build the project, run tests, check test results, generate a coverage report, clean the build directory, or asks about build presets. Trigger on phrases like "build", "compile", "run tests", "coverage", "clean build", "构建", "编译", "跑测试", "覆盖率", "清理构建".
+description: QppJS 项目的构建、测试与覆盖率工具指南，封装 scripts/ 下五个固定入口脚本的用法。每当用户在 QppJS 项目中涉及以下任何场景时，都应主动使用本 skill：构建项目（debug/release/coverage）、运行单元测试、检查测试失败原因、验证代码改动没有回归、检查内存泄露（ASAN/LSan）、生成或查看覆盖率报告、清理重建、询问脚本职责或编译器选择逻辑。即使用户没有明确说"build"或"构建"，只要是在问"怎么跑测试"、"改了代码怎么验证"、"内存泄露用哪个命令"、"覆盖率报告在哪"等与项目构建测试流程相关的问题，都应触发本 skill。
 ---
 
-## 能力范围
+## 脚本入口
 
-本 skill 封装了 `scripts/build.sh` 的全部功能，适用于 QppJS 项目根目录。
+所有脚本从项目根目录执行，职责固定：
 
-## 基本用法
-
-所有命令均从项目根目录执行：
-
-```bash
-bash scripts/build.sh [preset] [options]
-```
+| 脚本 | 用途 |
+|------|------|
+| `scripts/build_debug.sh` | Debug 构建（开 ASAN），输出到 `build/debug/` |
+| `scripts/build_test.sh` | Coverage 构建，输出到 `build/test/` |
+| `scripts/run_ut.sh` | 先调用 `build_debug.sh`，再仅执行 UT（排除 CLI 测试） |
+| `scripts/coverage.sh` | 先调用 `build_test.sh`，再执行 UT 并生成覆盖率报告 |
+| `scripts/build_release.sh` | Release 构建（不含测试），输出到 `build/release/`，含编译器选择逻辑 |
 
 ## 常用场景
 
-### 1. 快速构建（自动检测 preset）
+### 构建 + 运行所有 UT（最常用）+ 检查内存泄露
 ```bash
-bash scripts/build.sh
+./scripts/run_ut.sh
 ```
 
-### 2. 构建 + 运行测试
+### 仅构建 Debug（不跑测试）
 ```bash
-bash scripts/build.sh --test
+./scripts/build_debug.sh
 ```
 
-### 3. 清理后重新构建 + 测试
+### 生成覆盖率报告
 ```bash
-bash scripts/build.sh --clean --test
+./scripts/coverage.sh          # 生成报告
+./scripts/coverage.sh --open   # 生成后在浏览器打开
 ```
 
-### 4. 构建 + 测试 + 生成覆盖率报告
+### 清理重建
 ```bash
-bash scripts/build.sh --test --coverage
-```
-覆盖率 preset 会自动选择（debug/release 会被替换为对应的 coverage variant）。
-
-### 5. 生成覆盖率报告并在浏览器打开
-```bash
-bash scripts/build.sh --test --coverage --open
+rm -rf build/debug && ./scripts/run_ut.sh
+rm -rf build/test  && ./scripts/coverage.sh
 ```
 
-### 6. 指定 preset
-```bash
-bash scripts/build.sh macos-llvmclang-debug --test
-```
+## 编译器选择逻辑（build_debug.sh / build_release.sh）
 
-## 可用 Preset
+1. 环境变量 `$CC` / `$CXX` 已设置 → 直接使用
+2. 未设置 + Homebrew LLVM 存在（`brew --prefix llvm`）→ 自动切换，并附加对应 libc++ 链接路径
+3. 未设置 + 无 Homebrew LLVM → 由 CMake 自动选系统 Apple Clang
 
-| Preset | 平台 | 编译器 | 模式 |
-|--------|------|--------|------|
-| macos-llvmclang-debug | macOS | Homebrew LLVM Clang | Debug + ASan + LSan |
-| macos-llvmclang-coverage | macOS | Homebrew LLVM Clang | Coverage |
-| macos-appleclang-debug | macOS | Apple Clang | Debug + ASan（不支持 LSan）|
-| macos-appleclang-coverage | macOS | Apple Clang | Coverage |
-| linux-clang-debug | Linux | Clang | Debug + ASan |
-| linux-clang-coverage | Linux | Clang | Coverage |
-| linux-gcc-coverage | Linux | GCC | Coverage |
-| windows-msvc-debug | Windows | MSVC | Debug |
-
-Preset 自动检测规则：
-- macOS + `/opt/homebrew/opt/llvm/bin/clang++` 存在 → `macos-llvmclang-*`（推荐，支持 LSan）
-- macOS + 无 Homebrew LLVM → `macos-appleclang-*`
-- Linux → `linux-clang-*`
+`build_test.sh` 的编译器自动检测当前已注释掉，如需指定编译器请手动设置 `$CC`/`$CXX`。
 
 ## 覆盖率报告位置
 
-生成后报告位于：
 ```
-build/<preset>/coverage/index.html
+build/test/coverage/index.html
 ```
 
 ## 注意事项
 
-- `--coverage` 必须配合 `--test` 使用，否则报错
-- `--open` 必须配合 `--coverage` 使用；Linux 需要桌面环境（`xdg-open`）
-- `macos-llvmclang-*` 需要 Homebrew LLVM（`brew install llvm`），支持 LeakSanitizer
-- `macos-appleclang-*` 使用系统 Apple Clang，ASan 可用但 macOS 不支持 LeakSanitizer
-- 覆盖率生成需要 `lcov` 和 `genhtml`（`brew install lcov` / `apt install lcov`）
+- **UT 回归和内存泄露检查都使用 `run_ut.sh`**：它调用 `build_debug.sh`（含 ASAN/LSan），一条命令同时验证功能和内存安全
+- `build_test.sh` 的 LLVM 自动检测当前已注释掉（coverage 构建不走 ASAN 路径），如需指定编译器请手动设置 `$CC`/`$CXX`
+- 覆盖率生成需要 `lcov` 和 `genhtml`（`brew install lcov`）
