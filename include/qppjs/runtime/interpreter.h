@@ -56,7 +56,6 @@ private:
 
     // Hoist var declarations; var_target is the function-level env to receive var bindings.
     void hoist_vars(const std::vector<StmtNode>& stmts, Environment& var_target);
-    BindingMap collect_visible_bindings() const;
 
     // Create a JSFunction value with eager prototype initialization.
     Value make_function_value(std::optional<std::string> name, std::vector<std::string> params,

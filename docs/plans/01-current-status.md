@@ -5,7 +5,7 @@
 ## 1. 当前阶段
 
 - 当前阶段：Phase 6 已全部完成，下一阶段为 Phase 7
-- 最近更新时间：2026-04-23（构建系统脚本已收缩为固定职责入口，CMake option 已统一收口到 `cmake/Options.cmake`，全局编译/链接选项改为根 `CMakeLists.txt` 统一注入并在 `CompilerFlags.cmake` 直接用 `set/list(APPEND)` 组装，UT 脚本已切到 debug 构建链路并与 CLI 测试分离，macOS 覆盖率链路已验证通过；当前正在收尾函数/闭包路径的 ASAN/LSan 泄露修复，已完成 Cell 化绑定与 interpreter/vm 捕获模型切换，单例泄露样例已消失，但函数相关批量回归仍需继续收敛）
+- 最近更新时间：2026-04-23（函数/闭包 ASAN/LSan 泄露修复彻底完成：JSFunction 闭包改为 closure_env_ 持 env 链引用，消除了 captured_bindings 快照模型的 shared_ptr 强环与提升函数捕获不到 let 变量的问题；build_debug.sh / build_test.sh 修复为优先使用环境变量 CC/CXX，其次 Homebrew LLVM，最后 fallback 系统 Apple Clang；663/663 ASAN 全量回归通过）
 
 ## 2. 当前任务状态
 
@@ -76,7 +76,7 @@
   - 529（interpreter）+ 134（VM）= 663 个测试全部通过
 
 ### 进行中
-- 函数/闭包 ASAN 泄露修复：已将 `Environment::Binding` 改为共享 `Cell`，`JSFunction` 从 `closure_env` 切到 `captured_bindings`，Interpreter/VM 已能编译并通过单个泄露样例 `FunctionTest.BasicFunctionDeclarationAndCall`；但递归/互递归/兄弟函数互引场景仍存在残余泄露，尚未完成 focused function/vm 回归
+- 暂无
 
 ### 未开始
 - [ ] Phase 7：控制流扩展（break/continue/throw/try/catch/finally）
@@ -86,12 +86,12 @@
 
 ## 3. 最近完成内容
 
-- 正在收尾函数/闭包路径的 ASAN/LSan 泄露修复：
-  - `include/qppjs/runtime/environment.h`、`src/runtime/environment.cpp`：`Binding` 改为共享 `Cell` 持值，新增 `BindingMap` 与 `define_binding()`
-  - `include/qppjs/runtime/js_function.h`：移除 `closure_env_`，改为 `captured_bindings_`
-  - `include/qppjs/runtime/interpreter.h`、`src/runtime/interpreter.cpp`：新增可见绑定收集，函数调用改为“全局环境 + 捕获绑定 + 参数/局部绑定”模型
-  - `include/qppjs/vm/vm.h`、`src/vm/vm.cpp`：同步对齐为 `captured_bindings` 闭包模型，并补上 VM 侧 `global_env_`
-  - 当前验证状态：debug + ASAN 构建恢复可编译，`FunctionTest.BasicFunctionDeclarationAndCall` 已不再触发泄露；但 focused function/vm 批量回归仍有残余泄露，根因进一步收敛到递归/互递归函数通过 captured binding 自引用形成的新强环，尚未完全修复
+- 完成函数/闭包 ASAN/LSan 泄露修复（彻底收尾）：
+  - `include/qppjs/runtime/js_function.h`：将 `captured_bindings_`（BindingMap 快照）改回 `closure_env_`（`shared_ptr<Environment>`），捕获 env 链引用而非 binding 副本
+  - `src/runtime/interpreter.cpp`：`make_function_value` 改为 `set_closure_env(current_env_)`；`call_function` 改为以 `closure_env` 为 outer 创建 fn_env；移除 `collect_visible_bindings()`
+  - `src/vm/vm.cpp`：`kMakeFunction` 改为 `set_closure_env(env)`；`push_call_frame` 改为以 `closure_env` 为 outer；移除 `CollectVisibleBindings()`
+  - 修复了 `VMFunc.TwoClosuresShareSameEnv` 失败（提升的函数声明在 `let n` 定义前执行 `kMakeFunction`，快照模型捕获不到 `n`；env 链模型在调用时自然可见）
+  - ASAN 全量回归：663/663 通过，无泄露，无错误
 
 - 已完成构建系统重构收尾验证与脚本职责收缩：
   - 移除 `CMakePresets.json`

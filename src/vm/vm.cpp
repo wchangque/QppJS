@@ -19,25 +19,6 @@
 
 namespace qppjs {
 
-namespace {
-
-BindingMap CollectVisibleBindings(const std::shared_ptr<Environment>& current_env) {
-    BindingMap visible;
-    for (auto env = current_env; env != nullptr; env = env->outer()) {
-        if (env->outer() == nullptr) {
-            continue;
-        }
-        for (const auto& [name, binding] : env->bindings()) {
-            if (visible.count(name) == 0) {
-                visible.emplace(name, binding);
-            }
-        }
-    }
-    return visible;
-}
-
-}  // namespace
-
 // ============================================================
 // Type conversion helpers
 // ============================================================
@@ -227,10 +208,8 @@ EvalResult VM::push_call_frame(std::shared_ptr<JSFunction> fn, Value this_val, s
         return EvalResult::err(Error(ErrorKind::Runtime, "Internal: function has no bytecode"));
     }
 
-    auto fn_env = std::make_shared<Environment>(global_env_);
-    for (const auto& [name, binding] : fn->captured_bindings()) {
-        fn_env->define_binding(name, binding);
-    }
+    auto outer = fn->closure_env() ? fn->closure_env() : global_env_;
+    auto fn_env = std::make_shared<Environment>(outer);
     if (fn->name().has_value() && fn_env->lookup(fn->name().value()) == nullptr) {
         fn_env->define(fn->name().value(), VarKind::Const);
         auto init_result = fn_env->initialize(fn->name().value(), Value::object(fn));
@@ -529,7 +508,7 @@ EvalResult VM::run(size_t exit_depth) {
             fn->set_name(fn_bc->name);
             fn->set_params(fn_bc->params);
             fn->set_bytecode(fn_bc);
-            fn->set_captured_bindings(CollectVisibleBindings(env));
+            fn->set_closure_env(env);
             auto proto_obj = std::make_shared<JSObject>();
             proto_obj->set_proto(object_prototype_);
             proto_obj->set_constructor_property(fn);

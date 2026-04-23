@@ -218,21 +218,6 @@ void Interpreter::hoist_vars(const std::vector<StmtNode>& stmts, Environment& va
     }
 }
 
-BindingMap Interpreter::collect_visible_bindings() const {
-    BindingMap visible;
-    for (auto env = current_env_; env != nullptr; env = env->outer()) {
-        if (env == global_env_) {
-            continue;
-        }
-        for (const auto& [name, binding] : env->bindings()) {
-            if (visible.count(name) == 0) {
-                visible.emplace(name, binding);
-            }
-        }
-    }
-    return visible;
-}
-
 // ---- exec ----
 
 EvalResult Interpreter::exec(const Program& program) {
@@ -950,7 +935,7 @@ Value Interpreter::make_function_value(std::optional<std::string> name, std::vec
     fn->set_name(name);
     fn->set_params(std::move(params));
     fn->set_body(std::move(body));
-    fn->set_captured_bindings(collect_visible_bindings());
+    fn->set_closure_env(current_env_);
 
     // Eager prototype initialization: F.prototype = { constructor: F }
     Value fn_val = Value::object(fn);
@@ -964,10 +949,8 @@ Value Interpreter::make_function_value(std::optional<std::string> name, std::vec
 
 StmtResult Interpreter::call_function(std::shared_ptr<JSFunction> fn, Value this_val,
                                       std::vector<Value> args) {
-    auto fn_env = std::make_shared<Environment>(global_env_);
-    for (const auto& [name, binding] : fn->captured_bindings()) {
-        fn_env->define_binding(name, binding);
-    }
+    auto outer = fn->closure_env() ? fn->closure_env() : global_env_;
+    auto fn_env = std::make_shared<Environment>(outer);
     if (fn->name().has_value() && fn_env->lookup(fn->name().value()) == nullptr) {
         fn_env->define(fn->name().value(), VarKind::Const);
         auto init_result = fn_env->initialize(fn->name().value(), Value::object(fn));
