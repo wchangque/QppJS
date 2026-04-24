@@ -3,6 +3,17 @@ name: implement
 description: 编排 QppJS 的 agent team 完成一个具体语言特性或模块的完整实现流程（规范调研 → 设计 → 实现 → 测试 → 审查）。当用户想实现某个 JS 引擎功能、语言特性、运行时模块，或说"实现 X"、"做 X 这个功能"、"开始 X 模块"时触发。支持 --from / --only / --skip 参数跳过已完成的阶段。
 ---
 
+## 执行前：必须加载状态上下文
+
+在进入任何阶段之前，先读取以下两个文件：
+
+1. `docs/plans/01-current-status-detail.md` — 完整任务状态与已完成内容
+2. `docs/plans/02-next-phase.md` — 当前阶段目标与任务分解
+
+如需理解全局路线，再读 `docs/plans/00-roadmap.md`。
+
+---
+
 ## 概览
 
 本 skill 编排 6 个专职 agent 完成一个小粒度主题的完整实现周期。主会话负责串联各阶段的输入输出，不直接写代码。
