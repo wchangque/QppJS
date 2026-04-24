@@ -81,6 +81,22 @@
 
 ## 2. 最近完成内容
 
+- 完成 Phase 8.1 — Error 子类（TypeError/ReferenceError/RangeError）+ instanceof 运算符：
+  - **新增文件**：`include/qppjs/runtime/native_errors.h`（`NativeErrorType` 枚举 + `MakeNativeErrorValue` 工厂函数声明）、`src/runtime/native_errors.cpp`（工厂函数实现）
+  - **新增 instanceof 支持**：`token.h` 添加 `KwInstanceof`；`ast.h` 添加 `BinaryOp::Instanceof`；`lexer.cpp` 注册关键字；`parser.cpp` 添加 lbp=10 和 led 处理；`ast_dump.cpp` 添加 case；`opcode.h` 添加 `kInstanceof`；`compiler.cpp` emit `kInstanceof`
+  - **VM 侧**：`vm.h` 添加 `error_protos_[4]` 缓存数组和 `make_error_value` 私有方法；`vm.cpp` 重构 `init_global_env()`（完整 Error 原型链：Error → TypeError/ReferenceError/RangeError）、实现 `kInstanceof` opcode（原型链遍历）、将所有字符串抛出替换为 Error 实例（kGetVar/kSetVar/kInitVar/kGetProp/kSetProp/kGetElem/kSetElem/kCall/kCallMethod/kNewCall/kTypeofVar）、修正顶层异常消息格式（`name: message`）
+  - **Interpreter 侧**：`interpreter.h` 添加 `error_protos_[4]` 和 `make_error_value`；`interpreter.cpp` 重构构造函数（完整 Error 原型链）、在 `eval_binary` 添加 `BinaryOp::Instanceof` case
+  - **修复 P2-3**：内部运行时错误（ReferenceError/TypeError）从字符串改为真正的 Error 实例
+  - **新增测试**：`tests/unit/vm_error_test.cpp`（20 个测试）、`tests/unit/interpreter_error_test.cpp`（16 个测试）
+  - 861/861 测试全部通过，ASAN/LSan 无泄漏
+
+- 完成 Phase 8.1 Review 必修问题修复（M1/M2/M3）：
+  - **M1 — VM 错误消息双重前缀**：在 `src/vm/vm.cpp` 添加 `strip_error_prefix()` 辅助函数，在 kGetVar/kSetVar/kInitVar/kCall/kCallMethod/kNewCall 中所有从 Environment C++ Error 取消息的路径调用剥离前缀，确保 `e.message` 不含 `"XxxError: "` 前缀
+  - **M2 — Error 原型链缺少 constructor 属性**：在 `src/vm/vm.cpp` 的 `init_global_env()` 和 `src/runtime/interpreter.cpp` 的构造函数中，为 Error 和每个子类 prototype 调用 `set_constructor_property(fn.get())`，使 `XxxError.prototype.constructor === XxxError`
+  - **M3 — Interpreter 路径运行时异常仍为字符串**：在 `src/runtime/interpreter.cpp` 中添加 `strip_error_prefix()` 辅助函数；将 `eval_identifier`、`eval_assignment`、`eval_member_expr`、`eval_member_assign`、`eval_call_expr`、`eval_new_expr` 中所有运行时错误路径改为设置 `pending_throw_` 并返回哨兵；同时修复 `exec()` 顶层未捕获错误的格式化（`name: message`）
+  - **测试更新**：`vm_error_test.cpp` 新增 T-21（M1）、T-22（M2）共 6 个测试；`interpreter_error_test.cpp` T-12/T-13 从期望字符串改为期望 Error 实例，新增 T-17（M2）共 3 个测试
+  - 917/917 测试全部通过，ASAN/LSan 无泄漏
+
 - 完成 P1 全部热路径性能优化（来自 docs/perf/001-all.md）：
   - **P1-1+2**：`Cell` 增加非原子引用计数，`CellPtr` 从 `shared_ptr<Cell>` 改为 `RcPtr<Cell>`，保留闭包共享可变语义，消除原子操作开销（`environment.h`、`environment.cpp`）
   - **P1-3**：`push_call_frame` 改为接受 `std::span<Value>`；kCall/kCallMethod/kNewCall 三处用 8 元素栈缓冲区收集参数，消除小参数调用的 malloc，同时消除 `std::reverse`（`vm.h`、`vm.cpp`）

@@ -13,7 +13,7 @@ static const std::unordered_map<std::string_view, TokenKind> kKeywords = {
         {"this", TokenKind::KwThis},
         {"delete", TokenKind::KwDelete},   {"typeof", TokenKind::KwTypeof},     {"void", TokenKind::KwVoid},
         {"throw", TokenKind::KwThrow},     {"try", TokenKind::KwTry},           {"catch", TokenKind::KwCatch},
-        {"finally", TokenKind::KwFinally},
+        {"finally", TokenKind::KwFinally}, {"instanceof", TokenKind::KwInstanceof},
 };
 
 LexerState lexer_init(std::string_view source) { return {source, 0, 1, false}; }

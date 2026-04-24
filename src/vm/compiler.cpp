@@ -502,8 +502,9 @@ void Compiler::compile_binary(const BinaryExpression& expr) {
     case BinaryOp::GtEq:    emit(Opcode::kGtEq);      break;
     case BinaryOp::EqEq:    emit(Opcode::kEq);        break;
     case BinaryOp::NotEq:   emit(Opcode::kNEq);       break;
-    case BinaryOp::EqEqEq:  emit(Opcode::kStrictEq);  break;
-    case BinaryOp::NotEqEq: emit(Opcode::kStrictNEq); break;
+    case BinaryOp::EqEqEq:    emit(Opcode::kStrictEq);  break;
+    case BinaryOp::NotEqEq:   emit(Opcode::kStrictNEq); break;
+    case BinaryOp::Instanceof: emit(Opcode::kInstanceof); break;
     }
 }
 

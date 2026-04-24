@@ -4,8 +4,8 @@
 
 ## 1. 下一阶段
 
-- 下一阶段：Phase 8（基础内建对象）
-- Phase 7 已全部完成（792/792 测试通过）
+- 下一阶段：Phase 8（基础内建对象，进行中）
+- Phase 8.1 已完成（861/861 测试通过）
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 

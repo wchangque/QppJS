@@ -4,10 +4,12 @@
 #include "qppjs/runtime/environment.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
+#include "qppjs/runtime/native_errors.h"
 #include "qppjs/runtime/rc_object.h"
 #include "qppjs/runtime/value.h"
 #include "qppjs/vm/bytecode.h"
 
+#include <array>
 #include <deque>
 #include <memory>
 #include <optional>
@@ -63,6 +65,8 @@ private:
     static std::string to_string_val(const Value& v);
     static bool abstract_eq(const Value& a, const Value& b);
 
+    Value make_error_value(NativeErrorType type, const std::string& message);
+
     // deque: push_back does not invalidate references to existing elements
     std::deque<CallFrame> call_stack_;
     int call_depth_ = 0;
@@ -70,6 +74,9 @@ private:
 
     RcPtr<JSObject> object_prototype_;
     std::shared_ptr<Environment> global_env_;
+
+    // Error prototype cache: indexed by NativeErrorType
+    std::array<RcPtr<JSObject>, static_cast<size_t>(NativeErrorType::kCount)> error_protos_;
 };
 
 }  // namespace qppjs

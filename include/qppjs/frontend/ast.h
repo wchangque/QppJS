@@ -22,7 +22,7 @@ overloaded(Ts...) -> overloaded<Ts...>;
 // ---- 枚举 ----
 
 enum class UnaryOp { Minus, Plus, Bang, Typeof, Void };
-enum class BinaryOp { Add, Sub, Mul, Div, Mod, Lt, Gt, LtEq, GtEq, EqEq, NotEq, EqEqEq, NotEqEq };
+enum class BinaryOp { Add, Sub, Mul, Div, Mod, Lt, Gt, LtEq, GtEq, EqEq, NotEq, EqEqEq, NotEqEq, Instanceof };
 enum class LogicalOp { And, Or };
 enum class AssignOp { Assign, AddAssign, SubAssign, MulAssign, DivAssign, ModAssign };
 enum class VarKind { Var, Let, Const };

@@ -38,6 +38,7 @@ enum class TokenKind {
     KwTry,
     KwCatch,
     KwFinally,
+    KwInstanceof,
 
     // 标点
     LParen,

@@ -5,6 +5,7 @@
 #include "qppjs/runtime/environment.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
+#include "qppjs/runtime/native_errors.h"
 #include "qppjs/runtime/value.h"
 #include "qppjs/vm/bytecode.h"
 #include "qppjs/vm/opcode.h"
@@ -64,6 +65,12 @@ EvalResult VM::to_number(const Value& v) {
         return EvalResult::ok(Value::number(std::numeric_limits<double>::quiet_NaN()));
     }
     return EvalResult::ok(Value::number(std::numeric_limits<double>::quiet_NaN()));
+}
+
+static std::string strip_error_prefix(const std::string& msg) {
+    auto pos = msg.find(": ");
+    if (pos != std::string::npos) return msg.substr(pos + 2);
+    return msg;
 }
 
 static std::string number_to_string(double d) {
@@ -151,34 +158,76 @@ VM::VM() : object_prototype_(RcPtr<JSObject>::make()) {
     global_env_ = std::make_shared<Environment>(nullptr);
 }
 
+static std::string value_to_message_string(const Value& v) {
+    if (v.is_string()) return v.as_string();
+    if (v.is_undefined()) return "";
+    if (v.is_null()) return "null";
+    if (v.is_bool()) return v.as_bool() ? "true" : "false";
+    if (v.is_number()) {
+        double n = v.as_number();
+        if (std::isnan(n)) return "NaN";
+        if (std::isinf(n)) return n > 0 ? "Infinity" : "-Infinity";
+        return number_to_string(n);
+    }
+    return "[object Object]";
+}
+
+Value VM::make_error_value(NativeErrorType type, const std::string& message) {
+    const auto& proto = error_protos_[static_cast<size_t>(type)];
+    return MakeNativeErrorValue(proto, message);
+}
+
 void VM::init_global_env() {
-    // Register Error constructor as a native function
+    // Build Error.prototype (proto = object_prototype_)
+    auto error_proto = RcPtr<JSObject>::make();
+    error_proto->set_proto(object_prototype_);
+    error_proto->set_property("name", Value::string("Error"));
+    error_proto->set_property("message", Value::string(""));
+    error_protos_[static_cast<size_t>(NativeErrorType::kError)] = error_proto;
+
+    // Build Error constructor
     auto error_fn = RcPtr<JSFunction>::make();
     error_fn->set_name(std::string("Error"));
-    error_fn->set_native_fn([](std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
-        std::string msg = args.empty() ? "" : [&]() -> std::string {
-            const Value& v = args[0];
-            if (v.is_string()) return v.as_string();
-            if (v.is_undefined()) return "";
-            if (v.is_null()) return "null";
-            if (v.is_bool()) return v.as_bool() ? "true" : "false";
-            if (v.is_number()) {
-                double n = v.as_number();
-                if (std::isnan(n)) return "NaN";
-                if (std::isinf(n)) return n > 0 ? "Infinity" : "-Infinity";
-                return number_to_string(n);
-            }
-            return "[object Object]";
-        }();
-        auto obj = RcPtr<JSObject>::make();
-        obj->set_property("message", Value::string(msg));
-        obj->set_property("name", Value::string("Error"));
-        return EvalResult::ok(Value::object(ObjectPtr(obj)));
-    });
-    auto error_proto = RcPtr<JSObject>::make();
     error_fn->set_prototype_obj(error_proto);
+    error_proto->set_constructor_property(error_fn.get());
+    error_fn->set_native_fn([this](std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
+        std::string msg = args.empty() ? "" : value_to_message_string(args[0]);
+        return EvalResult::ok(make_error_value(NativeErrorType::kError, msg));
+    });
     global_env_->define("Error", VarKind::Const);
     global_env_->initialize("Error", Value::object(ObjectPtr(error_fn)));
+
+    // Helper to build a sub-error class
+    struct SubErrorSpec {
+        NativeErrorType type;
+        const char* name;
+    };
+    static constexpr SubErrorSpec kSubErrors[] = {
+        {NativeErrorType::kTypeError,      "TypeError"},
+        {NativeErrorType::kReferenceError, "ReferenceError"},
+        {NativeErrorType::kRangeError,     "RangeError"},
+    };
+
+    for (const auto& spec : kSubErrors) {
+        auto sub_proto = RcPtr<JSObject>::make();
+        sub_proto->set_proto(error_proto);  // inherits from Error.prototype
+        sub_proto->set_property("name", Value::string(spec.name));
+        sub_proto->set_property("message", Value::string(""));
+        error_protos_[static_cast<size_t>(spec.type)] = sub_proto;
+
+        auto sub_fn = RcPtr<JSFunction>::make();
+        sub_fn->set_name(std::string(spec.name));
+        sub_fn->set_prototype_obj(sub_proto);
+        sub_proto->set_constructor_property(sub_fn.get());
+        NativeErrorType captured_type = spec.type;
+        sub_fn->set_native_fn([this, captured_type](std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
+            std::string msg = args.empty() ? "" : value_to_message_string(args[0]);
+            return EvalResult::ok(make_error_value(captured_type, msg));
+        });
+
+        global_env_->define(spec.name, VarKind::Const);
+        global_env_->initialize(spec.name, Value::object(ObjectPtr(sub_fn)));
+    }
 }
 
 // ============================================================
@@ -339,11 +388,14 @@ EvalResult VM::run(size_t exit_depth) {
                     RcObject* raw = thrown.as_object_raw();
                     if (raw && raw->object_kind() == ObjectKind::kOrdinary) {
                         auto* obj = static_cast<JSObject*>(raw);
+                        Value name_val = obj->get_property("name");
                         Value m = obj->get_property("message");
-                        if (m.is_string()) {
-                            msg = m.as_string();
+                        std::string name_str = name_val.is_string() ? name_val.as_string() : "";
+                        std::string msg_str = m.is_string() ? m.as_string() : "[object Object]";
+                        if (!name_str.empty()) {
+                            msg = name_str + ": " + msg_str;
                         } else {
-                            msg = "[object Object]";
+                            msg = msg_str;
                         }
                     } else {
                         msg = "[object]";
@@ -432,7 +484,12 @@ EvalResult VM::run(size_t exit_depth) {
             }
             auto result = env->get(name);
             if (!result.is_ok()) {
-                frame.pending_throw = Value::string(result.error().message());
+                const std::string& msg = result.error().message();
+                NativeErrorType err_type = NativeErrorType::kReferenceError;
+                if (msg.rfind("TypeError:", 0) == 0) {
+                    err_type = NativeErrorType::kTypeError;
+                }
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
                 continue;
             }
             stack.push_back(result.value());
@@ -444,7 +501,12 @@ EvalResult VM::run(size_t exit_depth) {
             const std::string& name = bc->names[idx];
             auto result = env->set(name, stack.back());
             if (!result.is_ok()) {
-                frame.pending_throw = Value::string(result.error().message());
+                const std::string& msg = result.error().message();
+                NativeErrorType err_type = NativeErrorType::kTypeError;
+                if (msg.rfind("ReferenceError:", 0) == 0) {
+                    err_type = NativeErrorType::kReferenceError;
+                }
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
                 continue;
             }
             // value stays on stack
@@ -475,7 +537,12 @@ EvalResult VM::run(size_t exit_depth) {
             stack.pop_back();
             auto result = env->initialize(bc->names[idx], val);
             if (!result.is_ok()) {
-                frame.pending_throw = Value::string(result.error().message());
+                const std::string& msg = result.error().message();
+                NativeErrorType err_type = NativeErrorType::kTypeError;
+                if (msg.rfind("ReferenceError:", 0) == 0) {
+                    err_type = NativeErrorType::kReferenceError;
+                }
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
                 continue;
             }
             stack.push_back(result.value());
@@ -509,8 +576,8 @@ EvalResult VM::run(size_t exit_depth) {
             Value obj_val = std::move(stack.back());
             stack.pop_back();
             if (obj_val.is_undefined() || obj_val.is_null()) {
-                frame.pending_throw = Value::string(
-                    "TypeError: Cannot read property '" + name + "' of " + to_string_val(obj_val));
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot read property '" + name + "' of " + to_string_val(obj_val));
                 continue;
             }
             if (!obj_val.is_object()) {
@@ -546,8 +613,9 @@ EvalResult VM::run(size_t exit_depth) {
             Value obj_val = std::move(stack.back());
             stack.pop_back();
             if (!obj_val.is_object()) {
-                return EvalResult::err(Error(ErrorKind::Runtime,
-                    "TypeError: Cannot set property '" + name + "' on non-object"));
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot set property '" + name + "' on non-object");
+                continue;
             }
             // Handle JSFunction specially (e.g., Fn.prototype = ...)
             RcObject* raw_set = obj_val.as_object_raw();
@@ -564,8 +632,9 @@ EvalResult VM::run(size_t exit_depth) {
                 break;
             }
             if (raw_set->object_kind() != ObjectKind::kOrdinary) {
-                return EvalResult::err(Error(ErrorKind::Runtime,
-                    "TypeError: Cannot set property '" + name + "' on non-JSObject"));
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot set property '" + name + "' on non-JSObject");
+                continue;
             }
             auto* obj = static_cast<JSObject*>(raw_set);
             obj->set_property(name, val);
@@ -579,13 +648,15 @@ EvalResult VM::run(size_t exit_depth) {
             Value obj_val = std::move(stack.back());
             stack.pop_back();
             if (!obj_val.is_object()) {
-                return EvalResult::err(Error(ErrorKind::Runtime,
-                    "TypeError: Cannot read element of non-object"));
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot read element of non-object");
+                continue;
             }
             RcObject* raw_elem = obj_val.as_object_raw();
             if (!raw_elem || raw_elem->object_kind() != ObjectKind::kOrdinary) {
-                return EvalResult::err(Error(ErrorKind::Runtime,
-                    "TypeError: Cannot read element of non-JSObject"));
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot read element of non-JSObject");
+                continue;
             }
             auto* obj = static_cast<JSObject*>(raw_elem);
             stack.push_back(obj->get_property(to_string_val(key_val)));
@@ -600,13 +671,15 @@ EvalResult VM::run(size_t exit_depth) {
             Value obj_val = std::move(stack.back());
             stack.pop_back();
             if (!obj_val.is_object()) {
-                return EvalResult::err(Error(ErrorKind::Runtime,
-                    "TypeError: Cannot set element on non-object"));
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot set element on non-object");
+                continue;
             }
             RcObject* raw_setelem = obj_val.as_object_raw();
             if (!raw_setelem || raw_setelem->object_kind() != ObjectKind::kOrdinary) {
-                return EvalResult::err(Error(ErrorKind::Runtime,
-                    "TypeError: Cannot set element on non-JSObject"));
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot set element on non-JSObject");
+                continue;
             }
             auto* obj = static_cast<JSObject*>(raw_setelem);
             obj->set_property(to_string_val(key_val), val);
@@ -657,19 +730,23 @@ EvalResult VM::run(size_t exit_depth) {
             stack.pop_back();
 
             if (!callee_val.is_object()) {
-                frame.pending_throw = Value::string("TypeError: not a function");
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError, "not a function");
                 continue;
             }
             RcObject* call_raw = callee_val.as_object_raw();
             if (!call_raw || call_raw->object_kind() != ObjectKind::kFunction) {
-                frame.pending_throw = Value::string("TypeError: not a function");
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError, "not a function");
                 continue;
             }
             auto fn = RcPtr<JSFunction>(static_cast<JSFunction*>(call_raw));
             if (fn->is_native()) {
                 auto res = fn->native_fn()(std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/false);
                 if (!res.is_ok()) {
-                    frame.pending_throw = Value::string(res.error().message());
+                    const std::string& msg = res.error().message();
+                    NativeErrorType err_type = NativeErrorType::kTypeError;
+                    if (msg.rfind("ReferenceError:", 0) == 0) err_type = NativeErrorType::kReferenceError;
+                    else if (msg.rfind("RangeError:", 0) == 0) err_type = NativeErrorType::kRangeError;
+                    frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
                     continue;
                 }
                 stack.push_back(res.value());
@@ -678,7 +755,10 @@ EvalResult VM::run(size_t exit_depth) {
             // Push new frame; the flat loop will execute it, then return value lands on our stack
             auto push_res = push_call_frame(fn, Value::undefined(), args);
             if (!push_res.is_ok()) {
-                frame.pending_throw = Value::string(push_res.error().message());
+                const std::string& msg = push_res.error().message();
+                NativeErrorType err_type = NativeErrorType::kRangeError;
+                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
                 continue;
             }
             break;
@@ -711,19 +791,23 @@ EvalResult VM::run(size_t exit_depth) {
             stack.pop_back();
 
             if (!callee_val.is_object()) {
-                frame.pending_throw = Value::string("TypeError: not a function");
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError, "not a function");
                 continue;
             }
             RcObject* callm_raw = callee_val.as_object_raw();
             if (!callm_raw || callm_raw->object_kind() != ObjectKind::kFunction) {
-                frame.pending_throw = Value::string("TypeError: not a function");
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError, "not a function");
                 continue;
             }
             auto fn = RcPtr<JSFunction>(static_cast<JSFunction*>(callm_raw));
             if (fn->is_native()) {
                 auto res = fn->native_fn()(std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/false);
                 if (!res.is_ok()) {
-                    frame.pending_throw = Value::string(res.error().message());
+                    const std::string& msg = res.error().message();
+                    NativeErrorType err_type = NativeErrorType::kTypeError;
+                    if (msg.rfind("ReferenceError:", 0) == 0) err_type = NativeErrorType::kReferenceError;
+                    else if (msg.rfind("RangeError:", 0) == 0) err_type = NativeErrorType::kRangeError;
+                    frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
                     continue;
                 }
                 stack.push_back(res.value());
@@ -731,7 +815,10 @@ EvalResult VM::run(size_t exit_depth) {
             }
             auto push_res = push_call_frame(fn, std::move(receiver), args);
             if (!push_res.is_ok()) {
-                frame.pending_throw = Value::string(push_res.error().message());
+                const std::string& msg = push_res.error().message();
+                NativeErrorType err_type = NativeErrorType::kRangeError;
+                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
                 continue;
             }
             break;
@@ -762,19 +849,23 @@ EvalResult VM::run(size_t exit_depth) {
             stack.pop_back();
 
             if (!ctor_val.is_object()) {
-                frame.pending_throw = Value::string("TypeError: not a constructor");
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError, "not a constructor");
                 continue;
             }
             RcObject* ctor_raw = ctor_val.as_object_raw();
             if (!ctor_raw || ctor_raw->object_kind() != ObjectKind::kFunction) {
-                frame.pending_throw = Value::string("TypeError: not a constructor");
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError, "not a constructor");
                 continue;
             }
             auto fn = RcPtr<JSFunction>(static_cast<JSFunction*>(ctor_raw));
             if (fn->is_native()) {
                 auto res = fn->native_fn()(std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/true);
                 if (!res.is_ok()) {
-                    frame.pending_throw = Value::string(res.error().message());
+                    const std::string& msg = res.error().message();
+                    NativeErrorType err_type = NativeErrorType::kTypeError;
+                    if (msg.rfind("ReferenceError:", 0) == 0) err_type = NativeErrorType::kReferenceError;
+                    else if (msg.rfind("RangeError:", 0) == 0) err_type = NativeErrorType::kRangeError;
+                    frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
                     continue;
                 }
                 stack.push_back(res.value());
@@ -795,7 +886,10 @@ EvalResult VM::run(size_t exit_depth) {
             auto push_res = push_call_frame(fn, instance_val, args,
                                             /*is_new=*/true, std::move(instance_copy));
             if (!push_res.is_ok()) {
-                frame.pending_throw = Value::string(push_res.error().message());
+                const std::string& msg = push_res.error().message();
+                NativeErrorType err_type = NativeErrorType::kRangeError;
+                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
                 continue;
             }
             break;
@@ -1035,8 +1129,9 @@ EvalResult VM::run(size_t exit_depth) {
                 break;
             }
             if (!b->initialized) {
-                return EvalResult::err(Error(ErrorKind::Runtime,
-                    "ReferenceError: Cannot access '" + name + "' before initialization"));
+                frame.pending_throw = make_error_value(NativeErrorType::kReferenceError,
+                    "Cannot access '" + name + "' before initialization");
+                continue;
             }
             const Value& v = b->cell->value;
             std::string type_str;
@@ -1053,6 +1148,52 @@ EvalResult VM::run(size_t exit_depth) {
             }
             }
             stack.push_back(Value::string(type_str));
+            break;
+        }
+
+        case Opcode::kInstanceof: {
+            Value ctor_val = std::move(stack.back());
+            stack.pop_back();
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+
+            // Non-object left side → false
+            if (!obj_val.is_object()) {
+                stack.push_back(Value::boolean(false));
+                break;
+            }
+            // Right side must be a Function
+            if (!ctor_val.is_object()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Right-hand side of instanceof is not callable");
+                continue;
+            }
+            RcObject* ctor_raw = ctor_val.as_object_raw();
+            if (!ctor_raw || ctor_raw->object_kind() != ObjectKind::kFunction) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Right-hand side of instanceof is not callable");
+                continue;
+            }
+            auto* ctor_fn = static_cast<JSFunction*>(ctor_raw);
+            const RcPtr<JSObject>& ctor_proto = ctor_fn->prototype_obj();
+            if (!ctor_proto) {
+                stack.push_back(Value::boolean(false));
+                break;
+            }
+            // Walk the prototype chain of obj_val
+            RcObject* cur_raw = obj_val.as_object_raw();
+            bool found = false;
+            while (cur_raw && cur_raw->object_kind() == ObjectKind::kOrdinary) {
+                auto* cur_obj = static_cast<JSObject*>(cur_raw);
+                const RcPtr<JSObject>& proto = cur_obj->proto();
+                if (!proto) break;
+                if (proto.get() == ctor_proto.get()) {
+                    found = true;
+                    break;
+                }
+                cur_raw = proto.get();
+            }
+            stack.push_back(Value::boolean(found));
             break;
         }
 

@@ -5,10 +5,12 @@
 #include "qppjs/runtime/environment.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
+#include "qppjs/runtime/native_errors.h"
 #include "qppjs/runtime/rc_object.h"
 #include "qppjs/vm/bytecode.h"
 #include "qppjs/vm/opcode.h"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -74,6 +76,8 @@ private:
     Value make_function_value(std::optional<std::string> name, std::vector<std::string> params,
                               std::shared_ptr<std::vector<StmtNode>> body);
 
+    Value make_error_value(NativeErrorType type, const std::string& message);
+
     // Execute a function with given this_val and args.
     // Returns StmtResult so callers can distinguish explicit return from natural completion.
     StmtResult call_function(RcPtr<JSFunction> fn, Value this_val, std::vector<Value> args);
@@ -98,6 +102,9 @@ private:
     RcPtr<JSObject> object_prototype_;  // global Object.prototype
     int call_depth_ = 0;
     static constexpr int kMaxCallDepth = 500;
+
+    // Error prototype cache: indexed by NativeErrorType
+    std::array<RcPtr<JSObject>, static_cast<size_t>(NativeErrorType::kCount)> error_protos_;
 
     // When a JS-level throw crosses an EvalResult boundary (e.g., from call_function),
     // the thrown Value is stashed here and the error message is set to kPendingThrowSentinel.

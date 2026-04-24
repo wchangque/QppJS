@@ -70,6 +70,8 @@ const char* binary_op_str(BinaryOp op) {
             return "===";
         case BinaryOp::NotEqEq:
             return "!==";
+        case BinaryOp::Instanceof:
+            return "instanceof";
     }
     return "?";
 }

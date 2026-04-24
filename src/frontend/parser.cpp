@@ -318,6 +318,7 @@ struct Parser {
             case TokenKind::EqEqEq:
             case TokenKind::BangEqEq:
                 return 8;
+            case TokenKind::KwInstanceof:
             case TokenKind::Lt:
             case TokenKind::Gt:
             case TokenKind::LtEq:
@@ -698,6 +699,9 @@ struct Parser {
                 break;
             case TokenKind::BangEqEq:
                 bop = BinaryOp::NotEqEq;
+                break;
+            case TokenKind::KwInstanceof:
+                bop = BinaryOp::Instanceof;
                 break;
             default:
                 return ParseResult<ExprNode>::Err(make_parse_error(source, op_tok, "unknown binary operator"));

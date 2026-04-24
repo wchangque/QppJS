@@ -6,6 +6,7 @@
 #include "qppjs/runtime/environment.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
+#include "qppjs/runtime/native_errors.h"
 #include "qppjs/runtime/value.h"
 
 #include <optional>
@@ -18,6 +19,12 @@
 #include <string>
 
 namespace qppjs {
+
+static std::string strip_error_prefix(const std::string& msg) {
+    auto pos = msg.find(": ");
+    if (pos != std::string::npos) return msg.substr(pos + 2);
+    return msg;
+}
 
 // ============================================================
 // Completion
@@ -121,6 +128,11 @@ Interpreter::ScopeGuard::~ScopeGuard() {
 // Interpreter
 // ============================================================
 
+Value Interpreter::make_error_value(NativeErrorType type, const std::string& message) {
+    const auto& proto = error_protos_[static_cast<size_t>(type)];
+    return MakeNativeErrorValue(proto, message);
+}
+
 Interpreter::Interpreter()
     : global_env_(std::make_shared<Environment>(nullptr)),
       current_env_(global_env_),
@@ -129,24 +141,55 @@ Interpreter::Interpreter()
       object_prototype_(RcPtr<JSObject>::make()) {
     // object_prototype_.proto_ stays nullptr (end of chain)
 
-    // Register built-in Error constructor
+    // Build Error.prototype
+    auto error_proto = RcPtr<JSObject>::make();
+    error_proto->set_proto(object_prototype_);
+    error_proto->set_property("name", Value::string("Error"));
+    error_proto->set_property("message", Value::string(""));
+    error_protos_[static_cast<size_t>(NativeErrorType::kError)] = error_proto;
+
+    // Build Error constructor
     auto error_fn = RcPtr<JSFunction>::make();
     error_fn->set_name(std::string("Error"));
-    auto proto_obj = RcPtr<JSObject>::make();
-    proto_obj->set_proto(object_prototype_);
-    proto_obj->set_constructor_property(error_fn.get());
-    error_fn->set_prototype_obj(proto_obj);
+    error_fn->set_prototype_obj(error_proto);
+    error_proto->set_constructor_property(error_fn.get());
     error_fn->set_native_fn([this](std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
-        auto obj = RcPtr<JSObject>::make();
-        obj->set_proto(object_prototype_);
-        obj->set_property("name", Value::string("Error"));
         std::string msg = args.empty() ? "" : to_string_val(args[0]);
-        obj->set_property("message", Value::string(std::move(msg)));
-        return EvalResult::ok(Value::object(ObjectPtr(obj)));
+        return EvalResult::ok(make_error_value(NativeErrorType::kError, msg));
     });
-    Value error_val = Value::object(ObjectPtr(error_fn));
     global_env_->define_initialized("Error");
-    global_env_->set("Error", error_val);
+    global_env_->set("Error", Value::object(ObjectPtr(error_fn)));
+
+    // Build Error sub-classes
+    struct SubErrorSpec {
+        NativeErrorType type;
+        const char* name;
+    };
+    static constexpr SubErrorSpec kSubErrors[] = {
+        {NativeErrorType::kTypeError,      "TypeError"},
+        {NativeErrorType::kReferenceError, "ReferenceError"},
+        {NativeErrorType::kRangeError,     "RangeError"},
+    };
+
+    for (const auto& spec : kSubErrors) {
+        auto sub_proto = RcPtr<JSObject>::make();
+        sub_proto->set_proto(error_proto);
+        sub_proto->set_property("name", Value::string(spec.name));
+        sub_proto->set_property("message", Value::string(""));
+        error_protos_[static_cast<size_t>(spec.type)] = sub_proto;
+
+        auto sub_fn = RcPtr<JSFunction>::make();
+        sub_fn->set_name(std::string(spec.name));
+        sub_fn->set_prototype_obj(sub_proto);
+        sub_proto->set_constructor_property(sub_fn.get());
+        NativeErrorType captured_type = spec.type;
+        sub_fn->set_native_fn([this, captured_type](std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
+            std::string msg = args.empty() ? "" : to_string_val(args[0]);
+            return EvalResult::ok(make_error_value(captured_type, msg));
+        });
+        global_env_->define_initialized(spec.name);
+        global_env_->set(spec.name, Value::object(ObjectPtr(sub_fn)));
+    }
 }
 
 // ---- Type conversions ----
@@ -295,6 +338,25 @@ EvalResult Interpreter::exec(const Program& program) {
     for (const auto& stmt : program.body) {
         auto result = eval_stmt(stmt);
         if (!result.is_ok()) {
+            // Propagate C++ error; if it's a pending_throw_ sentinel, format as "Name: message"
+            const std::string& emsg = result.error().message();
+            if (emsg == kPendingThrowSentinel && pending_throw_.has_value()) {
+                Value thrown = std::move(*pending_throw_);
+                pending_throw_ = std::nullopt;
+                std::string name = "Error";
+                std::string message;
+                if (thrown.is_object()) {
+                    RcObject* raw = thrown.as_object_raw();
+                    if (raw && raw->object_kind() == ObjectKind::kOrdinary) {
+                        auto* obj = static_cast<JSObject*>(raw);
+                        Value n = obj->get_property("name");
+                        Value m = obj->get_property("message");
+                        if (n.is_string()) name = n.as_string();
+                        if (m.is_string()) message = m.as_string();
+                    }
+                }
+                return EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
+            }
             return EvalResult::err(result.error());
         }
         const Completion& c = result.completion();
@@ -303,7 +365,19 @@ EvalResult Interpreter::exec(const Program& program) {
         }
         if (c.is_throw()) {
             // Uncaught throw at top level → propagate as error
-            return EvalResult::err(Error(ErrorKind::Runtime, to_string_val(c.value)));
+            const Value& thrown = c.value;
+            if (thrown.is_object()) {
+                RcObject* raw = thrown.as_object_raw();
+                if (raw && raw->object_kind() == ObjectKind::kOrdinary) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    Value n = obj->get_property("name");
+                    Value m = obj->get_property("message");
+                    std::string name = n.is_string() ? n.as_string() : "Error";
+                    std::string message = m.is_string() ? m.as_string() : "";
+                    return EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
+                }
+            }
+            return EvalResult::err(Error(ErrorKind::Runtime, to_string_val(thrown)));
         }
         if (c.is_normal()) {
             last = c.value;
@@ -488,7 +562,15 @@ EvalResult Interpreter::eval_identifier(const Identifier& expr) {
     if (expr.name == "this") {
         return EvalResult::ok(current_this_);
     }
-    return current_env_->get(expr.name);
+    auto result = current_env_->get(expr.name);
+    if (!result.is_ok()) {
+        const std::string& msg = result.error().message();
+        NativeErrorType err_type = NativeErrorType::kReferenceError;
+        if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+        pending_throw_ = make_error_value(err_type, strip_error_prefix(msg));
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+    return result;
 }
 
 EvalResult Interpreter::eval_unary(const UnaryExpression& expr) {
@@ -505,8 +587,9 @@ EvalResult Interpreter::eval_unary(const UnaryExpression& expr) {
                 return EvalResult::ok(Value::string("undefined"));
             }
             if (!b->initialized) {
-                return EvalResult::err(Error(ErrorKind::Runtime,
-                    "ReferenceError: Cannot access '" + id.name + "' before initialization"));
+                pending_throw_ = make_error_value(NativeErrorType::kReferenceError,
+                    "Cannot access '" + id.name + "' before initialization");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
             }
         }
         // Otherwise fall through to normal evaluation
@@ -800,6 +883,43 @@ EvalResult Interpreter::eval_binary(const BinaryExpression& expr) {
         return EvalResult::ok(Value::boolean(abstract_eq(lv, rv)));
     case BinaryOp::NotEq:
         return EvalResult::ok(Value::boolean(!abstract_eq(lv, rv)));
+    case BinaryOp::Instanceof: {
+        // Non-object left side → false
+        if (!lv.is_object()) {
+            return EvalResult::ok(Value::boolean(false));
+        }
+        // Right side must be a Function
+        if (!rv.is_object()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Right-hand side of instanceof is not callable");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        RcObject* ctor_raw = rv.as_object_raw();
+        if (!ctor_raw || ctor_raw->object_kind() != ObjectKind::kFunction) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Right-hand side of instanceof is not callable");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* ctor_fn = static_cast<JSFunction*>(ctor_raw);
+        const RcPtr<JSObject>& ctor_proto = ctor_fn->prototype_obj();
+        if (!ctor_proto) {
+            return EvalResult::ok(Value::boolean(false));
+        }
+        // Walk the prototype chain of lv
+        RcObject* cur_raw = lv.as_object_raw();
+        bool found = false;
+        while (cur_raw && cur_raw->object_kind() == ObjectKind::kOrdinary) {
+            auto* cur_obj = static_cast<JSObject*>(cur_raw);
+            const RcPtr<JSObject>& proto = cur_obj->proto();
+            if (!proto) break;
+            if (proto.get() == ctor_proto.get()) {
+                found = true;
+                break;
+            }
+            cur_raw = proto.get();
+        }
+        return EvalResult::ok(Value::boolean(found));
+    }
     }
     return EvalResult::ok(Value::undefined());
 }
@@ -834,7 +954,11 @@ EvalResult Interpreter::eval_assignment(const AssignmentExpression& expr) {
         }
         auto set_result = current_env_->set(expr.target, rhs.value());
         if (!set_result.is_ok()) {
-            return set_result;
+            const std::string& msg = set_result.error().message();
+            NativeErrorType err_type = NativeErrorType::kTypeError;
+            if (msg.rfind("ReferenceError:", 0) == 0) err_type = NativeErrorType::kReferenceError;
+            pending_throw_ = make_error_value(err_type, strip_error_prefix(msg));
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
         return rhs;
     }
@@ -842,7 +966,11 @@ EvalResult Interpreter::eval_assignment(const AssignmentExpression& expr) {
     // Compound assignment: read current value, compute, write back
     auto current_result = current_env_->get(expr.target);
     if (!current_result.is_ok()) {
-        return current_result;
+        const std::string& msg = current_result.error().message();
+        NativeErrorType err_type = NativeErrorType::kReferenceError;
+        if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+        pending_throw_ = make_error_value(err_type, strip_error_prefix(msg));
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
     auto rhs = eval_expr(*expr.value);
     if (!rhs.is_ok()) {
@@ -923,7 +1051,11 @@ EvalResult Interpreter::eval_assignment(const AssignmentExpression& expr) {
 
     auto set_result = current_env_->set(expr.target, new_val);
     if (!set_result.is_ok()) {
-        return set_result;
+        const std::string& msg = set_result.error().message();
+        NativeErrorType err_type = NativeErrorType::kTypeError;
+        if (msg.rfind("ReferenceError:", 0) == 0) err_type = NativeErrorType::kReferenceError;
+        pending_throw_ = make_error_value(err_type, strip_error_prefix(msg));
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
     return EvalResult::ok(new_val);
 }
@@ -949,8 +1081,9 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
     const Value& obj_val = obj_result.value();
 
     if (obj_val.is_undefined() || obj_val.is_null()) {
-        return EvalResult::err(Error(ErrorKind::Runtime,
-                "TypeError: Cannot read properties of " + to_string_val(obj_val)));
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "Cannot read properties of " + to_string_val(obj_val));
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
 
     // 非对象：Phase 3 返回 undefined（Phase 5 补原始值包装）
@@ -988,12 +1121,14 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
     const Value& obj_val = obj_result.value();
 
     if (obj_val.is_undefined() || obj_val.is_null()) {
-        return EvalResult::err(Error(ErrorKind::Runtime,
-                "TypeError: Cannot set properties of " + to_string_val(obj_val)));
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "Cannot set properties of " + to_string_val(obj_val));
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
     if (!obj_val.is_object()) {
-        return EvalResult::err(Error(ErrorKind::Runtime,
-                "TypeError: Cannot set properties of non-object"));
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "Cannot set properties of non-object");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
 
     auto key_result = eval_expr(*expr.property);
@@ -1009,8 +1144,9 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
 
     RcObject* raw_obj2 = obj_val.as_object_raw();
     if (raw_obj2->object_kind() != ObjectKind::kOrdinary) {
-        return EvalResult::err(Error(ErrorKind::Runtime,
-                "TypeError: Cannot set properties of non-ordinary object"));
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "Cannot set properties of non-ordinary object");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
     auto* js_obj = static_cast<JSObject*>(raw_obj2);
     js_obj->set_property(key, val_result.value());
@@ -1288,8 +1424,9 @@ EvalResult Interpreter::eval_function_expr(const FunctionExpression& expr) {
 
 EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
     if (call_depth_ >= kMaxCallDepth) {
-        return EvalResult::err(
-            Error(ErrorKind::Runtime, "RangeError: Maximum call stack size exceeded"));
+        pending_throw_ = make_error_value(NativeErrorType::kRangeError,
+            "Maximum call stack size exceeded");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
 
     Value this_val = Value::undefined();
@@ -1311,8 +1448,9 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
         std::string key = to_string_val(key_result.value());
 
         if (!this_val.is_object()) {
-            return EvalResult::err(Error(ErrorKind::Runtime,
-                "TypeError: Cannot read properties of " + to_string_val(this_val)));
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Cannot read properties of " + to_string_val(this_val));
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
         RcObject* obj_ptr = this_val.as_object_raw();
         if (obj_ptr->object_kind() == ObjectKind::kOrdinary) {
@@ -1339,7 +1477,8 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
 
     if (!callee_val.is_object() || !callee_val.as_object_raw() ||
         callee_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
-        return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: value is not a function"));
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError, "value is not a function");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
     auto* fn_raw = static_cast<JSFunction*>(callee_val.as_object_raw());
     auto fn = RcPtr<JSFunction>(fn_raw);
@@ -1367,8 +1506,9 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
 
 EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
     if (call_depth_ >= kMaxCallDepth) {
-        return EvalResult::err(
-            Error(ErrorKind::Runtime, "RangeError: Maximum call stack size exceeded"));
+        pending_throw_ = make_error_value(NativeErrorType::kRangeError,
+            "Maximum call stack size exceeded");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
 
     auto callee_result = eval_expr(*expr.callee);
@@ -1378,7 +1518,8 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
     const Value& callee_val = callee_result.value();
     if (!callee_val.is_object() || !callee_val.as_object_raw() ||
         callee_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
-        return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: value is not a constructor"));
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError, "value is not a constructor");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
     auto* fn_raw2 = static_cast<JSFunction*>(callee_val.as_object_raw());
     auto fn = RcPtr<JSFunction>(fn_raw2);
