@@ -22,10 +22,11 @@ description: 编排 QppJS 的 agent team 完成一个具体语言特性或模块
 ```
 [并行] es-spec + quickjs-research
     → design-agent
+    → perf-agent（方案审查）
     → implementation-agent（首次实现）
     → testing-agent
-    → review-agent（首次审查）
-    → implementation-agent（修复必修问题）
+    → [并行] review-agent（首次审查）+ perf-agent（代码审查）
+    → implementation-agent（修复必修问题 + P0 性能问题）
     → review-agent（验证审查，仅确认修复）
 ```
 
@@ -42,6 +43,7 @@ description: 编排 QppJS 的 agent team 完成一个具体语言特性或模块
 | `/implement --from impl <topic>` | implementation-agent | 已有设计方案，跳过前三步 |
 | `/implement --only spec <topic>` | spec + research | 只产出设计方案，不实现 |
 | `/implement --skip review <topic>` | 完整流程，跳过 review | 快速迭代时使用 |
+| `/implement --skip perf <topic>` | 完整流程，跳过两次 perf-agent | 快速迭代时使用 |
 
 **解析后，向用户确认一句话：** "将从 [阶段] 开始，主题：[topic]。"
 
@@ -97,6 +99,27 @@ description: 编排 QppJS 的 agent team 完成一个具体语言特性或模块
 
 ---
 
+## 阶段 2.5：方案性能审查
+
+**触发条件：** 未使用 `--skip perf`，且未使用 `--from impl`（有设计方案产出）。
+
+启动 `perf-agent`（subagent_type: `perf-agent`），传入：
+
+```
+主题：<topic>
+审查模式：方案审查
+
+## 设计方案摘要
+<design-agent 输出的第 3 节（模块边界）、第 4 节（核心数据结构）、第 5 节（关键流程）的内容>
+```
+
+**处理规则：**
+- P0：必须在进入实现前解决，将问题反馈给用户，等待确认后再继续。
+- P1：在实现阶段的 prompt 中附带提醒，要求 implementation-agent 关注。
+- P2：记录到主会话上下文，收尾时提示用户。
+
+---
+
 ## 阶段 3：实现
 
 **触发条件：** 未使用 `--only spec`。
@@ -135,11 +158,13 @@ description: 编排 QppJS 的 agent team 完成一个具体语言特性或模块
 
 ---
 
-## 阶段 5：审查
+## 阶段 5：审查 + 代码性能审查（并行）
 
-**触发条件：** 未使用 `--skip review`。
+**触发条件：** review 和 perf 至少有一个未被 skip。
 
-启动 `review-agent`（subagent_type: `review-agent`），传入：
+同时启动两个 agent（可并行，互不依赖）：
+
+**review-agent**（触发条件：未使用 `--skip review`）：
 
 ```
 主题：<topic>
@@ -153,6 +178,28 @@ description: 编排 QppJS 的 agent team 完成一个具体语言特性或模块
 
 请运行 codex:review 和 codex:adversarial-review，整合输出结构化审查报告。
 ```
+
+**perf-agent**（触发条件：未使用 `--skip perf`）：
+
+```
+主题：<topic>
+审查模式：代码审查
+
+## 本次改动文件
+<implementation-agent 输出的"代码改动摘要"中涉及的文件列表>
+
+## 方案审查 P1 提醒（如有）
+<阶段 2.5 中记录的 P1 问题，或"无">
+```
+
+等两个 agent 都完成后，合并处理结果：
+- review-agent 的必修问题 → 进入阶段 6 修复
+- perf-agent 的 P0 问题 → 追加到阶段 6 修复列表
+- perf-agent 的 P1/P2 问题 → 记录到主会话上下文，收尾时汇总提示用户
+
+**处理规则：**
+- P0：将问题追加到 implementation-agent 修复轮次的输入中，要求一并修复。
+- P1/P2：记录到主会话上下文，收尾时汇总提示用户。
 
 ---
 
