@@ -80,14 +80,14 @@ uint16_t Compiler::add_constant(Value v) {
 }
 
 uint16_t Compiler::add_name(const std::string& name) {
-    // Deduplicate
-    for (size_t i = 0; i < current_->names.size(); ++i) {
-        if (current_->names[i] == name) {
-            return static_cast<uint16_t>(i);
-        }
+    auto it = name_index_.find(name);
+    if (it != name_index_.end()) {
+        return it->second;
     }
+    auto idx = static_cast<uint16_t>(current_->names.size());
     current_->names.push_back(name);
-    return static_cast<uint16_t>(current_->names.size() - 1);
+    name_index_.emplace(name, idx);
+    return idx;
 }
 
 uint16_t Compiler::add_function(std::shared_ptr<BytecodeFunction> fn) {
@@ -168,6 +168,8 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
 
     // Save and switch context
     BytecodeFunction* saved = current_;
+    auto saved_name_index = std::move(name_index_);
+    name_index_.clear();
     current_ = fn.get();
 
     // Pre-scan for var declarations
@@ -206,6 +208,7 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
     }
 
     current_ = saved;
+    name_index_ = std::move(saved_name_index);
     return fn;
 }
 

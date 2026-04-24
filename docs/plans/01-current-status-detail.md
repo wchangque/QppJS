@@ -127,3 +127,9 @@
 - P3-2（新，已知）：循环引用（proto 链、closure env）导致内存泄漏，Phase 9 GC 解决
 - JSFunction::body_ 字段继续保留（AST Interpreter 使用）
 - GetProp/SetProp 对 JSFunction 的非 prototype 属性当前静默忽略
+
+## 4. 2026-04-24 内部性能优化（无语义变化）
+
+- `src/frontend/parser.cpp`：`parse_number_text` 十进制路径从 `std::stod`（try/catch）改为 `std::from_chars`，消除异常开销，与"禁止异常"约定对齐
+- `include/qppjs/vm/compiler.h` + `src/vm/compiler.cpp`：`add_name` 新增 `name_index_`（`unordered_map<string, uint16_t>`）反向索引，去重从 O(n) 降至 O(1)；`compile_function` 上下文切换时保存/恢复索引
+- 测试：825/825 通过，ASAN/LSan 无泄漏

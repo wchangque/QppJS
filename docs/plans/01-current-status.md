@@ -10,6 +10,7 @@
 | 测试计数 | 825/825 通过 |
 | 最近更新 | 2026-04-24 |
 | 下一步 | Phase 8.1 — Error 子类（TypeError/ReferenceError/RangeError） |
+| 最近优化 | parse_number_text 改用 std::from_chars；add_name 加 O(1) 反向索引 |
 
 ## 已知遗留问题
 

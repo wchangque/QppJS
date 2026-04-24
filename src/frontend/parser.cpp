@@ -3,6 +3,7 @@
 #include "qppjs/frontend/lexer.h"
 
 #include <cassert>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
@@ -166,11 +167,15 @@ static double parse_number_text(std::string_view text) {
             return v;
         }
     }
-    try {
-        return std::stod(std::string(text));
-    } catch (const std::out_of_range&) {
+    double result = 0.0;
+    auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), result);
+    if (ec == std::errc{}) {
+        return result;
+    }
+    if (ec == std::errc::result_out_of_range) {
         return std::numeric_limits<double>::infinity();
     }
+    return 0.0;
 }
 
 // 将 double 格式化为属性键字符串，与 to_string_val 对 Number 的整数化逻辑保持一致

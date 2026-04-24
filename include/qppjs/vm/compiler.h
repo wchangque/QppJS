@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace qppjs {
@@ -35,6 +36,9 @@ public:
 private:
     // Current function being compiled (stack for nested functions)
     BytecodeFunction* current_ = nullptr;
+
+    // Reverse index for add_name deduplication: name -> index in current_->names
+    std::unordered_map<std::string, uint16_t> name_index_;
 
     // Phase 7: loop and finally tracking
     std::vector<LoopEnv> loop_env_stack_;
