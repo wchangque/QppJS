@@ -126,25 +126,25 @@ Interpreter::Interpreter()
       current_env_(global_env_),
       var_env_(global_env_),
       current_this_(Value::undefined()),
-      object_prototype_(std::make_shared<JSObject>()) {
+      object_prototype_(RcPtr<JSObject>::make()) {
     // object_prototype_.proto_ stays nullptr (end of chain)
 
     // Register built-in Error constructor
-    auto error_fn = std::make_shared<JSFunction>();
+    auto error_fn = RcPtr<JSFunction>::make();
     error_fn->set_name(std::string("Error"));
-    auto proto_obj = std::make_shared<JSObject>();
+    auto proto_obj = RcPtr<JSObject>::make();
     proto_obj->set_proto(object_prototype_);
-    proto_obj->set_constructor_property(error_fn);
+    proto_obj->set_constructor_property(error_fn.get());
     error_fn->set_prototype_obj(proto_obj);
     error_fn->set_native_fn([this](std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
-        auto obj = std::make_shared<JSObject>();
+        auto obj = RcPtr<JSObject>::make();
         obj->set_proto(object_prototype_);
         obj->set_property("name", Value::string("Error"));
         std::string msg = args.empty() ? "" : to_string_val(args[0]);
         obj->set_property("message", Value::string(std::move(msg)));
-        return EvalResult::ok(Value::object(obj));
+        return EvalResult::ok(Value::object(ObjectPtr(obj)));
     });
-    Value error_val = Value::object(error_fn);
+    Value error_val = Value::object(ObjectPtr(error_fn));
     global_env_->define_initialized("Error");
     global_env_->set("Error", error_val);
 }
@@ -230,7 +230,7 @@ std::string Interpreter::to_string_val(const Value& v) {
     case ValueKind::String:
         return v.as_string();
     case ValueKind::Object: {
-        const auto& obj = v.as_object();
+        RcObject* obj = v.as_object_raw();
         if (obj && obj->object_kind() == ObjectKind::kFunction) {
             return "function";
         }
@@ -527,7 +527,7 @@ EvalResult Interpreter::eval_unary(const UnaryExpression& expr) {
         case ValueKind::String:
             return EvalResult::ok(Value::string("string"));
         case ValueKind::Object: {
-            const auto& obj = val.as_object();
+            RcObject* obj = val.as_object_raw();
             if (obj && obj->object_kind() == ObjectKind::kFunction) {
                 return EvalResult::ok(Value::string("function"));
             }
@@ -593,7 +593,7 @@ static bool strict_eq(const Value& a, const Value& b) {
     case ValueKind::String:
         return a.as_string() == b.as_string();
     case ValueKind::Object:
-        return a.as_object() == b.as_object();
+        return a.as_object_raw() == b.as_object_raw();
     }
     return false;
 }
@@ -929,7 +929,7 @@ EvalResult Interpreter::eval_assignment(const AssignmentExpression& expr) {
 }
 
 EvalResult Interpreter::eval_object_expr(const ObjectExpression& expr) {
-    auto obj = std::make_shared<JSObject>();
+    auto obj = RcPtr<JSObject>::make();
     obj->set_proto(object_prototype_);
     for (const auto& prop : expr.properties) {
         auto val = eval_expr(*prop.value);
@@ -938,7 +938,7 @@ EvalResult Interpreter::eval_object_expr(const ObjectExpression& expr) {
         }
         obj->set_property(prop.key, val.value());
     }
-    return EvalResult::ok(Value::object(obj));
+    return EvalResult::ok(Value::object(ObjectPtr(obj)));
 }
 
 EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
@@ -964,17 +964,19 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
     }
     std::string key = to_string_val(key_result.value());
 
-    if (obj_val.as_object()->object_kind() == ObjectKind::kFunction) {
-        auto* fn = static_cast<JSFunction*>(obj_val.as_object().get());
+    RcObject* raw_obj = obj_val.as_object_raw();
+    if (raw_obj->object_kind() == ObjectKind::kFunction) {
+        auto* fn = static_cast<JSFunction*>(raw_obj);
         if (key == "prototype") {
-            return EvalResult::ok(Value::object(fn->prototype_obj()));
+            const auto& proto = fn->prototype_obj();
+            return EvalResult::ok(proto ? Value::object(ObjectPtr(proto)) : Value::undefined());
         }
         return EvalResult::ok(Value::undefined());
     }
-    if (obj_val.as_object()->object_kind() != ObjectKind::kOrdinary) {
+    if (raw_obj->object_kind() != ObjectKind::kOrdinary) {
         return EvalResult::ok(Value::undefined());
     }
-    auto* js_obj = static_cast<JSObject*>(obj_val.as_object().get());
+    auto* js_obj = static_cast<JSObject*>(raw_obj);
     return EvalResult::ok(js_obj->get_property(key));
 }
 
@@ -1005,34 +1007,35 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
         return val_result;
     }
 
-    if (obj_val.as_object()->object_kind() != ObjectKind::kOrdinary) {
+    RcObject* raw_obj2 = obj_val.as_object_raw();
+    if (raw_obj2->object_kind() != ObjectKind::kOrdinary) {
         return EvalResult::err(Error(ErrorKind::Runtime,
                 "TypeError: Cannot set properties of non-ordinary object"));
     }
-    auto* js_obj = static_cast<JSObject*>(obj_val.as_object().get());
+    auto* js_obj = static_cast<JSObject*>(raw_obj2);
     js_obj->set_property(key, val_result.value());
     return EvalResult::ok(val_result.value());
 }
 
 Value Interpreter::make_function_value(std::optional<std::string> name, std::vector<std::string> params,
                                         std::shared_ptr<std::vector<StmtNode>> body) {
-    auto fn = std::make_shared<JSFunction>();
+    auto fn = RcPtr<JSFunction>::make();
     fn->set_name(name);
     fn->set_params(std::move(params));
     fn->set_body(std::move(body));
     fn->set_closure_env(current_env_);
 
     // Eager prototype initialization: F.prototype = { constructor: F }
-    Value fn_val = Value::object(fn);
-    auto proto_obj = std::make_shared<JSObject>();
+    Value fn_val = Value::object(ObjectPtr(fn));
+    auto proto_obj = RcPtr<JSObject>::make();
     proto_obj->set_proto(object_prototype_);
-    proto_obj->set_constructor_property(fn);
+    proto_obj->set_constructor_property(fn.get());
     fn->set_prototype_obj(proto_obj);
 
     return fn_val;
 }
 
-StmtResult Interpreter::call_function(std::shared_ptr<JSFunction> fn, Value this_val,
+StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
                                       std::vector<Value> args) {
     if (fn->is_native()) {
         auto r = fn->native_fn()(std::move(args), /*is_new_call=*/false);
@@ -1046,7 +1049,7 @@ StmtResult Interpreter::call_function(std::shared_ptr<JSFunction> fn, Value this
     auto fn_env = std::make_shared<Environment>(outer);
     if (fn->name().has_value() && fn_env->lookup(fn->name().value()) == nullptr) {
         fn_env->define(fn->name().value(), VarKind::Const);
-        auto init_result = fn_env->initialize(fn->name().value(), Value::object(fn));
+        auto init_result = fn_env->initialize(fn->name().value(), Value::object(ObjectPtr(fn)));
         if (!init_result.is_ok()) {
             return StmtResult::err(init_result.error());
         }
@@ -1311,13 +1314,18 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
             return EvalResult::err(Error(ErrorKind::Runtime,
                 "TypeError: Cannot read properties of " + to_string_val(this_val)));
         }
-        const auto& obj_ptr = this_val.as_object();
+        RcObject* obj_ptr = this_val.as_object_raw();
         if (obj_ptr->object_kind() == ObjectKind::kOrdinary) {
-            auto* js_obj = static_cast<JSObject*>(obj_ptr.get());
+            auto* js_obj = static_cast<JSObject*>(obj_ptr);
             callee_val = js_obj->get_property(key);
         } else if (obj_ptr->object_kind() == ObjectKind::kFunction) {
-            auto* fn_obj = static_cast<JSFunction*>(obj_ptr.get());
-            callee_val = (key == "prototype") ? Value::object(fn_obj->prototype_obj()) : Value::undefined();
+            auto* fn_obj = static_cast<JSFunction*>(obj_ptr);
+            if (key == "prototype") {
+                const auto& proto = fn_obj->prototype_obj();
+                callee_val = proto ? Value::object(ObjectPtr(proto)) : Value::undefined();
+            } else {
+                callee_val = Value::undefined();
+            }
         } else {
             callee_val = Value::undefined();
         }
@@ -1329,14 +1337,12 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
         callee_val = std::move(callee_result.value());
     }
 
-    if (!callee_val.is_object() || !callee_val.as_object() ||
-        callee_val.as_object()->object_kind() != ObjectKind::kFunction) {
+    if (!callee_val.is_object() || !callee_val.as_object_raw() ||
+        callee_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
         return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: value is not a function"));
     }
-    auto fn = std::dynamic_pointer_cast<JSFunction>(callee_val.as_object());
-    if (!fn) {
-        return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: value is not a function"));
-    }
+    auto* fn_raw = static_cast<JSFunction*>(callee_val.as_object_raw());
+    auto fn = RcPtr<JSFunction>(fn_raw);
 
     std::vector<Value> args;
     args.reserve(expr.arguments.size());
@@ -1370,20 +1376,18 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
         return callee_result;
     }
     const Value& callee_val = callee_result.value();
-    if (!callee_val.is_object() || !callee_val.as_object() ||
-        callee_val.as_object()->object_kind() != ObjectKind::kFunction) {
+    if (!callee_val.is_object() || !callee_val.as_object_raw() ||
+        callee_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
         return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: value is not a constructor"));
     }
-    auto fn = std::dynamic_pointer_cast<JSFunction>(callee_val.as_object());
-    if (!fn) {
-        return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: value is not a constructor"));
-    }
+    auto* fn_raw2 = static_cast<JSFunction*>(callee_val.as_object_raw());
+    auto fn = RcPtr<JSFunction>(fn_raw2);
 
     // Determine prototype for new object
-    std::shared_ptr<JSObject> proto = fn->prototype_obj() ? fn->prototype_obj() : object_prototype_;
+    RcPtr<JSObject> proto = fn->prototype_obj() ? fn->prototype_obj() : object_prototype_;
 
     // Create new object with [[Prototype]] = F.prototype
-    auto new_obj = std::make_shared<JSObject>();
+    auto new_obj = RcPtr<JSObject>::make();
     new_obj->set_proto(proto);
 
     std::vector<Value> args;
@@ -1396,7 +1400,7 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
         args.push_back(std::move(arg_result.value()));
     }
 
-    Value this_val = Value::object(new_obj);
+    Value this_val = Value::object(ObjectPtr(new_obj));
     auto call_result = call_function(fn, this_val, std::move(args));
     if (!call_result.is_ok()) {
         return EvalResult::err(call_result.error());
@@ -1408,7 +1412,7 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
 
     // Only an explicit return <Object> overrides this_val (ECMAScript §10.2.2 step 9)
     const Completion& c = call_result.completion();
-    if (c.is_return() && c.value.is_object() && c.value.as_object() != nullptr) {
+    if (c.is_return() && c.value.is_object() && c.value.as_object_raw() != nullptr) {
         return EvalResult::ok(c.value);
     }
     return EvalResult::ok(this_val);

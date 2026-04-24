@@ -7,8 +7,8 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | Phase 7 已完成，可进入 Phase 8 |
-| 测试计数 | 792/792 通过 |
-| 最近更新 | 2026-04-23 |
+| 测试计数 | 825/825 通过 |
+| 最近更新 | 2026-04-24 |
 | 下一步 | Phase 8.1 — Error 子类（TypeError/ReferenceError/RangeError） |
 
 ## 已知遗留问题
@@ -16,6 +16,8 @@
 - **P2-1**：VM catch 参数与 catch 体共享同一 scope，规范要求两层独立作用域
 - **P2-2**：VM `compile_labeled_stmt` 对非循环体的 labeled break 触发 `assert(false)`
 - **P2-3**：内部运行时错误（ReferenceError/TypeError）以字符串值抛出，而非 Error 对象
+- **P3-1**（新）：`JSString` 二次堆分配（`std::string` 成员），已知技术债务，Phase 9 优化
+- **P3-2**（新）：循环引用（proto 链、closure env）导致内存泄漏，Phase 9 GC 解决
 
 ## 未开始
 

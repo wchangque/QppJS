@@ -2,10 +2,10 @@
 #include "qppjs/frontend/parser.h"
 #include "qppjs/runtime/interpreter.h"
 #include "qppjs/runtime/js_object.h"
+#include "qppjs/runtime/rc_object.h"
 #include "qppjs/runtime/value.h"
 
 #include <gtest/gtest.h>
-#include <memory>
 #include <string>
 
 namespace qppjs {
@@ -26,17 +26,17 @@ EvalResult run(const std::string& src) {
 
 // 属性在自身：直接返回，不走链
 TEST(ProtoChainTest, OwnPropertyFoundDirectly) {
-    auto obj = std::make_shared<JSObject>();
+    auto obj = RcPtr<JSObject>::make();
     obj->set_property("x", Value::number(1.0));
     EXPECT_EQ(obj->get_property("x").as_number(), 1.0);
 }
 
 // 属性在 proto 上：能读到
 TEST(ProtoChainTest, PropertyFoundOnProto) {
-    auto proto = std::make_shared<JSObject>();
+    auto proto = RcPtr<JSObject>::make();
     proto->set_property("y", Value::number(42.0));
 
-    auto obj = std::make_shared<JSObject>();
+    auto obj = RcPtr<JSObject>::make();
     obj->set_proto(proto);
 
     EXPECT_EQ(obj->get_property("y").as_number(), 42.0);
@@ -45,13 +45,13 @@ TEST(ProtoChainTest, PropertyFoundOnProto) {
 
 // 属性在 proto.proto 上：多级链能读到
 TEST(ProtoChainTest, PropertyFoundOnProtoProto) {
-    auto grandproto = std::make_shared<JSObject>();
+    auto grandproto = RcPtr<JSObject>::make();
     grandproto->set_property("z", Value::string("deep"));
 
-    auto proto = std::make_shared<JSObject>();
+    auto proto = RcPtr<JSObject>::make();
     proto->set_proto(grandproto);
 
-    auto obj = std::make_shared<JSObject>();
+    auto obj = RcPtr<JSObject>::make();
     obj->set_proto(proto);
 
     ASSERT_TRUE(obj->get_property("z").is_string());
@@ -62,8 +62,8 @@ TEST(ProtoChainTest, PropertyFoundOnProtoProto) {
 
 // 属性在链上都不存在：返回 undefined
 TEST(ProtoChainTest, MissingPropertyReturnsUndefined) {
-    auto proto = std::make_shared<JSObject>();
-    auto obj = std::make_shared<JSObject>();
+    auto proto = RcPtr<JSObject>::make();
+    auto obj = RcPtr<JSObject>::make();
     obj->set_proto(proto);
 
     EXPECT_TRUE(obj->get_property("nonexistent").is_undefined());
@@ -71,10 +71,10 @@ TEST(ProtoChainTest, MissingPropertyReturnsUndefined) {
 
 // set_property 只写自身，不影响 proto 上同名属性
 TEST(ProtoChainTest, SetPropertyWritesOwnNotProto) {
-    auto proto = std::make_shared<JSObject>();
+    auto proto = RcPtr<JSObject>::make();
     proto->set_property("x", Value::number(1.0));
 
-    auto obj = std::make_shared<JSObject>();
+    auto obj = RcPtr<JSObject>::make();
     obj->set_proto(proto);
 
     obj->set_property("x", Value::number(99.0));
@@ -88,10 +88,10 @@ TEST(ProtoChainTest, SetPropertyWritesOwnNotProto) {
 
 // 自身属性遮蔽 proto 属性
 TEST(ProtoChainTest, OwnPropertyShadowsProto) {
-    auto proto = std::make_shared<JSObject>();
+    auto proto = RcPtr<JSObject>::make();
     proto->set_property("v", Value::number(1.0));
 
-    auto obj = std::make_shared<JSObject>();
+    auto obj = RcPtr<JSObject>::make();
     obj->set_proto(proto);
     obj->set_property("v", Value::number(2.0));
 
@@ -100,10 +100,10 @@ TEST(ProtoChainTest, OwnPropertyShadowsProto) {
 
 // has_own_property 不走链：proto 上的属性返回 false
 TEST(ProtoChainTest, HasOwnPropertyDoesNotWalkChain) {
-    auto proto = std::make_shared<JSObject>();
+    auto proto = RcPtr<JSObject>::make();
     proto->set_property("p", Value::boolean(true));
 
-    auto obj = std::make_shared<JSObject>();
+    auto obj = RcPtr<JSObject>::make();
     obj->set_proto(proto);
 
     EXPECT_FALSE(obj->has_own_property("p"));

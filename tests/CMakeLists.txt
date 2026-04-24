@@ -15,6 +15,7 @@ add_executable(qppjs_unit_tests
     unit/vm_control_flow_test.cpp
     unit/interpreter_control_flow_edge_test.cpp
     unit/vm_control_flow_edge_test.cpp
+    unit/value_nanboxing_test.cpp
 )
 
 target_link_libraries(qppjs_unit_tests PRIVATE qppjs_core GTest::gtest_main)

@@ -81,6 +81,18 @@
 
 ## 2. 最近完成内容
 
+- 完成 Value NaN-boxing + ObjectPtr 非原子引用计数迁移（Phase 0 基础设施优化）：
+  - 新增 `include/qppjs/runtime/rc_object.h`：`RcObject` 基类（非原子 `ref_count_` + `object_kind_`，无虚函数 kind 查询）、`RcPtr<T>` 智能指针（copy/move/destructor 管理引用计数，支持 derived→base 隐式上转型）、`JSString`（内嵌引用计数的堆字符串）
+  - 重写 `include/qppjs/runtime/value.h`：8 字节 NaN-boxing Value，`static_assert(sizeof(Value) == 8)`，`as_object()` 返回值类型 `ObjectPtr`，新增 `as_object_raw()` 热路径接口
+  - 重写 `src/runtime/value.cpp`：NaN 规范化（位操作检测，规范化为 `kCanonicalNaN`），完整的 copy/move/析构引用计数管理
+  - 更新 `include/qppjs/runtime/js_object.h`：继承 `RcObject`（替代 `Object`），`proto_` 改为 `RcPtr<JSObject>`，`constructor_property_` 改为裸指针（弱引用）
+  - 更新 `include/qppjs/runtime/js_function.h`：继承 `RcObject`（替代 `Object`），`prototype_` 改为 `RcPtr<JSObject>`，`closure_env_`/`body_`/`bytecode_` 保留 `std::shared_ptr`
+  - 更新 `src/runtime/js_object.cpp`：适配新接口（`set_constructor_property(RcObject*)` 弱引用）
+  - 更新 `src/runtime/interpreter.cpp` + `src/vm/vm.cpp`：全面替换 `std::make_shared<JSObject/JSFunction>` → `RcPtr::make()`，`dynamic_pointer_cast` → `object_kind()` + `static_cast`，`as_object()` → `as_object_raw()` 热路径
+  - 更新 `tests/unit/proto_test.cpp`、`tests/unit/value_test.cpp`：适配新 API
+  - 新增 `tests/unit/value_nanboxing_test.cpp`：33 个新测试（double 边界值、tag 编码、copy/move 语义、引用计数路径、`sizeof(Value)==8`）
+  - 825/825 全量通过（原 792 + 新增 33），ASAN/LSan 无泄漏
+
 - 完成 Phase 7 P1-1 缺陷修复（7.8）：
   - `src/vm/compiler.cpp`：`compile_return_stmt` 在 `finally_info_stack_` 非空时，对每个活跃 finally 从内到外 emit `kLeaveTry` + `kGosub`（patch 位置记录到 `gosub_patches`，由 `compile_try_stmt` 统一 patch），最后 emit `kReturn`；无参 return 情形先 emit `kLoadUndefined` 再走相同路径
   - `tests/unit/vm_phase7_edge_test.cpp`：去掉 `DISABLED_` 前缀启用 `FinallyReturnOverridesTryReturn` 和 `FinallyNormalSideEffectWithTryReturn` 两个测试
@@ -95,10 +107,23 @@
   - `tests/unit/vm_phase7_test.cpp`（新建）：29 个 VM Phase 7 测试
   - 736/736 全量通过（原有 707 个 + 新增 29 个）
 
+- 完成 Value NaN-boxing + ObjectPtr 非原子引用计数（Phase 12.1 提前实施）：
+  - `include/qppjs/runtime/rc_object.h`（新建）：`RcObject` 基类（非原子 ref_count + object_kind 数据成员）、`RcPtr<T>` 智能指针（含 derived→base 隐式上转型）、`JSString` 结构体（非原子引用计数）
+  - `include/qppjs/runtime/value.h`：完整替换为 NaN-boxing（`uint64_t raw_`，8 字节），`using ObjectPtr = RcPtr<RcObject>`，新增 `as_object_raw()` 裸指针接口，`as_object()` 改为值返回
+  - `src/runtime/value.cpp`：NaN 规范化（位操作）、tag/payload 编码、copy/move/析构引用计数管理
+  - `include/qppjs/runtime/js_object.h`：继承 `RcObject`，`proto_` 改为 `RcPtr<JSObject>`，`constructor_property_` 改为裸指针
+  - `include/qppjs/runtime/js_function.h`：继承 `RcObject`，`prototype_` 改为 `RcPtr<JSObject>`
+  - `include/qppjs/runtime/interpreter.h`、`include/qppjs/vm/vm.h`：`object_prototype_` 改为 `RcPtr<JSObject>`
+  - `src/runtime/interpreter.cpp`、`src/vm/vm.cpp`：`make_shared` → `RcPtr::make()`，`dynamic_pointer_cast` → `object_kind()+static_cast`
+  - `tests/unit/value_nanboxing_test.cpp`（新建）：33 个新测试（NaN-boxing 位编码、引用计数语义、RcPtr 语义）
+  - 792 → 825（+33），ASAN/LSan 无泄漏，`sizeof(Value) == 8`
+
 ## 3. 风险与待决策项
 
 - P2-1（已知，暂不处理）：VM catch 参数与 catch 体共享同一 scope，规范要求两层独立作用域；`catch(e) { let e = 2; }` 在 VM 路径下会失败
 - P2-2（已知，暂不处理）：VM `compile_labeled_stmt` 对非循环体的 labeled break 会触发 `assert(false)`；Interpreter 路径已正确实现
-- 内部运行时错误（ReferenceError/TypeError）以字符串值抛出，而非 Error 对象；Phase 8 升级为真正的 Error 子类
+- P2-3：内部运行时错误（ReferenceError/TypeError）以字符串值抛出，而非 Error 对象；Phase 8 升级为真正的 Error 子类
+- P3-1（新，已知）：`JSString` 二次堆分配（`std::string` 成员），Phase 9 优化
+- P3-2（新，已知）：循环引用（proto 链、closure env）导致内存泄漏，Phase 9 GC 解决
 - JSFunction::body_ 字段继续保留（AST Interpreter 使用）
 - GetProp/SetProp 对 JSFunction 的非 prototype 属性当前静默忽略

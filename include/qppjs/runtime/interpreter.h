@@ -3,6 +3,9 @@
 #include "qppjs/frontend/ast.h"
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/environment.h"
+#include "qppjs/runtime/js_function.h"
+#include "qppjs/runtime/js_object.h"
+#include "qppjs/runtime/rc_object.h"
 #include "qppjs/vm/bytecode.h"
 #include "qppjs/vm/opcode.h"
 
@@ -73,7 +76,7 @@ private:
 
     // Execute a function with given this_val and args.
     // Returns StmtResult so callers can distinguish explicit return from natural completion.
-    StmtResult call_function(std::shared_ptr<JSFunction> fn, Value this_val, std::vector<Value> args);
+    StmtResult call_function(RcPtr<JSFunction> fn, Value this_val, std::vector<Value> args);
 
     // RAII scope switcher; optionally increments call_depth_ and restores on destruction.
     struct ScopeGuard {
@@ -92,7 +95,7 @@ private:
     std::shared_ptr<Environment> current_env_;
     std::shared_ptr<Environment> var_env_;  // current function-level var scope
     Value current_this_;                    // current this binding
-    std::shared_ptr<JSObject> object_prototype_;  // global Object.prototype
+    RcPtr<JSObject> object_prototype_;  // global Object.prototype
     int call_depth_ = 0;
     static constexpr int kMaxCallDepth = 500;
 

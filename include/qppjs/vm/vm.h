@@ -2,6 +2,9 @@
 
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/environment.h"
+#include "qppjs/runtime/js_function.h"
+#include "qppjs/runtime/js_object.h"
+#include "qppjs/runtime/rc_object.h"
 #include "qppjs/runtime/value.h"
 #include "qppjs/vm/bytecode.h"
 
@@ -51,7 +54,7 @@ private:
     EvalResult run(size_t exit_depth = 0);
 
     // Push a new CallFrame. Returns error if call depth exceeded.
-    EvalResult push_call_frame(std::shared_ptr<JSFunction> fn, Value this_val, std::vector<Value> args,
+    EvalResult push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::vector<Value> args,
                                bool is_new = false, Value new_instance = Value::undefined());
 
     static bool to_boolean(const Value& v);
@@ -64,7 +67,7 @@ private:
     int call_depth_ = 0;
     static constexpr int kMaxCallDepth = 500;
 
-    std::shared_ptr<JSObject> object_prototype_;
+    RcPtr<JSObject> object_prototype_;
     std::shared_ptr<Environment> global_env_;
 };
 
