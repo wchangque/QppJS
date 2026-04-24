@@ -56,73 +56,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 
 ## Agent Team 协作约定
 
-项目默认采用 6 个职责分离的 agent team，并由主会话承担编排角色。
-
-### 角色划分
-
-- `ES Spec Agent`：阅读并总结 ECMAScript 规范，输出语义规则、边界行为、错误条件与最小测试点。
-- `QuickJS Research Agent`：研究 `/home/wuzhen/code/QuickJS` 中与当前主题相关的实现，提炼实现路径、关键结构、可借鉴点与不建议照搬点。
-- `Design Agent`：综合规范要求与 QuickJS 调研结果，为当前模块制定适合 QppJS 的实现方案。
-- `Implementation Agent`：依据设计方案，以 TDD 方式完成当前范围内的最小实现。
-- `Testing Agent`：补足测试矩阵、边界场景、异常路径与后续兼容性验证建议。
-- `Review Agent`：独立审查实现是否偏离规范和设计，调用 `/codex:review` 和 `/codex:adversarial-review` 获取审查结果，并检查复杂度、可维护性与风险。
-
-### 协作顺序
-
-默认流程：
-
-```
-ES Spec Agent + QuickJS Research Agent
-  → Design Agent
-  → Implementation Agent（首次实现）
-  → Testing Agent
-  → Review Agent（首次审查，含 codex:review + codex:adversarial-review）
-  → Implementation Agent（修复合理的必修问题）
-  → Review Agent（验证审查，仅确认修复结果，不开新问题）
-```
-
-规则：
-
-- `ES Spec Agent` 与 `QuickJS Research Agent` 可以并行。
-- `Design Agent` 必须消费前两者的产出后再给出方案。
-- `Implementation Agent`、`Testing Agent`、`Review Agent` 默认串行接力，避免上下文漂移和结论互相覆盖。
-- 修复 + 验证只做一轮，验证审查结束后不再循环，防止无限迭代。
-
-### 角色边界
-
-- 研究型 agent 不写代码。
-- `Implementation Agent` 不擅自修改需求或设计边界。
-- `Testing Agent` 不放宽规范要求。
-- `Review Agent` 可以否决实现，但不重写需求。
-- 每个 agent 只接收上一步的明确产物，不依赖随意扩散的聊天上下文。
-- 每个 agent 的输出应尽量标明对应任务编号、状态变化和建议下一步，便于主会话写回计划文档。
-
-### 冲突裁决顺序
-
-当多个 agent 的结论冲突时，按以下优先级处理：
-
-1. ECMAScript 规范
-2. 当前 QppJS 已确认的设计
-3. QuickJS 的实现经验
-4. 实现便利性
-
-### 单次任务粒度
-
-每次只处理一个足够小的主题，例如：
-
-- tokenizer 的十进制整数字面量
-- parser 的二元表达式优先级
-- 基础值类型的表示方式
-- 最小对象模型
-- 函数调用时的参数绑定
-
-不要把“parser 全部”或“runtime 全部”作为单次 agent team 任务。
-
-### 当前推荐的落地方式
-
-- 短期：由主会话按固定 prompt 调用 agent，先把工作流跑顺。
-- 中期：把高频流程沉淀成可复用 skills 或模板。
-- 后期：在构建和测试链路稳定后，再增加自动化调度、回归检查与定期扫描。
+实现新功能时使用 `/implement <topic>` skill，它封装了完整的 6 agent 协作流程（规范调研 → 设计 → 实现 → 测试 → 审查）。支持 `--from design`、`--from impl`、`--only spec`、`--skip review` 等参数跳过已完成的阶段。详见 `.claude/skills/implement/SKILL.md`。
 
 ## 仓库现状
 
