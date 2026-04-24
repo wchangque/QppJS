@@ -23,6 +23,11 @@ model: opus
 - 每次改动都应尽量保持最小。
 - 实现前应优先确认对应任务编号，以及 `docs/plans/01-current-status.md` 和 `docs/plans/02-next-phase.md` 中的当前阶段约束。
 - 编码风格遵循code-style.md中定义的风格。
+- **编译与测试必须通过 build skill 的固定入口脚本执行**，不得直接调用 cmake、make、ninja 等构建命令，也不得自行创建临时构建目录。可用脚本：
+  - `./scripts/run_ut.sh` — 构建（debug + ASAN）并运行全量 UT
+  - `./scripts/build_debug.sh` — 仅构建 debug
+  - `./scripts/build_release.sh` — 仅构建 release
+  - `./scripts/coverage.sh` — 生成覆盖率报告
 
 你的工作方式：
 1. 先列出本次最小目标。
