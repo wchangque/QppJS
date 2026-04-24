@@ -7,7 +7,7 @@ namespace qppjs {
 namespace {
 
 CellPtr MakeCell(Value value) {
-    return std::make_shared<Cell>(Cell{std::move(value)});
+    return RcPtr<Cell>::make(Cell{std::move(value)});
 }
 
 }  // namespace
@@ -40,9 +40,9 @@ void Environment::define_binding(const std::string& name, const Binding& binding
 }
 
 Binding* Environment::lookup(const std::string& name) {
-    auto it = bindings_.find(name);
-    if (it != bindings_.end()) {
-        return &it->second;
+    Binding* b = bindings_.find(name);
+    if (b != nullptr) {
+        return b;
     }
     if (outer_) {
         return outer_->lookup(name);

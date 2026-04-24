@@ -9,12 +9,12 @@
 #include "qppjs/vm/bytecode.h"
 #include "qppjs/vm/opcode.h"
 
-#include <algorithm>
 #include <cassert>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
-#include <sstream>
+#include <span>
 #include <string>
 
 namespace qppjs {
@@ -66,6 +66,16 @@ EvalResult VM::to_number(const Value& v) {
     return EvalResult::ok(Value::number(std::numeric_limits<double>::quiet_NaN()));
 }
 
+static std::string number_to_string(double d) {
+    if (d == 0.0) return "0";
+    if (d == std::floor(d) && d >= -9007199254740992.0 && d <= 9007199254740992.0) {
+        return std::to_string(static_cast<int64_t>(d));
+    }
+    char buf[32];
+    auto [ptr, ec] = std::to_chars(buf, buf + 32, d, std::chars_format::general, 17);
+    return std::string(buf, ptr);
+}
+
 std::string VM::to_string_val(const Value& v) {
     switch (v.kind()) {
     case ValueKind::Undefined: return "undefined";
@@ -75,14 +85,7 @@ std::string VM::to_string_val(const Value& v) {
         double n = v.as_number();
         if (std::isnan(n))  return "NaN";
         if (std::isinf(n))  return n > 0 ? "Infinity" : "-Infinity";
-        if (n == static_cast<double>(static_cast<long long>(n)) && std::abs(n) < 1e15) {
-            std::ostringstream oss;
-            oss << static_cast<long long>(n);
-            return oss.str();
-        }
-        std::ostringstream oss;
-        oss << n;
-        return oss.str();
+        return number_to_string(n);
     }
     case ValueKind::String: return v.as_string();
     case ValueKind::Object: {
@@ -163,14 +166,7 @@ void VM::init_global_env() {
                 double n = v.as_number();
                 if (std::isnan(n)) return "NaN";
                 if (std::isinf(n)) return n > 0 ? "Infinity" : "-Infinity";
-                if (n == static_cast<double>(static_cast<long long>(n)) && std::abs(n) < 1e15) {
-                    std::ostringstream oss;
-                    oss << static_cast<long long>(n);
-                    return oss.str();
-                }
-                std::ostringstream oss;
-                oss << n;
-                return oss.str();
+                return number_to_string(n);
             }
             return "[object Object]";
         }();
@@ -235,7 +231,7 @@ static int32_t read_i32(const BytecodeFunction* bc, size_t& pc) {
 // push_call_frame
 // ============================================================
 
-EvalResult VM::push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::vector<Value> args,
+EvalResult VM::push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<Value> args,
                                bool is_new, Value new_instance) {
     if (call_depth_ >= kMaxCallDepth) {
         return EvalResult::err(Error(ErrorKind::Runtime, "RangeError: Maximum call stack size exceeded"));
@@ -638,13 +634,25 @@ EvalResult VM::run(size_t exit_depth) {
 
         case Opcode::kCall: {
             uint8_t argc = read_u8(bc, pc);
-            std::vector<Value> args;
-            args.reserve(argc);
-            for (int i = 0; i < argc; ++i) {
-                args.push_back(std::move(stack.back()));
-                stack.pop_back();
+            constexpr int kSmallArgBuf = 8;
+            Value small_buf[kSmallArgBuf];
+            std::vector<Value> large_buf;
+            Value* arg_data;
+            if (argc <= kSmallArgBuf) {
+                for (int i = argc - 1; i >= 0; --i) {
+                    small_buf[i] = std::move(stack[stack.size() - argc + i]);
+                }
+                stack.resize(stack.size() - argc);
+                arg_data = small_buf;
+            } else {
+                large_buf.resize(argc);
+                for (int i = argc - 1; i >= 0; --i) {
+                    large_buf[i] = std::move(stack[stack.size() - argc + i]);
+                }
+                stack.resize(stack.size() - argc);
+                arg_data = large_buf.data();
             }
-            std::reverse(args.begin(), args.end());
+            std::span<Value> args(arg_data, argc);
             Value callee_val = std::move(stack.back());
             stack.pop_back();
 
@@ -659,7 +667,7 @@ EvalResult VM::run(size_t exit_depth) {
             }
             auto fn = RcPtr<JSFunction>(static_cast<JSFunction*>(call_raw));
             if (fn->is_native()) {
-                auto res = fn->native_fn()(std::move(args), /*is_new_call=*/false);
+                auto res = fn->native_fn()(std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/false);
                 if (!res.is_ok()) {
                     frame.pending_throw = Value::string(res.error().message());
                     continue;
@@ -668,7 +676,7 @@ EvalResult VM::run(size_t exit_depth) {
                 break;
             }
             // Push new frame; the flat loop will execute it, then return value lands on our stack
-            auto push_res = push_call_frame(fn, Value::undefined(), std::move(args));
+            auto push_res = push_call_frame(fn, Value::undefined(), args);
             if (!push_res.is_ok()) {
                 frame.pending_throw = Value::string(push_res.error().message());
                 continue;
@@ -678,13 +686,25 @@ EvalResult VM::run(size_t exit_depth) {
 
         case Opcode::kCallMethod: {
             uint8_t argc = read_u8(bc, pc);
-            std::vector<Value> args;
-            args.reserve(argc);
-            for (int i = 0; i < argc; ++i) {
-                args.push_back(std::move(stack.back()));
-                stack.pop_back();
+            constexpr int kSmallArgBuf = 8;
+            Value small_buf[kSmallArgBuf];
+            std::vector<Value> large_buf;
+            Value* arg_data;
+            if (argc <= kSmallArgBuf) {
+                for (int i = argc - 1; i >= 0; --i) {
+                    small_buf[i] = std::move(stack[stack.size() - argc + i]);
+                }
+                stack.resize(stack.size() - argc);
+                arg_data = small_buf;
+            } else {
+                large_buf.resize(argc);
+                for (int i = argc - 1; i >= 0; --i) {
+                    large_buf[i] = std::move(stack[stack.size() - argc + i]);
+                }
+                stack.resize(stack.size() - argc);
+                arg_data = large_buf.data();
             }
-            std::reverse(args.begin(), args.end());
+            std::span<Value> args(arg_data, argc);
             Value callee_val = std::move(stack.back());
             stack.pop_back();
             Value receiver = std::move(stack.back());
@@ -701,7 +721,7 @@ EvalResult VM::run(size_t exit_depth) {
             }
             auto fn = RcPtr<JSFunction>(static_cast<JSFunction*>(callm_raw));
             if (fn->is_native()) {
-                auto res = fn->native_fn()(std::move(args), /*is_new_call=*/false);
+                auto res = fn->native_fn()(std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/false);
                 if (!res.is_ok()) {
                     frame.pending_throw = Value::string(res.error().message());
                     continue;
@@ -709,7 +729,7 @@ EvalResult VM::run(size_t exit_depth) {
                 stack.push_back(res.value());
                 break;
             }
-            auto push_res = push_call_frame(fn, std::move(receiver), std::move(args));
+            auto push_res = push_call_frame(fn, std::move(receiver), args);
             if (!push_res.is_ok()) {
                 frame.pending_throw = Value::string(push_res.error().message());
                 continue;
@@ -719,13 +739,25 @@ EvalResult VM::run(size_t exit_depth) {
 
         case Opcode::kNewCall: {
             uint8_t argc = read_u8(bc, pc);
-            std::vector<Value> args;
-            args.reserve(argc);
-            for (int i = 0; i < argc; ++i) {
-                args.push_back(std::move(stack.back()));
-                stack.pop_back();
+            constexpr int kSmallArgBuf = 8;
+            Value small_buf[kSmallArgBuf];
+            std::vector<Value> large_buf;
+            Value* arg_data;
+            if (argc <= kSmallArgBuf) {
+                for (int i = argc - 1; i >= 0; --i) {
+                    small_buf[i] = std::move(stack[stack.size() - argc + i]);
+                }
+                stack.resize(stack.size() - argc);
+                arg_data = small_buf;
+            } else {
+                large_buf.resize(argc);
+                for (int i = argc - 1; i >= 0; --i) {
+                    large_buf[i] = std::move(stack[stack.size() - argc + i]);
+                }
+                stack.resize(stack.size() - argc);
+                arg_data = large_buf.data();
             }
-            std::reverse(args.begin(), args.end());
+            std::span<Value> args(arg_data, argc);
             Value ctor_val = std::move(stack.back());
             stack.pop_back();
 
@@ -740,7 +772,7 @@ EvalResult VM::run(size_t exit_depth) {
             }
             auto fn = RcPtr<JSFunction>(static_cast<JSFunction*>(ctor_raw));
             if (fn->is_native()) {
-                auto res = fn->native_fn()(std::move(args), /*is_new_call=*/true);
+                auto res = fn->native_fn()(std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/true);
                 if (!res.is_ok()) {
                     frame.pending_throw = Value::string(res.error().message());
                     continue;
@@ -760,7 +792,7 @@ EvalResult VM::run(size_t exit_depth) {
             Value instance_val = Value::object(ObjectPtr(instance));
             Value instance_copy = instance_val;  // keep a copy for do_new logic
 
-            auto push_res = push_call_frame(fn, instance_val, std::move(args),
+            auto push_res = push_call_frame(fn, instance_val, args,
                                             /*is_new=*/true, std::move(instance_copy));
             if (!push_res.is_ok()) {
                 frame.pending_throw = Value::string(push_res.error().message());

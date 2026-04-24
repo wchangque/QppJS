@@ -7,10 +7,10 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | Phase 7 已完成，可进入 Phase 8 |
-| 测试计数 | 825/825 通过 |
+| 测试计数 | 1516/1516 通过 |
 | 最近更新 | 2026-04-24 |
 | 下一步 | Phase 8.1 — Error 子类（TypeError/ReferenceError/RangeError） |
-| 最近优化 | parse_number_text 改用 std::from_chars；add_name 加 O(1) 反向索引 |
+| 最近优化 | P1-6: ostringstream→number_to_string(charconv)；P1-4: kPushScope 跳过无 let/const 的块 |
 
 ## 已知遗留问题
 

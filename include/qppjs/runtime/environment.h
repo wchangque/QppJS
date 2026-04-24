@@ -2,20 +2,32 @@
 
 #include "qppjs/frontend/ast.h"
 #include "qppjs/runtime/completion.h"
+#include "qppjs/runtime/rc_object.h"
 #include "qppjs/runtime/value.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace qppjs {
 
 struct Cell {
     Value value;
+    int32_t ref_count = 0;
+
+    void add_ref() { ++ref_count; }
+
+    void release() {
+        if (--ref_count == 0) {
+            delete this;
+        }
+    }
 };
 
-using CellPtr = std::shared_ptr<Cell>;
+using CellPtr = RcPtr<Cell>;
 
 struct Binding {
     CellPtr cell;
@@ -23,7 +35,79 @@ struct Binding {
     bool initialized;   // false means TDZ
 };
 
-using BindingMap = std::unordered_map<std::string, Binding>;
+// Small flat map for environment bindings. Uses linear scan for <= kUpgradeThreshold entries,
+// then upgrades to unordered_map.
+class FlatBindingMap {
+public:
+    static constexpr int kUpgradeThreshold = 16;
+
+    Binding* find(const std::string& name) {
+        if (large_) {
+            auto it = large_->find(name);
+            return it != large_->end() ? &it->second : nullptr;
+        }
+        for (auto& [k, v] : entries_) {
+            if (k == name) return &v;
+        }
+        return nullptr;
+    }
+
+    const Binding* find(const std::string& name) const {
+        if (large_) {
+            auto it = large_->find(name);
+            return it != large_->end() ? &it->second : nullptr;
+        }
+        for (const auto& [k, v] : entries_) {
+            if (k == name) return &v;
+        }
+        return nullptr;
+    }
+
+    void insert_or_assign(const std::string& name, Binding binding) {
+        if (large_) {
+            (*large_)[name] = std::move(binding);
+            return;
+        }
+        for (auto& [k, v] : entries_) {
+            if (k == name) {
+                v = std::move(binding);
+                return;
+            }
+        }
+        entries_.emplace_back(name, std::move(binding));
+        maybe_upgrade();
+    }
+
+    void emplace(const std::string& name, Binding binding) {
+        if (large_) {
+            large_->emplace(name, std::move(binding));
+            return;
+        }
+        for (const auto& [k, v] : entries_) {
+            if (k == name) return;  // already exists, no-op like unordered_map::emplace
+        }
+        entries_.emplace_back(name, std::move(binding));
+        maybe_upgrade();
+    }
+
+    int count(const std::string& name) const {
+        return find(name) != nullptr ? 1 : 0;
+    }
+
+private:
+    void maybe_upgrade() {
+        if (static_cast<int>(entries_.size()) > kUpgradeThreshold) {
+            large_ = std::make_unique<std::unordered_map<std::string, Binding>>();
+            for (auto& [k, v] : entries_) {
+                (*large_)[k] = std::move(v);
+            }
+            entries_.clear();
+        }
+    }
+
+    std::vector<std::pair<std::string, Binding>> entries_;
+    std::unique_ptr<std::unordered_map<std::string, Binding>> large_;
+};
 
 class Environment {
 public:
@@ -52,10 +136,10 @@ public:
     EvalResult initialize(const std::string& name, Value value);
 
     std::shared_ptr<Environment> outer() const { return outer_; }
-    const BindingMap& bindings() const { return bindings_; }
+    const FlatBindingMap& bindings() const { return bindings_; }
 
 private:
-    BindingMap bindings_;
+    FlatBindingMap bindings_;
     std::shared_ptr<Environment> outer_;
 };
 

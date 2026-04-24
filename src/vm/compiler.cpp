@@ -14,6 +14,21 @@
 namespace qppjs {
 
 // ============================================================
+// Helpers
+// ============================================================
+
+static bool has_block_scope_decl(const std::vector<StmtNode>& stmts) {
+    for (const auto& s : stmts) {
+        if (const auto* decl = std::get_if<VariableDeclaration>(&s.v)) {
+            if (decl->kind == VarKind::Let || decl->kind == VarKind::Const) return true;
+        } else if (std::holds_alternative<FunctionDeclaration>(s.v)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ============================================================
 // Emit helpers
 // ============================================================
 
@@ -258,7 +273,8 @@ void Compiler::compile_stmt_last(const StmtNode& stmt) {
         compile_expr(std::get<ExpressionStatement>(stmt.v).expr);
     } else if (std::holds_alternative<BlockStatement>(stmt.v)) {
         const auto& block = std::get<BlockStatement>(stmt.v);
-        emit(Opcode::kPushScope);
+        bool need_scope = has_block_scope_decl(block.body);
+        if (need_scope) emit(Opcode::kPushScope);
         if (block.body.empty()) {
             emit(Opcode::kLoadUndefined);
         } else {
@@ -267,7 +283,7 @@ void Compiler::compile_stmt_last(const StmtNode& stmt) {
             }
             compile_stmt_last(block.body.back());
         }
-        emit(Opcode::kPopScope);
+        if (need_scope) emit(Opcode::kPopScope);
     } else {
         // Other statements don't produce a value; compile normally and push undefined
         compile_stmt(stmt);
@@ -307,11 +323,12 @@ void Compiler::compile_var_decl(const VariableDeclaration& decl) {
 }
 
 void Compiler::compile_block_stmt(const BlockStatement& stmt) {
-    emit(Opcode::kPushScope);
+    bool need_scope = has_block_scope_decl(stmt.body);
+    if (need_scope) emit(Opcode::kPushScope);
     for (const auto& s : stmt.body) {
         compile_stmt(s);
     }
-    emit(Opcode::kPopScope);
+    if (need_scope) emit(Opcode::kPopScope);
 }
 
 void Compiler::compile_if_stmt(const IfStatement& stmt) {

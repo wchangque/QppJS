@@ -11,6 +11,7 @@
 #include <deque>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace qppjs {
@@ -54,7 +55,7 @@ private:
     EvalResult run(size_t exit_depth = 0);
 
     // Push a new CallFrame. Returns error if call depth exceeded.
-    EvalResult push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::vector<Value> args,
+    EvalResult push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<Value> args,
                                bool is_new = false, Value new_instance = Value::undefined());
 
     static bool to_boolean(const Value& v);

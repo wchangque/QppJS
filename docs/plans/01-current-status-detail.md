@@ -133,3 +133,39 @@
 - `src/frontend/parser.cpp`：`parse_number_text` 十进制路径从 `std::stod`（try/catch）改为 `std::from_chars`，消除异常开销，与"禁止异常"约定对齐
 - `include/qppjs/vm/compiler.h` + `src/vm/compiler.cpp`：`add_name` 新增 `name_index_`（`unordered_map<string, uint16_t>`）反向索引，去重从 O(n) 降至 O(1)；`compile_function` 上下文切换时保存/恢复索引
 - 测试：825/825 通过，ASAN/LSan 无泄漏
+
+## 5. 2026-04-24 P1 性能优化三连（Cell RcPtr + span + FlatBindingMap）
+
+- **P1-1+2（Cell RcPtr）**：`include/qppjs/runtime/environment.h`、`src/runtime/environment.cpp`
+  - `Cell` 增加 `int32_t ref_count`、`add_ref()`、`release()` 方法
+  - `CellPtr` 从 `std::shared_ptr<Cell>` 改为 `RcPtr<Cell>`
+  - `MakeCell` 从 `std::make_shared` 改为 `RcPtr<Cell>::make`
+  - 消除 `Cell` 的原子引用计数开销
+
+- **P1-3（push_call_frame span）**：`include/qppjs/vm/vm.h`、`src/vm/vm.cpp`
+  - `push_call_frame` 签名改为 `std::span<Value> args`
+  - kCall/kCallMethod/kNewCall 三处调用点：≤8 参数用栈上 `Value small_buf[8]`，>8 参数用 `std::vector<Value>`，消除 `std::vector` 堆分配和 `std::reverse`
+  - native 函数调用路径仍用 `std::vector<Value>`（从 span 构造）
+  - 移除 `#include <algorithm>`
+
+- **P1-5（FlatBindingMap）**：`include/qppjs/runtime/environment.h`、`src/runtime/environment.cpp`
+  - 新增 `FlatBindingMap` 类：≤16 条目线性扫描（`vector<pair<string, Binding>>`），超出阈值懒升级到 `unordered_map`
+  - `find()` 返回 `Binding*`（nullptr 表示未找到）
+  - `Environment::bindings_` 类型从 `BindingMap`（unordered_map）改为 `FlatBindingMap`
+  - `lookup()` 适配新接口
+  - 测试：825/825 通过，ASAN/LSan 无泄漏
+
+## 6. 2026-04-24 P1-6 ostringstream 替换 + P1-4 kPushScope 条件化
+
+- **P1-6（number_to_string）**：`src/vm/vm.cpp`
+  - 移除 `#include <sstream>`，新增 `#include <charconv>`
+  - 新增文件内静态函数 `number_to_string(double)`：`d==0.0` → `"0"`；整数快路径（floor 判断 + 安全范围）→ `std::to_string(int64_t)`；一般浮点 → `std::to_chars(general, 17)`
+  - `to_string_val` 的 Number 分支改为调用 `number_to_string`
+  - `init_global_env` 的 Error native lambda 同样改为调用 `number_to_string`
+
+- **P1-4（kPushScope 条件化）**：`src/vm/compiler.cpp`
+  - 新增静态辅助函数 `has_block_scope_decl`：扫描 stmts，存在 let/const 声明或函数声明则返回 true
+  - `compile_block_stmt`：`need_scope = has_block_scope_decl(stmt.body)`，条件化 emit kPushScope/kPopScope
+  - `compile_stmt_last` 的 BlockStatement 分支：同样条件化 emit kPushScope/kPopScope
+  - 效果：只有 var 的块、空块不再创建多余 scope；有 let/const 的块和有函数声明的块仍正确创建 scope
+  - 测试：1516/1516 通过，ASAN/LSan 无泄漏
