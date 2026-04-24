@@ -81,6 +81,22 @@
 
 ## 2. 最近完成内容
 
+- 完成 P1 全部热路径性能优化（来自 docs/perf/001-all.md）：
+  - **P1-1+2**：`Cell` 增加非原子引用计数，`CellPtr` 从 `shared_ptr<Cell>` 改为 `RcPtr<Cell>`，保留闭包共享可变语义，消除原子操作开销（`environment.h`、`environment.cpp`）
+  - **P1-3**：`push_call_frame` 改为接受 `std::span<Value>`；kCall/kCallMethod/kNewCall 三处用 8 元素栈缓冲区收集参数，消除小参数调用的 malloc，同时消除 `std::reverse`（`vm.h`、`vm.cpp`）
+  - **P1-4**：Compiler 新增 `has_block_scope_decl` 扫描，无 let/const/function 声明的块跳过 kPushScope/kPopScope，消除循环体每次迭代的 `make_shared<Environment>`（`compiler.cpp`）
+  - **P1-5**：`FlatBindingMap` 替换 `unordered_map`，≤16 绑定线性扫描，超出阈值懒升级，提升小函数变量查找的 cache 局部性（`environment.h`、`environment.cpp`）
+  - **P1-6**：新增 `number_to_string` 辅助函数，整数快路径用 `std::to_string`，浮点用 `std::to_chars` + 栈缓冲区，消除 `ostringstream` 构造开销（`vm.cpp`）
+  - **P1-7/8/9**：NaN-boxing 迁移时已顺带解决（`kind()` O(1)、LoadString 引用计数、`dynamic_pointer_cast` → `static_cast`）
+  - 825/825 全量通过，ASAN/LSan 无泄漏
+
+- 完成 P2 设计层技术债务（部分）：
+  - P2-1：Value NaN-boxing（`sizeof(Value)` 40→8 字节）
+  - P2-2：`ObjectPtr` 改为 `RcPtr<RcObject>`（非原子引用计数）
+  - P2-4：`add_name` 加反向索引，O(n)→O(1)
+  - P2-5：`parse_number_text` 用 `std::from_chars` 替代 `stod`，消除临时 string
+  - P2-3（`Environment::outer_` shared_ptr 链）：待 Phase 9 GC 统一处理
+
 - 完成 Value NaN-boxing + ObjectPtr 非原子引用计数迁移（Phase 0 基础设施优化）：
   - 新增 `include/qppjs/runtime/rc_object.h`：`RcObject` 基类（非原子 `ref_count_` + `object_kind_`，无虚函数 kind 查询）、`RcPtr<T>` 智能指针（copy/move/destructor 管理引用计数，支持 derived→base 隐式上转型）、`JSString`（内嵌引用计数的堆字符串）
   - 重写 `include/qppjs/runtime/value.h`：8 字节 NaN-boxing Value，`static_assert(sizeof(Value) == 8)`，`as_object()` 返回值类型 `ObjectPtr`，新增 `as_object_raw()` 热路径接口
