@@ -20,6 +20,8 @@
 
 ## 最近完成
 
+- [x] `run_ut.sh --quiet` 静默模式：构建和 ctest 输出静默化；失败时仅提示报告路径，并将失败 case / LSan 泄漏信息写入 `build/debug/run_ut_failures.txt`；已通过语法、帮助输出和实际失败路径验证
+- [x] 构建脚本 `--clean` 参数：`run_ut.sh` 与 `coverage.sh` 支持先调用 `scripts/clean.sh` 再构建；已通过 `bash -n` 与 `--help` 输出验证
 - [x] Phase 8.3 bug 修复 + adversarial review 采纳：
   - **崩溃修复**：`elements_` 从 `vector<Value>` 改为 `unordered_map<uint32_t, Value>` 稀疏存储，彻底消除大索引（`arr[4294967294]`、`arr.length=4294967295`）触发的巨量内存分配
   - **内存泄露修复**：Interpreter 侧 6 处 `clear_function_properties` 调用补全 `array_prototype_` 清理；macOS 系统库误报通过 `lsan_suppressions.txt` 屏蔽

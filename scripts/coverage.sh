@@ -5,12 +5,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_DIR="${ROOT_DIR}/build/test"
 DO_OPEN=0
+DO_CLEAN=0
 
 usage() {
     cat <<EOF
-Usage: coverage.sh [--open] [--help]
+Usage: coverage.sh [--clean] [--open] [--help]
 
 Options:
+  --clean     Remove build directory before building
   --open      Open the HTML report in browser after generation
   --help, -h  Show this help message
 EOF
@@ -18,12 +20,17 @@ EOF
 
 for arg in "$@"; do
     case "$arg" in
+        --clean)   DO_CLEAN=1 ;;
         --open)    DO_OPEN=1 ;;
         --help|-h) usage; exit 0 ;;
         --*)       echo "error: unknown option: $arg" >&2; echo; usage >&2; exit 1 ;;
         *)         echo "error: coverage.sh does not accept positional arguments" >&2; echo; usage >&2; exit 1 ;;
     esac
 done
+
+if [[ "$DO_CLEAN" -eq 1 ]]; then
+    "${SCRIPT_DIR}/clean.sh"
+fi
 
 "${SCRIPT_DIR}/build_test.sh"
 

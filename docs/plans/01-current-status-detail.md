@@ -309,3 +309,16 @@
 - **新增测试**：Phase 8.3 新增 19 个测试（A-21~A-39：MaxLegalIndex、IllegalIndexAsProperty、NegativeIndexAsProperty、FractionalIndexAsProperty、NanIndexAsProperty、LengthSetToZero、LengthSetToMaxLegal、LengthSetToTooLargeThrows、PushMultiArgOrder、PopDecreasesLength、PopDeletesLastElement、ForEachNonCallableThrows、ForEachUndefinedCallbackThrows、NestedArray、OrdinaryObjectUnaffected、OrdinaryObjectNoAutoExtend、TruncatedElementsReadUndefined、PushNoArgReturnsCurrentLength、ForEachThirdArgIsArray、StringKeyLength），Interp + VM 两侧各 20 个新测试
 
 - **验证**：80/80 Array 测试通过；全量 1054/1059 通过（5 个预存遗留失败：P3-2 闭包循环引用 × 4 + VMFinallyOverride × 1）；无新增 ASAN/LSan 泄漏
+
+## 11. 2026-04-25 构建脚本 `--clean` 参数
+
+- `scripts/run_ut.sh`：新增 `--clean` 参数，调用 `scripts/clean.sh` 后再执行 `build_debug.sh` 与 UT；帮助文本同步更新
+- `scripts/coverage.sh`：新增 `--clean` 参数，调用 `scripts/clean.sh` 后再执行 `build_test.sh` 与覆盖率流程；支持与 `--open` 组合使用；帮助文本同步更新
+- **验证**：`bash -n scripts/run_ut.sh && bash -n scripts/coverage.sh` 通过；`./scripts/run_ut.sh --help && ./scripts/coverage.sh --help` 输出正确
+
+## 12. 2026-04-25 `run_ut.sh --quiet` 静默模式
+
+- `scripts/run_ut.sh`：新增 `--quiet` 参数；静默执行 `build_debug.sh` 与 `ctest`，成功时无输出且删除临时日志
+- 失败时将完整 ctest 输出先写入 `build/debug/run_ut_raw.log`，再抽取失败 test block 与 `LeakSanitizer: detected memory leaks` 所在 case，写入 `build/debug/run_ut_failures.txt`，最后删除 raw log
+- 构建失败时输出路径 `build/run_ut_build.log`，避免混入 UT 失败报告
+- **验证**：`bash -n scripts/run_ut.sh` 通过；`./scripts/run_ut.sh --help` 显示 `--quiet`；`./scripts/run_ut.sh --quiet` 在当前 5 个已知失败下仅输出报告路径，报告中包含失败 case 与 LSan 泄漏栈
