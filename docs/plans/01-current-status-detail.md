@@ -81,6 +81,13 @@
 
 ## 2. 最近完成内容
 
+- 完成构建脚本 Python 统一入口重构：
+  - 新增 `scripts/qppjs.py`，用 argparse 子命令统一覆盖 `clean`、`build debug/release/test`、`test`、`coverage`
+  - 收口重复逻辑：项目路径发现、macOS Homebrew LLVM 探测、CMake 参数拼装、build metadata 读取、ctest 参数构造、quiet 失败报告解析、coverage backend 分支
+  - `scripts/build_debug.sh`、`build_release.sh`、`build_test.sh`、`clean.sh`、`run_ut.sh`、`coverage.sh` 保留为薄 wrapper，继续兼容原命令入口
+  - 帮助信息已优化：顶层 `--help` 展示常用示例和兼容入口；`build --help` 展示 debug/release/test 的 build 目录与 CMake 开关；`test`、`coverage`、`clean` 子命令说明输出产物和行为边界；支持 `clean build release`、`clean test --quiet`、`clean coverage --open` 前置组合用法
+  - 验证：`python3 -m py_compile scripts/qppjs.py` 通过；6 个 shell wrapper `bash -n` 通过；Python 与 wrapper 帮助输出通过；`python3 scripts/qppjs.py clean build release` 通过；`python3 scripts/qppjs.py clean test --quiet` 生成预期失败报告，结果 1054/1059（5 个预存失败不变）
+
 - 修复函数/闭包/原型相关 ASAN/LSan 泄漏：
   - `include/qppjs/runtime/environment.h`、`src/runtime/environment.cpp`：为 `Binding` 增加 `function_like` 标记，补充 `define_function()`、`clone_for_closure()`、`clear_function_bindings()`；递归清理 closure env 与对象属性中的函数引用
   - `include/qppjs/runtime/js_object.h`、`src/runtime/js_object.cpp`：新增 `clear_function_properties()`，递归清理对象/prototype 链上保存的函数值，打断 `obj -> fn -> prototype/closure` 保留环
