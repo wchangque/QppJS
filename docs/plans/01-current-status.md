@@ -20,8 +20,9 @@
 
 ## 最近完成
 
-- [x] 构建脚本 Python 统一入口重构：新增 `scripts/qppjs.py` 覆盖 `clean`、`build debug/release/test`、`test --clean --quiet`、`coverage --clean --open`；支持 `clean build release` / `clean test --quiet` 前置组合用法；原 shell 脚本保留为兼容 wrapper；帮助信息已补充命令说明、构建类型解释和常用示例；已验证语法、帮助输出、release/test 构建与静默失败报告（1054/1059，5 个预存失败不变）
-- [x] `run_ut.sh --quiet` 静默模式：构建和 ctest 输出静默化；失败时仅提示报告路径，并将失败 case / LSan 泄漏信息写入 `build/debug/run_ut_failures.txt`；已通过语法、帮助输出和实际失败路径验证
+- [x] 构建脚本 Python 统一入口重构：新增 `scripts/qppjs.py` 覆盖 `clean`、`build debug/release/test`、`test --clean --quiet`、`coverage --clean --quiet --open`；支持 `clean build release` / `clean test --quiet` / `clean coverage --quiet` 前置组合用法；原 shell 脚本保留为兼容 wrapper；帮助信息已补充命令说明、构建类型解释和常用示例；quiet 模式区分成功/失败日志（UT：ctest 日志为 `build/debug/run_ut_success.log` / `build/debug/run_ut_failure.log`，构建日志为同目录下的 `run_ut_build_success.log` / `run_ut_build_failure.log`；coverage：成功日志为 `build/coverage_success.log`，失败摘要为 `build/coverage_failure.log`）；已验证语法、帮助输出、release/test 构建与静默失败报告
+- [x] `scripts/qppjs.py coverage --quiet` 日志行为修复：保留实际失败路径 `build/coverage_failure.log` / 成功路径 `build/coverage_success.log`；quiet 模式改为先写原始日志到临时文件，失败时仅提取失败 UT / 泄漏摘要写入 `coverage_failure.log`，成功时再落盘为 `coverage_success.log`；复用 `run_ut` 的失败摘要格式；已验证 `python3 -m py_compile scripts/qppjs.py`
+- [x] `run_ut.sh --quiet` 静默模式：构建和 ctest 输出静默化；失败时仅提示报告路径，并将失败 case / LSan 泄漏信息写入 `build/debug/run_ut_failure.log`；已通过语法、帮助输出和实际失败路径验证
 - [x] 构建脚本 `--clean` 参数：`run_ut.sh` 与 `coverage.sh` 支持先调用 `scripts/clean.sh` 再构建；已通过 `bash -n` 与 `--help` 输出验证
 - [x] Phase 8.3 bug 修复 + adversarial review 采纳：
   - **崩溃修复**：`elements_` 从 `vector<Value>` 改为 `unordered_map<uint32_t, Value>` 稀疏存储，彻底消除大索引（`arr[4294967294]`、`arr.length=4294967295`）触发的巨量内存分配

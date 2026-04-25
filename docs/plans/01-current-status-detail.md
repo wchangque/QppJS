@@ -81,12 +81,25 @@
 
 ## 2. 最近完成内容
 
+- 完成 `scripts/qppjs.py coverage --quiet` 日志行为修复：
+  - 保留实际日志路径：成功为 `build/coverage_success.log`，失败为 `build/coverage_failure.log`
+  - quiet 模式改为先写原始输出到临时 `build/coverage_raw.log`；若失败，仅提取失败 UT / LSan 摘要写入 `coverage_failure.log`，避免把 build、lcov、genhtml 全量输出直接落到失败日志
+  - 复用 `write_test_failure_report()`，并允许传入自定义标题，使 coverage 失败报告格式与 `run_ut` 保持一致
+  - 同步更新顶层 epilog 与 `coverage --help` 文案，明确失败日志只包含失败 UT 摘要
+  - 验证：`python3 -m py_compile scripts/qppjs.py` 通过
+
+- 完成 `scripts/qppjs.py test --quiet` 日志目录修复：
+  - `scripts/qppjs.py` 中 `TestRunner.run()` 的 quiet 构建日志从 `build/run_ut_build_failure.log` / `build/run_ut_build_success.log` 调整到 `build/debug/run_ut_build_failure.log` / `build/debug/run_ut_build_success.log`
+  - 使 UT quiet 模式下构建日志与 ctest 成功/失败日志 (`run_ut_success.log` / `run_ut_failure.log`) 保持同目录，避免成功和错误日志分散在 `build/` 与 `build/debug/`
+  - 同步更新顶层 epilog 与 `test --help` 文案，明确构建日志也位于 `build/debug/`
+  - 验证：`python3 -m py_compile scripts/qppjs.py` 通过
+
 - 完成构建脚本 Python 统一入口重构：
   - 新增 `scripts/qppjs.py`，用 argparse 子命令统一覆盖 `clean`、`build debug/release/test`、`test`、`coverage`
   - 收口重复逻辑：项目路径发现、macOS Homebrew LLVM 探测、CMake 参数拼装、build metadata 读取、ctest 参数构造、quiet 失败报告解析、coverage backend 分支
   - `scripts/build_debug.sh`、`build_release.sh`、`build_test.sh`、`clean.sh`、`run_ut.sh`、`coverage.sh` 保留为薄 wrapper，继续兼容原命令入口
-  - 帮助信息已优化：顶层 `--help` 展示常用示例和兼容入口；`build --help` 展示 debug/release/test 的 build 目录与 CMake 开关；`test`、`coverage`、`clean` 子命令说明输出产物和行为边界；支持 `clean build release`、`clean test --quiet`、`clean coverage --open` 前置组合用法
-  - 验证：`python3 -m py_compile scripts/qppjs.py` 通过；6 个 shell wrapper `bash -n` 通过；Python 与 wrapper 帮助输出通过；`python3 scripts/qppjs.py clean build release` 通过；`python3 scripts/qppjs.py clean test --quiet` 生成预期失败报告，结果 1054/1059（5 个预存失败不变）
+  - 帮助信息已优化：顶层 `--help` 展示常用示例和兼容入口；`build --help` 展示 debug/release/test 的 build 目录与 CMake 开关；`test`、`coverage`、`clean` 子命令说明输出产物和行为边界；支持 `clean build release`、`clean test --quiet`、`clean coverage --quiet --open` 前置组合用法；coverage 支持 `--quiet` 静默构建、ctest、lcov/genhtml；quiet 模式区分成功/失败日志（UT：ctest 日志为 `build/debug/run_ut_success.log` / `build/debug/run_ut_failure.log`，构建日志为同目录下的 `run_ut_build_success.log` / `run_ut_build_failure.log`；coverage：`build/coverage_success.log` / `build/coverage_failure.log`）
+  - 验证：`python3 -m py_compile scripts/qppjs.py` 通过；6 个 shell wrapper `bash -n` 通过；Python 与 wrapper 帮助输出通过；`python3 scripts/qppjs.py clean build release` 通过；`python3 scripts/qppjs.py clean test --quiet` 生成预期失败报告；`python3 scripts/qppjs.py test --quiet` 可静默失败并写入 `build/debug/run_ut_failure.log`；`python3 scripts/qppjs.py coverage --quiet` 可静默失败并写入 `build/coverage_failure.log`（当前 coverage ctest 有 4 个预存失败）
 
 - 修复函数/闭包/原型相关 ASAN/LSan 泄漏：
   - `include/qppjs/runtime/environment.h`、`src/runtime/environment.cpp`：为 `Binding` 增加 `function_like` 标记，补充 `define_function()`、`clone_for_closure()`、`clear_function_bindings()`；递归清理 closure env 与对象属性中的函数引用
@@ -325,7 +338,7 @@
 
 ## 12. 2026-04-25 `run_ut.sh --quiet` 静默模式
 
-- `scripts/run_ut.sh`：新增 `--quiet` 参数；静默执行 `build_debug.sh` 与 `ctest`，成功时无输出且删除临时日志
-- 失败时将完整 ctest 输出先写入 `build/debug/run_ut_raw.log`，再抽取失败 test block 与 `LeakSanitizer: detected memory leaks` 所在 case，写入 `build/debug/run_ut_failures.txt`，最后删除 raw log
-- 构建失败时输出路径 `build/run_ut_build.log`，避免混入 UT 失败报告
+- `scripts/run_ut.sh`：新增 `--quiet` 参数；静默执行 `build_debug.sh` 与 `ctest`，成功时完整 ctest 日志写入 `build/debug/run_ut_success.log`
+- 失败时将完整 ctest 输出先写入 `build/debug/run_ut_raw.log`，再抽取失败 test block 与 `LeakSanitizer: detected memory leaks` 所在 case，写入 `build/debug/run_ut_failure.log`，最后删除 raw log
+- 构建日志同样区分成功/失败：`build/run_ut_build_success.log` / `build/run_ut_build_failure.log`，避免混入 UT 失败报告
 - **验证**：`bash -n scripts/run_ut.sh` 通过；`./scripts/run_ut.sh --help` 显示 `--quiet`；`./scripts/run_ut.sh --quiet` 在当前 5 个已知失败下仅输出报告路径，报告中包含失败 case 与 LSan 泄漏栈

@@ -171,14 +171,15 @@ class TestRunner:
     def run(self, *, clean_first: bool, quiet: bool) -> None:
         if clean_first:
             clean(self.paths)
-        build_log = self.paths.build_root / "run_ut_build.log"
+        build_failure_log = self.build_dir / "run_ut_build_failure.log"
+        build_success_log = self.build_dir / "run_ut_build_success.log"
         if quiet:
             try:
-                self.builder.build("debug", quiet_log=build_log)
+                self.builder.build("debug", quiet_log=build_failure_log)
             except CommandError:
-                print(f"build failed. Build log written to: {build_log}", file=sys.stderr)
+                print(f"build failed. Failure log written to: {build_failure_log}", file=sys.stderr)
                 raise
-            build_log.unlink(missing_ok=True)
+            build_failure_log.replace(build_success_log)
         else:
             self.builder.build("debug")
 
@@ -197,19 +198,20 @@ class TestRunner:
         return args
 
     def run_quiet(self, ctest_args: list[str], env: dict[str, str]) -> None:
-        report_file = self.build_dir / "run_ut_failures.txt"
+        failure_report = self.build_dir / "run_ut_failure.log"
+        success_log = self.build_dir / "run_ut_success.log"
         raw_log = self.build_dir / "run_ut_raw.log"
-        report_file.parent.mkdir(parents=True, exist_ok=True)
-        report_file.write_text("", encoding="utf-8")
+        failure_report.parent.mkdir(parents=True, exist_ok=True)
+        success_log.unlink(missing_ok=True)
+        failure_report.unlink(missing_ok=True)
         result = subprocess.run(["ctest", *ctest_args], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         raw_log.write_text(result.stdout, encoding="utf-8", errors="replace")
         if result.returncode == 0:
-            raw_log.unlink(missing_ok=True)
-            report_file.unlink(missing_ok=True)
+            raw_log.replace(success_log)
             return
-        write_test_failure_report(raw_log, report_file)
+        write_test_failure_report(raw_log, failure_report)
         raw_log.unlink(missing_ok=True)
-        print(f"UT failed. Failure and leak details written to: {report_file}", file=sys.stderr)
+        print(f"UT failed. Failure and leak details written to: {failure_report}", file=sys.stderr)
         raise CommandError(result.returncode)
 
 
@@ -223,10 +225,30 @@ class CoverageRunner:
         self.filtered_info = self.build_dir / "coverage.info"
         self.report_dir = self.build_dir / "coverage"
 
-    def run(self, *, clean_first: bool, open_report: bool) -> None:
+    def run(self, *, clean_first: bool, open_report: bool, quiet: bool) -> None:
         if clean_first:
             clean(self.paths)
-        self.builder.build("test")
+        failure_report = self.build_dir / "coverage_failure.log"
+        success_log = self.build_dir / "coverage_success.log"
+        raw_log = self.build_dir / "coverage_raw.log"
+        if quiet:
+            failure_report.parent.mkdir(parents=True, exist_ok=True)
+            success_log.unlink(missing_ok=True)
+            failure_report.unlink(missing_ok=True)
+            raw_log.unlink(missing_ok=True)
+            try:
+                self._run(open_report=open_report, quiet_log=raw_log)
+            except CommandError:
+                write_test_failure_report(raw_log, failure_report, title="QppJS coverage failed tests / leak report")
+                raw_log.unlink(missing_ok=True)
+                print(f"coverage failed. Failure log written to: {failure_report}", file=sys.stderr)
+                raise
+            raw_log.replace(success_log)
+            return
+        self._run(open_report=open_report)
+
+    def _run(self, *, open_report: bool, quiet_log: Path | None = None) -> None:
+        self.builder.build("test", quiet_log=quiet_log)
         meta_file = self.build_dir / "qppjs-build-meta.json"
         if not meta_file.is_file():
             print(f"error: build metadata not found: {meta_file}", file=sys.stderr)
@@ -245,9 +267,9 @@ class CoverageRunner:
         backend = str(meta.get("coverage_backend", ""))
         gcov_tool = ""
         if backend == "gcov":
-            gcov_tool = self.run_gcov(ctest_args)
+            gcov_tool = self.run_gcov(ctest_args, quiet_log)
         elif backend == "llvm-cov":
-            self.run_llvm_cov(ctest_args, meta)
+            self.run_llvm_cov(ctest_args, meta, quiet_log)
         else:
             print(
                 f"error: unsupported coverage backend '{backend}' on platform '{meta.get('platform', '')}'",
@@ -255,15 +277,16 @@ class CoverageRunner:
             )
             raise CommandError(1)
 
-        self.filter_coverage(gcov_tool)
-        self.generate_html()
-        print("")
+        self.filter_coverage(gcov_tool, quiet_log)
+        self.generate_html(quiet_log)
+        if not quiet_log:
+            print("")
         print(f"report: {self.report_dir / 'index.html'}")
         if open_report:
             self.open_report()
 
-    def run_gcov(self, ctest_args: list[str]) -> str:
-        self.runner.run(["ctest", *ctest_args])
+    def run_gcov(self, ctest_args: list[str], quiet_log: Path | None) -> str:
+        self.run_step(["ctest", *ctest_args], quiet_log)
         if not first_match(self.build_dir, "*.gcno"):
             print(f"error: no .gcno files found in {self.build_dir}", file=sys.stderr)
             raise CommandError(1)
@@ -274,8 +297,9 @@ class CoverageRunner:
         if gcov_tool is None:
             print("error: 'gcov' not found", file=sys.stderr)
             raise CommandError(1)
-        print("collecting coverage data...")
-        self.runner.run(
+        if quiet_log is None:
+            print("collecting coverage data...")
+        self.run_step(
             [
                 "lcov",
                 "--gcov-tool",
@@ -293,16 +317,17 @@ class CoverageRunner:
                 "derive_function_end_line=0",
                 "--rc",
                 "geninfo_unexecuted_blocks=1",
-            ]
+            ],
+            quiet_log,
         )
         return gcov_tool
 
-    def run_llvm_cov(self, ctest_args: list[str], meta: dict[str, object]) -> None:
+    def run_llvm_cov(self, ctest_args: list[str], meta: dict[str, object], quiet_log: Path | None) -> None:
         for path in self.build_dir.glob("default-*.profraw"):
             path.unlink()
         env = os.environ.copy()
         env["LLVM_PROFILE_FILE"] = str(self.build_dir / "default-%p.profraw")
-        self.runner.run(["ctest", *ctest_args], env=env)
+        self.run_step(["ctest", *ctest_args], quiet_log, env=env)
         profraw_files = sorted(self.build_dir.glob("default-*.profraw"))
         if not profraw_files:
             print(f"error: no llvm profile data found matching: {self.build_dir / 'default-*.profraw'}", file=sys.stderr)
@@ -316,20 +341,36 @@ class CoverageRunner:
         if llvm_cov is None or llvm_profdata is None:
             print("error: llvm-cov/llvm-profdata not found", file=sys.stderr)
             raise CommandError(1)
-        print(f"merging {len(profraw_files)} profraw file(s)...")
+        if quiet_log is None:
+            print(f"merging {len(profraw_files)} profraw file(s)...")
         profdata = self.build_dir / "default.profdata"
-        self.runner.run([llvm_profdata, "merge", "-sparse", *map(str, profraw_files), "-o", str(profdata)])
-        with self.raw_info.open("w", encoding="utf-8", errors="replace") as f:
+        self.run_step([llvm_profdata, "merge", "-sparse", *map(str, profraw_files), "-o", str(profdata)], quiet_log)
+        stdout = quiet_log.open("a", encoding="utf-8", errors="replace") if quiet_log is not None else self.raw_info.open(
+            "w", encoding="utf-8", errors="replace"
+        )
+        with stdout as f:
             result = subprocess.run(
                 [llvm_cov, "export", str(test_binary), f"-instr-profile={profdata}", "-format=lcov"],
                 stdout=f,
+                stderr=subprocess.STDOUT if quiet_log is not None else None,
                 check=False,
             )
         if result.returncode != 0:
             raise CommandError(result.returncode)
+        if quiet_log is not None:
+            with self.raw_info.open("w", encoding="utf-8", errors="replace") as f:
+                result = subprocess.run(
+                    [llvm_cov, "export", str(test_binary), f"-instr-profile={profdata}", "-format=lcov"],
+                    stdout=f,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            if result.returncode != 0:
+                raise CommandError(result.returncode)
 
-    def filter_coverage(self, gcov_tool: str) -> None:
-        print("filtering coverage data...")
+    def filter_coverage(self, gcov_tool: str, quiet_log: Path | None) -> None:
+        if quiet_log is None:
+            print("filtering coverage data...")
         args = ["lcov"]
         if gcov_tool:
             args.extend(["--gcov-tool", gcov_tool])
@@ -353,11 +394,12 @@ class CoverageRunner:
                 "geninfo_unexecuted_blocks=1",
             ]
         )
-        self.runner.run(args)
+        self.run_step(args, quiet_log)
 
-    def generate_html(self) -> None:
-        print("generating HTML report...")
-        self.runner.run(
+    def generate_html(self, quiet_log: Path | None) -> None:
+        if quiet_log is None:
+            print("generating HTML report...")
+        self.run_step(
             [
                 "genhtml",
                 str(self.filtered_info),
@@ -372,8 +414,18 @@ class CoverageRunner:
                 "branch_coverage=1",
                 "--rc",
                 "derive_function_end_line=0",
-            ]
+            ],
+            quiet_log,
         )
+
+    def run_step(self, args: list[str], quiet_log: Path | None, *, env: dict[str, str] | None = None) -> None:
+        if quiet_log is None:
+            self.runner.run(args, env=env)
+            return
+        with quiet_log.open("a", encoding="utf-8", errors="replace") as f:
+            result = subprocess.run(args, env=env, stdout=f, stderr=subprocess.STDOUT, check=False)
+        if result.returncode != 0:
+            raise CommandError(result.returncode)
 
     def open_report(self) -> None:
         report = self.report_dir / "index.html"
@@ -420,7 +472,7 @@ def test_env(paths: ProjectPaths) -> dict[str, str]:
     return env
 
 
-def write_test_failure_report(raw_log: Path, report_file: Path) -> None:
+def write_test_failure_report(raw_log: Path, report_file: Path, *, title: str = "QppJS run_ut failed tests / leak report") -> None:
     text = raw_log.read_text(encoding="utf-8", errors="replace")
     blocks: list[str] = []
     current: list[str] = []
@@ -451,7 +503,7 @@ def write_test_failure_report(raw_log: Path, report_file: Path) -> None:
             failed_summary.append(line)
 
     with report_file.open("w", encoding="utf-8") as f:
-        f.write("QppJS run_ut failed tests / leak report\n")
+        f.write(f"{title}\n")
         f.write("========================================\n\n")
         if blocks:
             f.write("\n\n".join(blocks))
@@ -472,8 +524,9 @@ def make_parser() -> argparse.ArgumentParser:
             "  python3 scripts/qppjs.py build debug     配置并构建 Debug + ASAN + 单元测试\n"
             "  python3 scripts/qppjs.py build release   配置并构建 Release，不构建单元测试\n"
             "  python3 scripts/qppjs.py build test      配置并构建覆盖率专用 Debug 测试目录\n"
-            "  python3 scripts/qppjs.py test --quiet    静默构建并运行 UT，失败详情写入 build/debug/run_ut_failures.txt\n"
-            "  python3 scripts/qppjs.py coverage --open       生成覆盖率 HTML 报告并打开\n"
+            "  python3 scripts/qppjs.py test --quiet    静默构建并运行 UT；成功日志写入 build/debug/run_ut_success.log，失败详情写入 build/debug/run_ut_failure.log，构建日志写入同目录下的 run_ut_build_success.log / run_ut_build_failure.log\n"
+            "  python3 scripts/qppjs.py coverage --quiet 静默生成覆盖率报告；成功日志写入 build/coverage_success.log，失败时仅将失败 UT 摘要写入 build/coverage_failure.log\n"
+            "  python3 scripts/qppjs.py coverage --open  生成覆盖率 HTML 报告并打开\n"
             "  python3 scripts/qppjs.py clean                 删除整个 build/ 目录\n"
             "  python3 scripts/qppjs.py clean build release   先删除 build/，再构建 Release\n"
             "  python3 scripts/qppjs.py clean test --quiet    先删除 build/，再静默运行 UT\n\n"
@@ -517,14 +570,14 @@ def make_parser() -> argparse.ArgumentParser:
         help="构建 Debug 并运行单元测试",
         description=(
             "先构建 build/debug，然后运行 ctest。\n"
-            "默认排除 qppjs_cli_ 开头的 CLI 测试；macOS 上会开启 LSan。"
+            "默认排除 qppjs_cli_ 开头的 CLI 测试；macOS 上会开启 LSan；--quiet 会区分成功和失败日志。"
         ),
     )
     test_parser.add_argument("--clean", action="store_true", help="构建前先删除整个 build/ 目录")
     test_parser.add_argument(
         "--quiet",
         action="store_true",
-        help="静默构建和测试；失败时只提示报告路径，详情写入 build/debug/run_ut_failures.txt",
+        help="静默构建和测试；成功日志写入 build/debug/run_ut_success.log，失败详情写入 build/debug/run_ut_failure.log，构建日志写入同目录下的 run_ut_build_success.log / run_ut_build_failure.log",
     )
 
     coverage_parser = subparsers.add_parser(
@@ -532,10 +585,15 @@ def make_parser() -> argparse.ArgumentParser:
         help="生成 HTML 覆盖率报告",
         description=(
             "先构建 build/test，然后运行 ctest、收集覆盖率数据并生成 HTML 报告。\n"
-            "报告默认输出到 build/test/coverage/index.html。"
+            "报告默认输出到 build/test/coverage/index.html；--quiet 会区分成功和失败日志。"
         ),
     )
     coverage_parser.add_argument("--clean", action="store_true", help="构建前先删除整个 build/ 目录")
+    coverage_parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="静默构建、测试和报告生成；成功日志写入 build/coverage_success.log，失败时仅将失败 UT 摘要写入 build/coverage_failure.log",
+    )
     coverage_parser.add_argument("--open", action="store_true", help="生成报告后用系统浏览器打开 index.html")
 
     return parser
@@ -559,7 +617,11 @@ def main(argv: list[str]) -> int:
         elif args.command == "test":
             TestRunner(paths, runner, builder).run(clean_first=clean_first or args.clean, quiet=args.quiet)
         elif args.command == "coverage":
-            CoverageRunner(paths, runner, builder).run(clean_first=clean_first or args.clean, open_report=args.open)
+            CoverageRunner(paths, runner, builder).run(
+                clean_first=clean_first or args.clean,
+                open_report=args.open,
+                quiet=args.quiet,
+            )
         else:
             parser.error("missing command")
     except CommandError as exc:
