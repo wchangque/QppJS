@@ -4,6 +4,11 @@
 
 ## 1. 已完成任务
 
+- [x] **闭包环境共享修复**（2026-04-26）：根因是 `MakeFunction` 时调用 `clone_for_closure` 对整个环境链做快照，顶层 `let` 在克隆时处于 TDZ，函数体内访问报 `ReferenceError`。删除 `clone_for_closure` / `clone_closure_env` / `define_binding` 整套克隆机制（`environment.cpp/h`、`vm.cpp/h`），`MakeFunction` 直接将当前 `env` 的 `shared_ptr` 存入 `closure_env`；解释器四处 `clone_for_closure` 调用同步改为直接传 `current_env_`。修复后 `VMFunc.ClosureSeesUpdated`、`VMFunc.FunctionCanReadOuterVar`、`VMFunc.TwoClosuresShareSameEnv`、`VMFinallyOverride.FinallyNormalSideEffectWithTryReturn` 全部通过。
+- [x] **Named function expression 自引用修复**（2026-04-26）：`call_function` / `push_call_frame` 中判断是否注册自引用绑定的条件 `fn_env->lookup(...) == nullptr` 错误——`lookup` 走 outer 链，外层有同名变量时跳过自引用。在 `JSFunction` 加 `is_named_expr_` 字段，`BytecodeFunction` 加 `is_named_expr` 字段；编译器 `compile_function_expr` 和解释器 function expression 路径设置标记；`call_function` / `push_call_frame` 改为只对 named expr 无条件写入自引用绑定。修复后 `FunctionTest.NamedFunctionExpressionShadowsOuterSameName` 和 `VMFunc.NamedFunctionExpressionShadowsOuterSameName` 通过。coverage 1061/1061 全部通过。
+- [x] **`scripts/qppjs.py` `split_log` 重构**（2026-04-26）：提取 `@contextlib.contextmanager split_log(success_path, failure_path, *, failure_filter)` 上下文管理器，统一"写 raw → 成功 rename / 失败分流"逻辑；`TestRunner.run`、`TestRunner.run_quiet`、`CoverageRunner.run` 三处重复代码消除约 23 行。
+- [x] **build skill 工具使用规范更新**（2026-04-26）：明确 `coverage.sh` 用于 UT 功能验证（无 ASAN/LSan 噪音，失败即功能缺陷），`run_ut.sh` 专用于内存泄露检查；更新 `SKILL.md` 常用场景排序、脚本表、注意事项，更新 `CLAUDE.md` 快速参考。
+
 - [x] 建立项目目标、参考仓库与 agent team 协作约定
 - [x] 创建 6 个项目级 subagents：`es-spec`、`quickjs-research`、`design-agent`、`implementation-agent`、`testing-agent`、`review-agent`
 - [x] 形成长期路线图、当前状态、下一阶段计划三文档体系

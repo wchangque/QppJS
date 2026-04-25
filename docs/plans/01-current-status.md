@@ -7,8 +7,8 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | Phase 8 进行中（8.1、8.2、8.3 已完成） |
-| 测试计数 | 1054/1059 通过（5 个为预先存在的遗留失败） |
-| 最近更新 | 2026-04-25 |
+| 测试计数 | 1061/1061 通过（coverage）；run_ut 4 个 LSan 泄露（P3-2 遗留） |
+| 最近更新 | 2026-04-26 |
 | 下一步 | Phase 8.4 — Object 内建方法 |
 
 ## 已知遗留问题
@@ -16,10 +16,13 @@
 - **P2-1**：VM catch 参数与 catch 体共享同一 scope，规范要求两层独立作用域
 - **P2-2**：VM `compile_labeled_stmt` 对非循环体的 labeled break 触发 `assert(false)`
 - **P3-1**：`JSString` 二次堆分配（`std::string` 成员），已知技术债务，Phase 9 优化
-- **P3-2**：Interpreter 闭包循环引用（`clone_env ↔ Cell ↔ JSFunction`），5256 字节，39 个分配，LSan 已验证；根因是 Cell 共享设计下引用计数无法打断循环，需要标记清除 GC（Phase 9）才能根本解决
+- **P3-2**：闭包循环引用（`Environment ↔ Cell ↔ JSFunction`），4 个解释器层用例 LSan 失败；根因是 `shared_ptr` 环，引用计数无法打断，需要标记清除 GC（Phase 9）才能根本解决
 
 ## 最近完成
 
+- [x] 闭包环境共享修复 + named function expression 自引用修复：删除 `clone_for_closure` / `clone_closure_env` / `define_binding` 整套克隆机制，`MakeFunction` 直接共享当前 env；解释器/VM 同步修复。新增 `is_named_expr` 标记，named function expression 在 `fn_env` 本层无条件注册自引用绑定（不走 `lookup` 链）。coverage 1061/1061 全部通过；run_ut 4 个 LSan 泄露为预先存在的 P3-2 遗留问题
+- [x] `scripts/qppjs.py` `split_log` 重构：提取上下文管理器统一"写 raw → 成功 rename / 失败分流"逻辑，`TestRunner` 和 `CoverageRunner` 三处重复代码消除
+- [x] build skill 工具使用规范：明确 `coverage.sh` 用于 UT 功能验证（无 ASAN/LSan 噪音），`run_ut.sh` 专用于内存泄露检查；更新 SKILL.md 和 CLAUDE.md 快速参考
 - [x] 构建脚本 Python 统一入口重构：新增 `scripts/qppjs.py` 覆盖 `clean`、`build debug/release/test`、`test --clean --quiet`、`coverage --clean --quiet --open`；支持 `clean build release` / `clean test --quiet` / `clean coverage --quiet` 前置组合用法；原 shell 脚本保留为兼容 wrapper；帮助信息已补充命令说明、构建类型解释和常用示例；quiet 模式区分成功/失败日志（UT：ctest 日志为 `build/debug/run_ut_success.log` / `build/debug/run_ut_failure.log`，构建日志为同目录下的 `run_ut_build_success.log` / `run_ut_build_failure.log`；coverage：成功日志为 `build/coverage_success.log`，失败摘要为 `build/coverage_failure.log`）；已验证语法、帮助输出、release/test 构建与静默失败报告
 - [x] `scripts/qppjs.py coverage --quiet` 日志行为修复：保留实际失败路径 `build/coverage_failure.log` / 成功路径 `build/coverage_success.log`；quiet 模式改为先写原始日志到临时文件，失败时仅提取失败 UT / 泄漏摘要写入 `coverage_failure.log`，成功时再落盘为 `coverage_success.log`；复用 `run_ut` 的失败摘要格式；已验证 `python3 -m py_compile scripts/qppjs.py`
 - [x] `run_ut.sh --quiet` 静默模式：构建和 ctest 输出静默化；失败时仅提示报告路径，并将失败 case / LSan 泄漏信息写入 `build/debug/run_ut_failure.log`；已通过语法、帮助输出和实际失败路径验证

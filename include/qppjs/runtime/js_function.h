@@ -38,8 +38,10 @@ public:
     void set_prototype_obj(RcPtr<JSObject> v) { prototype_ = std::move(v); }
     void set_bytecode(std::shared_ptr<BytecodeFunction> v) { bytecode_ = std::move(v); }
     void set_native_fn(NativeFn fn) { native_fn_ = std::move(fn); }
+    void set_is_named_expr(bool v) { is_named_expr_ = v; }
 
     bool is_native() const { return native_fn_.has_value(); }
+    bool is_named_expr() const { return is_named_expr_; }
     const NativeFn& native_fn() const { return *native_fn_; }
 
 private:
@@ -50,6 +52,7 @@ private:
     RcPtr<JSObject> prototype_;  // F.prototype (not [[Prototype]] of the function itself)
     std::shared_ptr<BytecodeFunction> bytecode_;
     std::optional<NativeFn> native_fn_;
+    bool is_named_expr_ = false;
 };
 
 }  // namespace qppjs

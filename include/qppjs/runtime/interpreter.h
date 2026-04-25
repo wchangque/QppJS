@@ -79,7 +79,8 @@ private:
     // Create a JSFunction value with eager prototype initialization.
     Value make_function_value(std::optional<std::string> name, std::vector<std::string> params,
                               std::shared_ptr<std::vector<StmtNode>> body,
-                              std::shared_ptr<Environment> closure_env);
+                              std::shared_ptr<Environment> closure_env,
+                              bool is_named_expr = false);
 
     Value make_error_value(NativeErrorType type, const std::string& message);
 

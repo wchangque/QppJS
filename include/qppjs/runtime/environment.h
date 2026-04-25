@@ -152,9 +152,6 @@ public:
     // Declare an already-initialized binding (for var hoisting); idempotent.
     void define_initialized(const std::string& name);
     void define_function(const std::string& name);
-    void define_binding(const std::string& name, const Binding& binding);
-    std::shared_ptr<Environment> clone_for_closure(const std::optional<std::string>& excluded_name) const;
-
     // Walk the outer chain; returns nullptr if not found.
     Binding* lookup(const std::string& name);
 

@@ -46,22 +46,6 @@ void Environment::define_function(const std::string& name) {
     bindings_.emplace(name, Binding{MakeCell(Value::undefined()), true, true, true});
 }
 
-void Environment::define_binding(const std::string& name, const Binding& binding) {
-    bindings_.insert_or_assign(name, binding);
-}
-
-std::shared_ptr<Environment> Environment::clone_for_closure(const std::optional<std::string>& excluded_name) const {
-    std::shared_ptr<Environment> cloned_outer = outer_ ? outer_->clone_for_closure(excluded_name) : nullptr;
-    auto cloned = std::make_shared<Environment>(std::move(cloned_outer));
-    for (const auto& [name, binding] : bindings_.entries()) {
-        if (excluded_name.has_value() && name == *excluded_name) {
-            continue;
-        }
-        cloned->define_binding(name, binding);
-    }
-    return cloned;
-}
-
 Binding* Environment::lookup(const std::string& name) {
     Binding* b = bindings_.find(name);
     if (b != nullptr) {

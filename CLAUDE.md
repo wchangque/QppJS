@@ -44,6 +44,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 
 构建、测试、覆盖率命令详见 `build` skill（`/build`）。快速参考：
 
-- `./scripts/run_ut.sh` —— 构建 + 运行所有 UT（含 ASAN/LSan）
-- `./scripts/coverage.sh` —— 生成覆盖率报告
+- `./scripts/coverage.sh --quiet` —— 验证 UT 功能正确性（无 ASAN/LSan 噪音）
+- `./scripts/run_ut.sh --quiet` —— 检查内存泄露（含 ASAN/LSan）
 - `./scripts/build_release.sh` —— Release 构建

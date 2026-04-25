@@ -607,6 +607,7 @@ void Compiler::compile_member_assign(const MemberAssignmentExpression& expr) {
 
 void Compiler::compile_function_expr(const FunctionExpression& expr) {
     auto child = compile_function(expr.name, expr.params, *expr.body);
+    child->is_named_expr = expr.name.has_value();
     uint16_t fn_idx = add_function(std::move(child));
     emit(Opcode::kMakeFunction);
     emit_u16(fn_idx);

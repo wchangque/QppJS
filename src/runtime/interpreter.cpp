@@ -549,7 +549,8 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
                     fn_expr->name,
                     fn_expr->params,
                     fn_expr->body,
-                    current_env_->clone_for_closure(fn_expr->name)))
+                    current_env_,
+                    fn_expr->name.has_value()))
                 : eval_expr(decl.init.value());
             if (!init_result.is_ok()) {
                 return StmtResult::err(init_result.error());
@@ -569,7 +570,8 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
                     fn_expr->name,
                     fn_expr->params,
                     fn_expr->body,
-                    current_env_->clone_for_closure(fn_expr->name)))
+                    current_env_,
+                    fn_expr->name.has_value()))
                 : eval_expr(decl.init.value());
             if (!init_result.is_ok()) {
                 return StmtResult::err(init_result.error());
@@ -1312,12 +1314,14 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
 
 Value Interpreter::make_function_value(std::optional<std::string> name, std::vector<std::string> params,
                                         std::shared_ptr<std::vector<StmtNode>> body,
-                                        std::shared_ptr<Environment> closure_env) {
+                                        std::shared_ptr<Environment> closure_env,
+                                        bool is_named_expr) {
     auto fn = RcPtr<JSFunction>::make();
     fn->set_name(name);
     fn->set_params(std::move(params));
     fn->set_body(std::move(body));
     fn->set_closure_env(std::move(closure_env));
+    fn->set_is_named_expr(is_named_expr);
 
     // Eager prototype initialization: F.prototype = { constructor: F }
     Value fn_val = Value::object(ObjectPtr(fn));
@@ -1341,7 +1345,7 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
 
     auto outer = fn->closure_env() ? fn->closure_env() : global_env_;
     auto fn_env = std::make_shared<Environment>(outer);
-    if (fn->name().has_value() && fn_env->lookup(fn->name().value()) == nullptr) {
+    if (fn->is_named_expr() && fn->name().has_value()) {
         fn_env->define(fn->name().value(), VarKind::Const);
         auto init_result = fn_env->initialize(fn->name().value(), Value::object(ObjectPtr(fn)));
         if (!init_result.is_ok()) {
@@ -1375,8 +1379,7 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
 }
 
 StmtResult Interpreter::eval_function_decl(const FunctionDeclaration& stmt) {
-    Value fn_val = make_function_value(stmt.name, stmt.params, stmt.body,
-                                       current_env_->clone_for_closure(stmt.name));
+    Value fn_val = make_function_value(stmt.name, stmt.params, stmt.body, current_env_);
     auto set_result = var_env_->set(stmt.name, fn_val);
     if (!set_result.is_ok()) {
         return StmtResult::err(set_result.error());
@@ -1578,8 +1581,8 @@ StmtResult Interpreter::eval_for_stmt(const ForStatement& stmt,
 }
 
 EvalResult Interpreter::eval_function_expr(const FunctionExpression& expr) {
-    return EvalResult::ok(make_function_value(expr.name, expr.params, expr.body,
-                                              current_env_->clone_for_closure(expr.name)));
+    return EvalResult::ok(make_function_value(expr.name, expr.params, expr.body, current_env_,
+                                              expr.name.has_value()));
 }
 
 EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {

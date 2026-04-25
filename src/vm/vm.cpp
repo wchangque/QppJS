@@ -328,14 +328,6 @@ void VM::init_global_env() {
     array_prototype_->set_property("forEach", Value::object(ObjectPtr(foreach_fn)));
 }
 
-std::shared_ptr<Environment> VM::clone_closure_env(const std::shared_ptr<Environment>& env,
-                                                   const std::optional<std::string>& excluded_name) const {
-    if (!excluded_name.has_value() || env == nullptr) {
-        return env;
-    }
-    return env->clone_for_closure(excluded_name);
-}
-
 // ============================================================
 // exec (public entry)
 // ============================================================
@@ -408,7 +400,7 @@ EvalResult VM::push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<V
 
     auto outer = fn->closure_env() ? fn->closure_env() : global_env_;
     auto fn_env = std::make_shared<Environment>(outer);
-    if (fn->name().has_value() && fn_env->lookup(fn->name().value()) == nullptr) {
+    if (fn->is_named_expr() && fn->name().has_value()) {
         fn_env->define(fn->name().value(), VarKind::Const);
         auto init_result = fn_env->initialize(fn->name().value(), Value::object(ObjectPtr(fn)));
         if (!init_result.is_ok()) {
@@ -880,7 +872,8 @@ EvalResult VM::run(size_t exit_depth) {
             fn->set_name(fn_bc->name);
             fn->set_params(fn_bc->params);
             fn->set_bytecode(fn_bc);
-            fn->set_closure_env(clone_closure_env(env, fn_bc->name));
+            fn->set_closure_env(env);
+            fn->set_is_named_expr(fn_bc->is_named_expr);
             auto proto_obj = RcPtr<JSObject>::make();
             proto_obj->set_proto(object_prototype_);
             proto_obj->set_constructor_property(fn.get());

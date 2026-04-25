@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import platform
@@ -39,6 +40,36 @@ class CommandError(RuntimeError):
     def __init__(self, returncode: int) -> None:
         super().__init__(f"command failed with exit code {returncode}")
         self.returncode = returncode
+
+
+@contextlib.contextmanager
+def split_log(
+    success_path: Path,
+    failure_path: Path,
+    *,
+    failure_filter: "((Path, Path) -> None) | None" = None,
+):
+    """Write accumulated log to success_path on clean exit, failure_path on CommandError.
+
+    failure_filter(raw, failure_path) is called before renaming on failure;
+    if omitted the raw log is renamed directly.
+    """
+    raw = success_path.with_suffix(".raw.log")
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    success_path.unlink(missing_ok=True)
+    failure_path.unlink(missing_ok=True)
+    raw.unlink(missing_ok=True)
+    try:
+        yield raw
+    except CommandError:
+        if failure_filter is not None:
+            failure_filter(raw, failure_path)
+            raw.unlink(missing_ok=True)
+        else:
+            raw.replace(failure_path)
+        raise
+    else:
+        raw.replace(success_path)
 
 
 class Runner:
@@ -171,24 +202,17 @@ class TestRunner:
     def run(self, *, clean_first: bool, quiet: bool) -> None:
         if clean_first:
             clean(self.paths)
-        build_failure_log = self.build_dir / "run_ut_build_failure.log"
-        build_success_log = self.build_dir / "run_ut_build_success.log"
         if quiet:
-            try:
-                self.builder.build("debug", quiet_log=build_failure_log)
-            except CommandError:
-                print(f"build failed. Failure log written to: {build_failure_log}", file=sys.stderr)
-                raise
-            build_failure_log.replace(build_success_log)
+            with split_log(self.build_dir / "run_ut_build_success.log", self.build_dir / "run_ut_build_failure.log") as log:
+                try:
+                    self.builder.build("debug", quiet_log=log)
+                except CommandError:
+                    print(f"build failed. Failure log written to: {self.build_dir / 'run_ut_build_failure.log'}", file=sys.stderr)
+                    raise
+            self.run_quiet(self.ctest_args(), test_env(self.paths))
         else:
             self.builder.build("debug")
-
-        ctest_args = self.ctest_args()
-        env = test_env(self.paths)
-        if quiet:
-            self.run_quiet(ctest_args, env)
-            return
-        self.runner.run(["ctest", *ctest_args], env=env)
+            self.runner.run(["ctest", *self.ctest_args()], env=test_env(self.paths))
 
     def ctest_args(self) -> list[str]:
         args = ["--test-dir", str(self.build_dir), "--output-on-failure", "-E", "^qppjs_cli_"]
@@ -199,20 +223,12 @@ class TestRunner:
 
     def run_quiet(self, ctest_args: list[str], env: dict[str, str]) -> None:
         failure_report = self.build_dir / "run_ut_failure.log"
-        success_log = self.build_dir / "run_ut_success.log"
-        raw_log = self.build_dir / "run_ut_raw.log"
-        failure_report.parent.mkdir(parents=True, exist_ok=True)
-        success_log.unlink(missing_ok=True)
-        failure_report.unlink(missing_ok=True)
         result = subprocess.run(["ctest", *ctest_args], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        raw_log.write_text(result.stdout, encoding="utf-8", errors="replace")
-        if result.returncode == 0:
-            raw_log.replace(success_log)
-            return
-        write_test_failure_report(raw_log, failure_report)
-        raw_log.unlink(missing_ok=True)
-        print(f"UT failed. Failure and leak details written to: {failure_report}", file=sys.stderr)
-        raise CommandError(result.returncode)
+        with split_log(self.build_dir / "run_ut_success.log", failure_report, failure_filter=write_test_failure_report) as raw:
+            raw.write_text(result.stdout, encoding="utf-8", errors="replace")
+            if result.returncode != 0:
+                print(f"UT failed. Failure and leak details written to: {failure_report}", file=sys.stderr)
+                raise CommandError(result.returncode)
 
 
 class CoverageRunner:
@@ -228,24 +244,20 @@ class CoverageRunner:
     def run(self, *, clean_first: bool, open_report: bool, quiet: bool) -> None:
         if clean_first:
             clean(self.paths)
-        failure_report = self.build_dir / "coverage_failure.log"
-        success_log = self.build_dir / "coverage_success.log"
-        raw_log = self.build_dir / "coverage_raw.log"
         if quiet:
-            failure_report.parent.mkdir(parents=True, exist_ok=True)
-            success_log.unlink(missing_ok=True)
-            failure_report.unlink(missing_ok=True)
-            raw_log.unlink(missing_ok=True)
-            try:
-                self._run(open_report=open_report, quiet_log=raw_log)
-            except CommandError:
-                write_test_failure_report(raw_log, failure_report, title="QppJS coverage failed tests / leak report")
-                raw_log.unlink(missing_ok=True)
-                print(f"coverage failed. Failure log written to: {failure_report}", file=sys.stderr)
-                raise
-            raw_log.replace(success_log)
-            return
-        self._run(open_report=open_report)
+            failure_report = self.build_dir / "coverage_failure.log"
+
+            def coverage_failure_filter(raw: Path, dest: Path) -> None:
+                write_test_failure_report(raw, dest, title="QppJS coverage failed tests / leak report")
+
+            with split_log(self.build_dir / "coverage_success.log", failure_report, failure_filter=coverage_failure_filter) as log:
+                try:
+                    self._run(open_report=open_report, quiet_log=log)
+                except CommandError:
+                    print(f"coverage failed. Failure log written to: {failure_report}", file=sys.stderr)
+                    raise
+        else:
+            self._run(open_report=open_report)
 
     def _run(self, *, open_report: bool, quiet_log: Path | None = None) -> None:
         self.builder.build("test", quiet_log=quiet_log)
