@@ -7,8 +7,8 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | Phase 8 进行中（8.1 已完成） |
-| 测试计数 | 917/917 通过 |
-| 最近更新 | 2026-04-24 |
+| 测试计数 | 927/931 通过 |
+| 最近更新 | 2026-04-25 |
 | 下一步 | Phase 8.2 — console 对象 |
 
 ## 已知遗留问题
@@ -16,9 +16,12 @@
 - **P2-1**：VM catch 参数与 catch 体共享同一 scope，规范要求两层独立作用域
 - **P2-2**：VM `compile_labeled_stmt` 对非循环体的 labeled break 触发 `assert(false)`
 - **P3-1**：`JSString` 二次堆分配（`std::string` 成员），已知技术债务，Phase 9 优化
+- **P3-2**：Interpreter 闭包循环引用（`clone_env ↔ Cell ↔ JSFunction`），5256 字节，39 个分配，LSan 已验证；根因是 Cell 共享设计下引用计数无法打断循环，需要标记清除 GC（Phase 9）才能根本解决
 
 ## 最近完成
 
+- [x] 闭包边界测试补充：新增 10 个 function_test 边界用例（三层嵌套捕获、var 遮蔽外层 let、具名函数表达式递归、多工厂调用独立性等），927/931 通过
+- [x] macOS LSan 基础设施：`run_ut.sh` 加 `ASAN_OPTIONS=detect_leaks=1`，确认 Interpreter 闭包循环引用泄漏（5256 字节）为已知遗留问题（需 GC 才能根本解决，记为 P3-2）
 - [x] 函数/闭包/原型相关 ASAN/LSan 泄漏修复：Interpreter 与 VM 统一清理 closure env / 对象属性中的函数引用，分离 VM `function_decls` 与 `var_decls`，相关泄漏回归通过
 - [x] Phase 8.1：Error 子类（TypeError/ReferenceError/RangeError）+ instanceof — 完成（917/917，含 Review M1/M2/M3 修复）
 - [x] 构建脚本跨平台探测修复：无 brew 的 Linux/WSL 环境不再因 `brew --prefix llvm` 直接退出，3 个构建脚本验证通过

@@ -39,4 +39,8 @@ PY
     fi
 fi
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    export ASAN_OPTIONS="${ASAN_OPTIONS:-}detect_leaks=1"
+fi
+
 ctest "${CTEST_ARGS[@]}"

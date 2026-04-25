@@ -462,6 +462,33 @@ TEST(FunctionTest, TwoClosuresFromSameFactoryShareBinding) {
     EXPECT_EQ(r.value().as_number(), 42.0);
 }
 
+TEST(FunctionTest, VarInInnerFunctionDoesNotShadowOuterLet) {
+    // var x inside inner() must not write to outer let x
+    auto r = run(
+        "function outer() {"
+        "  let x = 1;"
+        "  function inner() { var x = 2; }"
+        "  inner();"
+        "  return x;"
+        "}"
+        "outer()");
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value().as_number(), 1.0);
+}
+
+TEST(FunctionTest, VarInInnerFunctionDoesNotShadowOuterLetWithParam) {
+    // same as above but outer x comes in as a captured parameter
+    auto r = run(
+        "function make(x) {"
+        "  function inner() { var x = 99; }"
+        "  inner();"
+        "  return x;"
+        "}"
+        "make(7)");
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value().as_number(), 7.0);
+}
+
 // ---- 函数作为对象属性（方法调用，无 this 绑定）----
 
 TEST(FunctionTest, FunctionStoredAsObjectProperty) {
@@ -559,6 +586,111 @@ TEST(FunctionTest, MutualRecursionOddResult) {
         "isOdd(3)");
     ASSERT_TRUE(r.is_ok());
     EXPECT_TRUE(r.value().as_bool());
+}
+
+// ---- 闭包捕获边界（captured_upvalues_ 路径回归）----
+
+// 1. 三层嵌套：最内层闭包捕获最外层 let 变量
+TEST(FunctionTest, ThreeLevelNestedClosureCapturesOutermost) {
+    auto r = run(
+        "function outer() {"
+        "  let x = 10;"
+        "  function middle() {"
+        "    function inner() { return x; }"
+        "    return inner;"
+        "  }"
+        "  return middle;"
+        "}"
+        "outer()()()");
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value().as_number(), 10.0);
+}
+
+// 2. 函数定义后外层修改变量，闭包读到新值（cell 共享）
+TEST(FunctionTest, ClosureSeesOuterModificationAfterCapture) {
+    auto r = run(
+        "let x = 1;"
+        "function getX() { return x; }"
+        "x = 99;"
+        "getX()");
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value().as_number(), 99.0);
+}
+
+// 3. for 循环内用 var 创建闭包，循环结束后 var 变量为最终值，闭包读到该值
+// 不依赖数组字面量（Phase 8.3 前未实现），改用单个闭包变量验证同一语义：
+// var i 提升到函数作用域，循环结束后 i === 3，闭包读到 3
+TEST(FunctionTest, ClosureInForLoopWithVarSeesLastValue) {
+    auto r = run(
+        "var captured;"
+        "for (var i = 0; i < 3; i = i + 1) {"
+        "  captured = function() { return i; };"
+        "}"
+        "captured()");
+    ASSERT_TRUE(r.is_ok());
+    // var i 提升到全局，循环结束后 i === 3，闭包读到 3
+    EXPECT_EQ(r.value().as_number(), 3.0);
+}
+
+// 4. 具名函数表达式递归：函数名在函数体内可见
+// 不依赖三元运算符（Phase 8 前未实现），改用 if 语句验证同一语义
+TEST(FunctionTest, NamedFunctionExpressionSelfRecursion) {
+    auto r = run(
+        "let fact = function f(n) {"
+        "  if (n <= 1) { return 1; }"
+        "  return n * f(n - 1);"
+        "};"
+        "fact(5)");
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value().as_number(), 120.0);
+}
+
+// 5. 闭包写入外层 let 变量，外层代码读到新值
+TEST(FunctionTest, ClosureWritesOuterLetAndOuterSeesNewValue) {
+    auto r = run(
+        "let val = 0;"
+        "function setVal(x) { val = x; }"
+        "setVal(42);"
+        "val");
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value().as_number(), 42.0);
+}
+
+// 6. 多次调用工厂函数，每次返回独立闭包，各自有独立 cell
+TEST(FunctionTest, FactoryCallsProduceIndependentClosures) {
+    auto r = run(
+        "function makeCounter() {"
+        "  let n = 0;"
+        "  return function() { n = n + 1; return n; };"
+        "}"
+        "let a = makeCounter();"
+        "let b = makeCounter();"
+        "a(); a(); a();"
+        "b();"
+        "a()");
+    ASSERT_TRUE(r.is_ok());
+    // a 调用 4 次，b 调用 1 次，互不干扰；最后 a() 返回 4
+    EXPECT_EQ(r.value().as_number(), 4.0);
+}
+
+// 7. 空捕获：函数体只用参数，不引用外层变量，正常工作
+TEST(FunctionTest, NoCaptureUsesOnlyParams) {
+    auto r = run(
+        "let unused = 100;"
+        "function add(a, b) { return a + b; }"
+        "add(3, 4)");
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value().as_number(), 7.0);
+}
+
+// 8. 闭包尝试修改捕获的 const 变量，应抛 TypeError
+TEST(FunctionTest, ClosureWritesCapturedConstThrowsTypeError) {
+    auto r = run(
+        "const k = 1;"
+        "function setK() { k = 2; }"
+        "setK()");
+    ASSERT_FALSE(r.is_ok());
+    EXPECT_NE(r.error().message().find("TypeError"), std::string::npos);
 }
 
 }  // namespace

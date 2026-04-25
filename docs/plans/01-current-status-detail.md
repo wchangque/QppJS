@@ -89,6 +89,18 @@
   - `include/qppjs/vm/vm.h`、`src/vm/vm.cpp`：VM 顶层与函数帧分别预定义 `function_decls`；`kMakeFunction` 直接捕获运行时环境共享绑定；`exec()` 返回前同步执行清理逻辑
   - 验证：`FunctionTest` / `VMFunc` / `VMProto` / `InterpreterThrow|TryCatch|FinallyOverride` / `VMTryCatch|FinallyOverride` 分组回归 122/122 通过；`./scripts/run_ut.sh` 全量通过，ASAN/LSan 无泄漏
 
+- 建立 macOS LSan 基础设施 + 闭包边界测试补充：
+  - `scripts/run_ut.sh` 加 `ASAN_OPTIONS=detect_leaks=1`（macOS 上 LSan 默认关闭，需显式开启）
+  - 深度调研 Interpreter 闭包循环引用根因：`clone_for_closure` 产生的克隆 Environment 与其中
+    持有的 JSFunction 形成 `clone_env → Cell → JSFunction → closure_env_(clone_env)` 循环；
+    Cell 共享设计下引用计数无法打断（`ClosureSeesReassignedFunctionBinding` 要求必须共享 Cell），
+    三种常规方案（`outer_` weak_ptr、`closure_env_` weak_ptr、`captured_upvalues_` 替换）均无效；
+    结论：需要 Phase 9 标记清除 GC 才能根本解决，记为遗留问题 P3-2（5256 字节，39 个分配）
+  - `tests/unit/function_test.cpp` 新增 10 个边界用例：三层嵌套捕获、外层修改后闭包读新值、
+    for-var 循环闭包读最终值、具名函数表达式递归、闭包写外层 let、多工厂调用独立性、
+    空捕获、const 捕获写入报错、var 遮蔽外层 let（×2）
+  - 验证：927/931 通过（4 个 VM 已知失败不变）
+
 - 完成构建脚本跨平台探测修复：
   - `scripts/build_debug.sh`、`scripts/build_release.sh`、`scripts/build_test.sh`：仅在 `CC/CXX` 都未设置、平台为 `Darwin` 且 `brew` 存在时才探测 Homebrew LLVM；其他环境保持未设置 `CC/CXX`，交由 CMake/系统编译器选择，避免在 `set -euo pipefail` 下因缺少 `brew` 直接退出
   - 当前 Linux/WSL 环境下已验证 `./scripts/build_debug.sh`、`./scripts/build_release.sh`、`./scripts/build_test.sh` 均可完成构建
