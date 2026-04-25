@@ -133,12 +133,15 @@ Value Interpreter::make_error_value(NativeErrorType type, const std::string& mes
     return MakeNativeErrorValue(proto, message);
 }
 
-Interpreter::Interpreter()
-    : global_env_(std::make_shared<Environment>(nullptr)),
-      current_env_(global_env_),
-      var_env_(global_env_),
-      current_this_(Value::undefined()),
-      object_prototype_(RcPtr<JSObject>::make()) {
+void Interpreter::init_runtime() {
+    global_env_ = std::make_shared<Environment>(nullptr);
+    current_env_ = global_env_;
+    var_env_ = global_env_;
+    current_this_ = Value::undefined();
+    object_prototype_ = RcPtr<JSObject>::make();
+    pending_throw_ = std::nullopt;
+    call_depth_ = 0;
+
     // object_prototype_.proto_ stays nullptr (end of chain)
 
     // Build Error.prototype
@@ -190,6 +193,10 @@ Interpreter::Interpreter()
         global_env_->define_initialized(spec.name);
         global_env_->set(spec.name, Value::object(ObjectPtr(sub_fn)));
     }
+}
+
+Interpreter::Interpreter() {
+    init_runtime();
 }
 
 // ---- Type conversions ----
@@ -295,7 +302,7 @@ void Interpreter::hoist_vars_stmt(const StmtNode& stmt, Environment& var_target)
         }
     } else if (std::holds_alternative<FunctionDeclaration>(stmt.v)) {
         const auto& fdecl = std::get<FunctionDeclaration>(stmt.v);
-        var_target.define_initialized(fdecl.name);
+        var_target.define_function(fdecl.name);
     } else if (std::holds_alternative<ForStatement>(stmt.v)) {
         const auto& for_stmt = std::get<ForStatement>(stmt.v);
         if (for_stmt.init.has_value()) {
@@ -332,6 +339,7 @@ void Interpreter::hoist_vars(const std::vector<StmtNode>& stmts, Environment& va
 // ---- exec ----
 
 EvalResult Interpreter::exec(const Program& program) {
+    init_runtime();
     hoist_vars(program.body, *var_env_);
 
     Value last = Value::undefined();
@@ -355,12 +363,18 @@ EvalResult Interpreter::exec(const Program& program) {
                         if (m.is_string()) message = m.as_string();
                     }
                 }
+                global_env_->clear_function_bindings();
+                object_prototype_->clear_function_properties();
                 return EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
             }
+            global_env_->clear_function_bindings();
+            object_prototype_->clear_function_properties();
             return EvalResult::err(result.error());
         }
         const Completion& c = result.completion();
         if (c.is_return()) {
+            global_env_->clear_function_bindings();
+            object_prototype_->clear_function_properties();
             return EvalResult::ok(c.value);
         }
         if (c.is_throw()) {
@@ -374,15 +388,21 @@ EvalResult Interpreter::exec(const Program& program) {
                     Value m = obj->get_property("message");
                     std::string name = n.is_string() ? n.as_string() : "Error";
                     std::string message = m.is_string() ? m.as_string() : "";
+                    global_env_->clear_function_bindings();
+                    object_prototype_->clear_function_properties();
                     return EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
                 }
             }
+            global_env_->clear_function_bindings();
+            object_prototype_->clear_function_properties();
             return EvalResult::err(Error(ErrorKind::Runtime, to_string_val(thrown)));
         }
         if (c.is_normal()) {
             last = c.value;
         }
     }
+    global_env_->clear_function_bindings();
+    object_prototype_->clear_function_properties();
     return EvalResult::ok(last);
 }
 
@@ -420,7 +440,14 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
     if (decl.kind == VarKind::Var) {
         // var: binding already hoisted; just assign if there is an initializer
         if (decl.init.has_value()) {
-            auto init_result = eval_expr(decl.init.value());
+            const auto* fn_expr = std::get_if<FunctionExpression>(&decl.init->v);
+            EvalResult init_result = fn_expr
+                ? EvalResult::ok(make_function_value(
+                    fn_expr->name,
+                    fn_expr->params,
+                    fn_expr->body,
+                    current_env_->clone_for_closure(fn_expr->name)))
+                : eval_expr(decl.init.value());
             if (!init_result.is_ok()) {
                 return StmtResult::err(init_result.error());
             }
@@ -433,7 +460,14 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
         // let / const: create TDZ binding in current scope, then initialize
         current_env_->define(decl.name, decl.kind);
         if (decl.init.has_value()) {
-            auto init_result = eval_expr(decl.init.value());
+            const auto* fn_expr = std::get_if<FunctionExpression>(&decl.init->v);
+            EvalResult init_result = fn_expr
+                ? EvalResult::ok(make_function_value(
+                    fn_expr->name,
+                    fn_expr->params,
+                    fn_expr->body,
+                    current_env_->clone_for_closure(fn_expr->name)))
+                : eval_expr(decl.init.value());
             if (!init_result.is_ok()) {
                 return StmtResult::err(init_result.error());
             }
@@ -1154,12 +1188,13 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
 }
 
 Value Interpreter::make_function_value(std::optional<std::string> name, std::vector<std::string> params,
-                                        std::shared_ptr<std::vector<StmtNode>> body) {
+                                        std::shared_ptr<std::vector<StmtNode>> body,
+                                        std::shared_ptr<Environment> closure_env) {
     auto fn = RcPtr<JSFunction>::make();
     fn->set_name(name);
     fn->set_params(std::move(params));
     fn->set_body(std::move(body));
-    fn->set_closure_env(current_env_);
+    fn->set_closure_env(std::move(closure_env));
 
     // Eager prototype initialization: F.prototype = { constructor: F }
     Value fn_val = Value::object(ObjectPtr(fn));
@@ -1217,7 +1252,8 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
 }
 
 StmtResult Interpreter::eval_function_decl(const FunctionDeclaration& stmt) {
-    Value fn_val = make_function_value(stmt.name, stmt.params, stmt.body);
+    Value fn_val = make_function_value(stmt.name, stmt.params, stmt.body,
+                                       current_env_->clone_for_closure(stmt.name));
     auto set_result = var_env_->set(stmt.name, fn_val);
     if (!set_result.is_ok()) {
         return StmtResult::err(set_result.error());
@@ -1419,7 +1455,8 @@ StmtResult Interpreter::eval_for_stmt(const ForStatement& stmt,
 }
 
 EvalResult Interpreter::eval_function_expr(const FunctionExpression& expr) {
-    return EvalResult::ok(make_function_value(expr.name, expr.params, expr.body));
+    return EvalResult::ok(make_function_value(expr.name, expr.params, expr.body,
+                                              current_env_->clone_for_closure(expr.name)));
 }
 
 EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {

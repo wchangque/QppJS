@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -33,6 +34,7 @@ struct Binding {
     CellPtr cell;
     bool mutable_;      // false for const
     bool initialized;   // false means TDZ
+    bool function_like;  // function declaration hoist slot
 };
 
 // Small flat map for environment bindings. Uses linear scan for <= kUpgradeThreshold entries,
@@ -94,6 +96,34 @@ public:
         return find(name) != nullptr ? 1 : 0;
     }
 
+    std::vector<std::pair<std::string, Binding>> entries() const {
+        if (large_) {
+            std::vector<std::pair<std::string, Binding>> result;
+            result.reserve(large_->size());
+            for (const auto& [k, v] : *large_) {
+                result.emplace_back(k, v);
+            }
+            return result;
+        }
+        return entries_;
+    }
+
+    std::vector<Binding*> binding_ptrs() {
+        std::vector<Binding*> result;
+        if (large_) {
+            result.reserve(large_->size());
+            for (auto& [k, v] : *large_) {
+                result.push_back(&v);
+            }
+            return result;
+        }
+        result.reserve(entries_.size());
+        for (auto& [k, v] : entries_) {
+            result.push_back(&v);
+        }
+        return result;
+    }
+
 private:
     void maybe_upgrade() {
         if (static_cast<int>(entries_.size()) > kUpgradeThreshold) {
@@ -109,7 +139,7 @@ private:
     std::unique_ptr<std::unordered_map<std::string, Binding>> large_;
 };
 
-class Environment {
+class Environment : public std::enable_shared_from_this<Environment> {
 public:
     explicit Environment(std::shared_ptr<Environment> outer);
 
@@ -121,7 +151,9 @@ public:
 
     // Declare an already-initialized binding (for var hoisting); idempotent.
     void define_initialized(const std::string& name);
+    void define_function(const std::string& name);
     void define_binding(const std::string& name, const Binding& binding);
+    std::shared_ptr<Environment> clone_for_closure(const std::optional<std::string>& excluded_name) const;
 
     // Walk the outer chain; returns nullptr if not found.
     Binding* lookup(const std::string& name);
@@ -137,6 +169,10 @@ public:
 
     std::shared_ptr<Environment> outer() const { return outer_; }
     const FlatBindingMap& bindings() const { return bindings_; }
+    void clear_function_bindings();
+
+private:
+    void clear_function_bindings(std::unordered_set<const Environment*>& visited);
 
 private:
     FlatBindingMap bindings_;

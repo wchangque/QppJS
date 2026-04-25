@@ -63,10 +63,20 @@ TEST(FunctionTest, FunctionExpressionAssignedToVar) {
     EXPECT_EQ(r.value().as_number(), 10.0);
 }
 
-TEST(FunctionTest, NamedFunctionExpression) {
-    auto r = run("let f = function double(x) { return x * 2; }; f(3)");
+TEST(FunctionTest, NamedFunctionExpressionShadowsOuterSameName) {
+    auto r = run("let g = 1; let f = function g() { return g; }; f() === f");
     ASSERT_TRUE(r.is_ok());
-    EXPECT_EQ(r.value().as_number(), 6.0);
+    EXPECT_TRUE(r.value().as_bool());
+}
+
+TEST(FunctionTest, ClosureSeesReassignedFunctionBinding) {
+    auto r = run(
+        "let g = function() { return 1; };"
+        "let f = function() { return g(); };"
+        "g = function() { return 2; };"
+        "f()");
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value().as_number(), 2.0);
 }
 
 // ---- typeof ----

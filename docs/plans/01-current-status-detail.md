@@ -81,6 +81,14 @@
 
 ## 2. 最近完成内容
 
+- 修复函数/闭包/原型相关 ASAN/LSan 泄漏：
+  - `include/qppjs/runtime/environment.h`、`src/runtime/environment.cpp`：为 `Binding` 增加 `function_like` 标记，补充 `define_function()`、`clone_for_closure()`、`clear_function_bindings()`；递归清理 closure env 与对象属性中的函数引用
+  - `include/qppjs/runtime/js_object.h`、`src/runtime/js_object.cpp`：新增 `clear_function_properties()`，递归清理对象/prototype 链上保存的函数值，打断 `obj -> fn -> prototype/closure` 保留环
+  - `src/runtime/interpreter.cpp`：函数声明/表达式改为捕获裁剪后的 closure env；顶层 `exec()` 在成功/异常返回前统一清理函数绑定与对象属性中的函数引用
+  - `include/qppjs/vm/bytecode.h`、`src/vm/compiler.cpp`：新增 `function_decls`，将函数声明提升槽与 `var_decls` 分离，避免 VM 在清理函数绑定时误伤普通变量绑定
+  - `include/qppjs/vm/vm.h`、`src/vm/vm.cpp`：VM 顶层与函数帧分别预定义 `function_decls`；`kMakeFunction` 直接捕获运行时环境共享绑定；`exec()` 返回前同步执行清理逻辑
+  - 验证：`FunctionTest` / `VMFunc` / `VMProto` / `InterpreterThrow|TryCatch|FinallyOverride` / `VMTryCatch|FinallyOverride` 分组回归 122/122 通过；`./scripts/run_ut.sh` 全量通过，ASAN/LSan 无泄漏
+
 - 完成构建脚本跨平台探测修复：
   - `scripts/build_debug.sh`、`scripts/build_release.sh`、`scripts/build_test.sh`：仅在 `CC/CXX` 都未设置、平台为 `Darwin` 且 `brew` 存在时才探测 Homebrew LLVM；其他环境保持未设置 `CC/CXX`，交由 CMake/系统编译器选择，避免在 `set -euo pipefail` 下因缺少 `brew` 直接退出
   - 当前 Linux/WSL 环境下已验证 `./scripts/build_debug.sh`、`./scripts/build_release.sh`、`./scripts/build_test.sh` 均可完成构建

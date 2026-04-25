@@ -135,10 +135,10 @@ void Compiler::hoist_vars_scan_stmt(const StmtNode& stmt) {
         const auto& fdecl = std::get<FunctionDeclaration>(stmt.v);
         uint16_t idx = add_name(fdecl.name);
         bool found = false;
-        for (uint16_t vi : current_->var_decls) {
+        for (uint16_t vi : current_->function_decls) {
             if (vi == idx) { found = true; break; }
         }
-        if (!found) current_->var_decls.push_back(idx);
+        if (!found) current_->function_decls.push_back(idx);
     } else if (std::holds_alternative<BlockStatement>(stmt.v)) {
         hoist_vars_scan(std::get<BlockStatement>(stmt.v).body);
     } else if (std::holds_alternative<IfStatement>(stmt.v)) {

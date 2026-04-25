@@ -1,6 +1,10 @@
 #include "qppjs/runtime/environment.h"
 
 #include "qppjs/base/error.h"
+#include "qppjs/runtime/js_object.h"
+#include "qppjs/runtime/js_function.h"
+
+#include <unordered_set>
 
 namespace qppjs {
 
@@ -17,13 +21,13 @@ Environment::Environment(std::shared_ptr<Environment> outer) : outer_(std::move(
 void Environment::define(const std::string& name, VarKind kind) {
     switch (kind) {
     case VarKind::Var:
-        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined()), true, true});
+        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined()), true, true, false});
         break;
     case VarKind::Let:
-        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined()), true, false});
+        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined()), true, false, false});
         break;
     case VarKind::Const:
-        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined()), false, false});
+        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined()), false, false, false});
         break;
     }
 }
@@ -32,11 +36,30 @@ void Environment::define_initialized(const std::string& name) {
     if (bindings_.count(name) != 0) {
         return;
     }
-    bindings_.emplace(name, Binding{MakeCell(Value::undefined()), true, true});
+    bindings_.emplace(name, Binding{MakeCell(Value::undefined()), true, true, false});
+}
+
+void Environment::define_function(const std::string& name) {
+    if (bindings_.count(name) != 0) {
+        return;
+    }
+    bindings_.emplace(name, Binding{MakeCell(Value::undefined()), true, true, true});
 }
 
 void Environment::define_binding(const std::string& name, const Binding& binding) {
     bindings_.insert_or_assign(name, binding);
+}
+
+std::shared_ptr<Environment> Environment::clone_for_closure(const std::optional<std::string>& excluded_name) const {
+    std::shared_ptr<Environment> cloned_outer = outer_ ? outer_->clone_for_closure(excluded_name) : nullptr;
+    auto cloned = std::make_shared<Environment>(std::move(cloned_outer));
+    for (const auto& [name, binding] : bindings_.entries()) {
+        if (excluded_name.has_value() && name == *excluded_name) {
+            continue;
+        }
+        cloned->define_binding(name, binding);
+    }
+    return cloned;
 }
 
 Binding* Environment::lookup(const std::string& name) {
@@ -82,6 +105,50 @@ EvalResult Environment::initialize(const std::string& name, Value value) {
     b->initialized = true;
     b->cell->value = std::move(value);
     return EvalResult::ok(b->cell->value);
+}
+
+void Environment::clear_function_bindings() {
+    std::unordered_set<const Environment*> visited;
+    clear_function_bindings(visited);
+}
+
+void Environment::clear_function_bindings(std::unordered_set<const Environment*>& visited) {
+    if (visited.contains(this)) {
+        return;
+    }
+    std::shared_ptr<Environment> self = shared_from_this();
+    visited.insert(this);
+
+    for (Binding* binding : bindings_.binding_ptrs()) {
+        if (!binding->initialized || !binding->cell->value.is_object()) {
+            continue;
+        }
+        RcObject* raw = binding->cell->value.as_object_raw();
+        if (raw == nullptr) {
+            continue;
+        }
+        ObjectPtr keep_alive(raw);
+        if (raw->object_kind() == ObjectKind::kFunction) {
+            auto* function = static_cast<JSFunction*>(raw);
+            RcPtr<JSObject> prototype = function->prototype_obj();
+            std::shared_ptr<Environment> closure_env = function->closure_env();
+            if (closure_env) {
+                closure_env->clear_function_bindings(visited);
+            }
+            if (prototype) {
+                prototype->clear_function_properties();
+            }
+            binding->cell->value = Value::undefined();
+            continue;
+        }
+        if (raw->object_kind() == ObjectKind::kOrdinary) {
+            static_cast<JSObject*>(raw)->clear_function_properties();
+        }
+    }
+
+    if (outer_) {
+        outer_->clear_function_bindings(visited);
+    }
 }
 
 }  // namespace qppjs

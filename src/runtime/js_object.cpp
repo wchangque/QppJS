@@ -1,5 +1,9 @@
 #include "qppjs/runtime/js_object.h"
 
+#include "qppjs/runtime/js_function.h"
+
+#include <unordered_set>
+
 namespace qppjs {
 
 Value JSObject::get_property(const std::string& key) const {
@@ -39,6 +43,49 @@ void JSObject::set_constructor_property(RcObject* value) {
 bool JSObject::has_own_property(const std::string& key) const {
     return key == "constructor" ? has_constructor_property_ || index_map_.contains(key)
                                 : index_map_.contains(key);
+}
+
+void JSObject::clear_function_properties() {
+    std::unordered_set<const JSObject*> visited;
+    clear_function_properties(visited);
+}
+
+void JSObject::clear_function_properties(std::unordered_set<const JSObject*>& visited) {
+    if (visited.contains(this)) {
+        return;
+    }
+    visited.insert(this);
+
+    if (proto_) {
+        proto_->clear_function_properties(visited);
+    }
+
+    if (constructor_property_ != nullptr) {
+        constructor_property_ = nullptr;
+    }
+
+    for (auto& property : properties_) {
+        if (!property.value.is_object()) {
+            continue;
+        }
+        RcObject* raw = property.value.as_object_raw();
+        if (raw == nullptr) {
+            continue;
+        }
+        ObjectPtr keep_alive(raw);
+        if (raw->object_kind() == ObjectKind::kFunction) {
+            auto* function = static_cast<JSFunction*>(raw);
+            RcPtr<JSObject> prototype = function->prototype_obj();
+            if (prototype) {
+                prototype->clear_function_properties(visited);
+            }
+            property.value = Value::undefined();
+            continue;
+        }
+        if (raw->object_kind() == ObjectKind::kOrdinary) {
+            static_cast<JSObject*>(raw)->clear_function_properties(visited);
+        }
+    }
 }
 
 }  // namespace qppjs

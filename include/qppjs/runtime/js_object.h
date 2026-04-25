@@ -5,6 +5,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace qppjs {
@@ -21,6 +22,10 @@ public:
     // constructor_property_ is a raw (non-owning) pointer — weak reference semantics.
     void set_constructor_property(RcObject* value);
     bool has_own_property(const std::string& key) const;
+    void clear_function_properties();
+
+private:
+    void clear_function_properties(std::unordered_set<const JSObject*>& visited);
 
 private:
     RcPtr<JSObject> proto_;

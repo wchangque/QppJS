@@ -128,6 +128,12 @@ TEST(FunctionPrototypeTest, PrototypeConstructorEqualsFunction) {
     EXPECT_TRUE(r.value().as_bool());
 }
 
+TEST(FunctionPrototypeTest, NewFunctionKeepsPrototypeConstructorReachable) {
+    auto r = run("function F() {} let obj = new F(); obj.constructor === F");
+    ASSERT_TRUE(r.is_ok()) << r.error().message();
+    EXPECT_TRUE(r.value().as_bool());
+}
+
 // 不同函数有各自独立的 prototype 对象
 TEST(FunctionPrototypeTest, DifferentFunctionsHaveDifferentPrototypes) {
     auto r = run("function F() {} function G() {} F.prototype === G.prototype");

@@ -18,6 +18,7 @@ struct BytecodeFunction {
     std::vector<std::string> params;                            // parameter name list
     std::optional<std::string> name;                            // function name (debug)
     std::vector<uint16_t> var_decls;                            // names indices for var declarations
+    std::vector<uint16_t> function_decls;                       // names indices for function declarations
 };
 
 }  // namespace qppjs

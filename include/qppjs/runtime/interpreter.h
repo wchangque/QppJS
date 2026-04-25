@@ -30,6 +30,8 @@ public:
     EvalResult exec(const Program& program);
 
 private:
+    void init_runtime();
+
     // Statement execution
     StmtResult eval_stmt(const StmtNode& stmt);
     StmtResult eval_expression_stmt(const ExpressionStatement& stmt);
@@ -74,7 +76,8 @@ private:
 
     // Create a JSFunction value with eager prototype initialization.
     Value make_function_value(std::optional<std::string> name, std::vector<std::string> params,
-                              std::shared_ptr<std::vector<StmtNode>> body);
+                              std::shared_ptr<std::vector<StmtNode>> body,
+                              std::shared_ptr<Environment> closure_env);
 
     Value make_error_value(NativeErrorType type, const std::string& message);
 

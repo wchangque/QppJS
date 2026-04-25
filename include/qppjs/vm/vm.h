@@ -52,6 +52,8 @@ public:
 
 private:
     void init_global_env();
+    std::shared_ptr<Environment> clone_closure_env(const std::shared_ptr<Environment>& env,
+                                                   const std::optional<std::string>& excluded_name) const;
 
     // Main dispatch loop. Runs until call_stack_.size() == exit_depth.
     EvalResult run(size_t exit_depth = 0);

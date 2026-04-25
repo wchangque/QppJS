@@ -16,10 +16,10 @@
 - **P2-1**：VM catch 参数与 catch 体共享同一 scope，规范要求两层独立作用域
 - **P2-2**：VM `compile_labeled_stmt` 对非循环体的 labeled break 触发 `assert(false)`
 - **P3-1**：`JSString` 二次堆分配（`std::string` 成员），已知技术债务，Phase 9 优化
-- **P3-2**：循环引用（proto 链、closure env）导致内存泄漏，Phase 9 GC 解决
 
 ## 最近完成
 
+- [x] 函数/闭包/原型相关 ASAN/LSan 泄漏修复：Interpreter 与 VM 统一清理 closure env / 对象属性中的函数引用，分离 VM `function_decls` 与 `var_decls`，相关泄漏回归通过
 - [x] Phase 8.1：Error 子类（TypeError/ReferenceError/RangeError）+ instanceof — 完成（917/917，含 Review M1/M2/M3 修复）
 - [x] 构建脚本跨平台探测修复：无 brew 的 Linux/WSL 环境不再因 `brew --prefix llvm` 直接退出，3 个构建脚本验证通过
 

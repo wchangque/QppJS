@@ -230,6 +230,14 @@ void VM::init_global_env() {
     }
 }
 
+std::shared_ptr<Environment> VM::clone_closure_env(const std::shared_ptr<Environment>& env,
+                                                   const std::optional<std::string>& excluded_name) const {
+    if (!excluded_name.has_value() || env == nullptr) {
+        return env;
+    }
+    return env->clone_for_closure(excluded_name);
+}
+
 // ============================================================
 // exec (public entry)
 // ============================================================
@@ -242,6 +250,9 @@ EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
     for (uint16_t idx : bytecode->var_decls) {
         global_env_->define_initialized(bytecode->names[idx]);
     }
+    for (uint16_t idx : bytecode->function_decls) {
+        global_env_->define_function(bytecode->names[idx]);
+    }
 
     CallFrame frame;
     frame.bytecode = bytecode.get();
@@ -250,7 +261,10 @@ EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
     frame.this_val = Value::undefined();
 
     call_stack_.push_back(std::move(frame));
-    return run(0);
+    EvalResult result = run(0);
+    global_env_->clear_function_bindings();
+    object_prototype_->clear_function_properties();
+    return result;
 }
 
 // ============================================================
@@ -315,6 +329,9 @@ EvalResult VM::push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<V
     // Pre-define var_decls bindings
     for (uint16_t idx : bc->var_decls) {
         fn_env->define_initialized(bc->names[idx]);
+    }
+    for (uint16_t idx : bc->function_decls) {
+        fn_env->define_function(bc->names[idx]);
     }
 
     CallFrame frame;
@@ -696,7 +713,7 @@ EvalResult VM::run(size_t exit_depth) {
             fn->set_name(fn_bc->name);
             fn->set_params(fn_bc->params);
             fn->set_bytecode(fn_bc);
-            fn->set_closure_env(env);
+            fn->set_closure_env(clone_closure_env(env, fn_bc->name));
             auto proto_obj = RcPtr<JSObject>::make();
             proto_obj->set_proto(object_prototype_);
             proto_obj->set_constructor_property(fn.get());

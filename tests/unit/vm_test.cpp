@@ -310,6 +310,20 @@ TEST(VMFunc, NamedFunctionExpression) {
     EXPECT_EQ(v.as_number(), 6.0);
 }
 
+TEST(VMFunc, NamedFunctionExpressionShadowsOuterSameName) {
+    auto v = vm_ok("let g = 1; let f = function g() { return g; }; f() === f");
+    EXPECT_TRUE(v.as_bool());
+}
+
+TEST(VMFunc, ClosureSeesReassignedFunctionBinding) {
+    auto v = vm_ok(
+        "let g = function() { return 1; };"
+        "let f = function() { return g(); };"
+        "g = function() { return 2; };"
+        "f()");
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
 // ============================================================
 // Closures
 // ============================================================
