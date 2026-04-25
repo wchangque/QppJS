@@ -23,12 +23,16 @@ description: 编排 QppJS 的 agent team 完成一个具体语言特性或模块
 [并行] es-spec + quickjs-research
     → design-agent
     → perf-agent（方案审查）
+        ├─ 无 P0：直接进入实现
+        └─ 有 P0：design-agent（修订方案）→ perf-agent（确认审查）→ 进入实现
     → implementation-agent（首次实现）
     → testing-agent
     → [并行] review-agent（首次审查）+ perf-agent（代码审查）
     → implementation-agent（修复必修问题 + P0 性能问题）
     → review-agent（验证审查，仅确认修复）
 ```
+
+**全程自动执行，各阶段之间不停顿等待用户确认。**
 
 ---
 
@@ -45,7 +49,7 @@ description: 编排 QppJS 的 agent team 完成一个具体语言特性或模块
 | `/implement --skip review <topic>` | 完整流程，跳过 review | 快速迭代时使用 |
 | `/implement --skip perf <topic>` | 完整流程，跳过两次 perf-agent | 快速迭代时使用 |
 
-**解析后，向用户确认一句话：** "将从 [阶段] 开始，主题：[topic]。"
+**解析后，向用户输出一句话说明起始阶段和主题，然后立即自动执行，无需等待用户确认。**
 
 ---
 
@@ -95,11 +99,11 @@ description: 编排 QppJS 的 agent team 完成一个具体语言特性或模块
 请按你的固定输出格式，输出模块目标、边界、数据结构、关键流程、分阶段建议、风险项。
 ```
 
-拿到设计方案后，向用户展示关键部分（模块边界 + 核心数据结构 + 分阶段建议），询问是否有调整意见，再继续。
+拿到设计方案后，直接进入阶段 2.5，无需等待用户确认。
 
 ---
 
-## 阶段 2.5：方案性能审查
+## 阶段 2.5：方案性能审查（含设计修订循环）
 
 **触发条件：** 未使用 `--skip perf`，且未使用 `--from impl`（有设计方案产出）。
 
@@ -114,9 +118,37 @@ description: 编排 QppJS 的 agent team 完成一个具体语言特性或模块
 ```
 
 **处理规则：**
-- P0：必须在进入实现前解决，将问题反馈给用户，等待确认后再继续。
-- P1：在实现阶段的 prompt 中附带提醒，要求 implementation-agent 关注。
-- P2：记录到主会话上下文，收尾时提示用户。
+- **P0**：将问题交回 `design-agent`，要求针对 P0 问题修订方案；修订完成后再次启动 `perf-agent` 做确认审查（只确认 P0 问题是否解决，不开新问题）。确认通过后才进入阶段 3。整个修订-确认循环自动执行，无需用户介入。
+- **P1**：在实现阶段的 prompt 中附带提醒，要求 implementation-agent 关注。
+- **P2**：记录到主会话上下文，收尾时提示用户。
+
+**design-agent 修订 prompt 模板：**
+```
+主题：<topic>
+修订原因：方案性能审查发现 P0 问题，需要修订设计
+
+## 原设计方案
+<design-agent 上一轮输出>
+
+## P0 性能问题
+<perf-agent 报告的 P0 问题列表>
+
+请针对上述 P0 问题修订设计方案，输出完整的修订后方案。
+```
+
+**perf-agent 确认审查 prompt 模板：**
+```
+主题：<topic>
+审查模式：方案确认审查
+
+## 修订后设计方案摘要
+<design-agent 修订后输出的第 3 节、第 4 节、第 5 节>
+
+## 上轮 P0 问题
+<perf-agent 上轮报告的 P0 问题列表>
+
+请逐条确认 P0 问题是否已解决，输出"通过 / 有遗留"结论。不开新问题。
+```
 
 ---
 
