@@ -225,6 +225,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const FunctionExpression& n) { return n.range; },
                               [](const CallExpression& n) { return n.range; },
                               [](const NewExpression& n) { return n.range; },
+                              [](const ArrayExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -461,6 +462,33 @@ struct Parser {
                 return ParseResult<ExprNode>::Ok(ExprNode{FunctionExpression{
                         std::move(fn_name), std::move(params_result.value()),
                         std::move(body_ptr), span(fn_start, fn_end)}});
+            }
+            case TokenKind::LBracket: {
+                // 数组字面量 [elem0, elem1, ...]
+                uint32_t start = tok.range.offset;
+                std::vector<std::unique_ptr<ExprNode>> elements;
+                while (cur.kind != TokenKind::RBracket && cur.kind != TokenKind::Eof) {
+                    if (cur.kind == TokenKind::Comma) {
+                        // elision: 插入 undefined 占位
+                        elements.push_back(std::make_unique<ExprNode>(
+                            ExprNode{Identifier{"undefined", cur.range}}));
+                        advance();  // 消费 ,
+                    } else {
+                        auto elem = parse_expr(1);
+                        if (!elem.ok()) return elem;
+                        elements.push_back(std::make_unique<ExprNode>(std::move(elem.value())));
+                        if (cur.kind == TokenKind::Comma) {
+                            advance();  // 消费 ,
+                            // 尾随逗号：消耗后若是 ']' 则不追加元素，直接退出
+                        }
+                        // 不是逗号也不是 ']'：让外层检查报错
+                    }
+                }
+                auto rb = expect(TokenKind::RBracket);
+                if (!rb.ok()) return ParseResult<ExprNode>::Err(rb.error());
+                uint32_t end = range_end(rb.value().range);
+                return ParseResult<ExprNode>::Ok(
+                    ExprNode{ArrayExpression{std::move(elements), span(start, end)}});
             }
             case TokenKind::LBrace: {
                 // 对象字面量 { key: value, ... }

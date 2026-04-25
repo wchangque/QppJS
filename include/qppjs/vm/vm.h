@@ -62,6 +62,10 @@ private:
     EvalResult push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<Value> args,
                                bool is_new = false, Value new_instance = Value::undefined());
 
+    // Call a JS or native function value from within a NativeFn (e.g., forEach callback).
+    // Runs synchronously by entering a nested run() loop.
+    EvalResult call_function_val(Value fn_val, Value this_val, std::span<Value> args);
+
     static bool to_boolean(const Value& v);
     static EvalResult to_number(const Value& v);
     static std::string to_string_val(const Value& v);
@@ -75,6 +79,7 @@ private:
     static constexpr int kMaxCallDepth = 500;
 
     RcPtr<JSObject> object_prototype_;
+    RcPtr<JSObject> array_prototype_;
     std::shared_ptr<Environment> global_env_;
 
     // Error prototype cache: indexed by NativeErrorType

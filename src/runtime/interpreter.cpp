@@ -14,6 +14,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
+#include <iostream>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -156,7 +157,7 @@ void Interpreter::init_runtime() {
     error_fn->set_name(std::string("Error"));
     error_fn->set_prototype_obj(error_proto);
     error_proto->set_constructor_property(error_fn.get());
-    error_fn->set_native_fn([this](std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
+    error_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
         std::string msg = args.empty() ? "" : to_string_val(args[0]);
         return EvalResult::ok(make_error_value(NativeErrorType::kError, msg));
     });
@@ -186,13 +187,109 @@ void Interpreter::init_runtime() {
         sub_fn->set_prototype_obj(sub_proto);
         sub_proto->set_constructor_property(sub_fn.get());
         NativeErrorType captured_type = spec.type;
-        sub_fn->set_native_fn([this, captured_type](std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
+        sub_fn->set_native_fn([this, captured_type](Value /*this_val*/, std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
             std::string msg = args.empty() ? "" : to_string_val(args[0]);
             return EvalResult::ok(make_error_value(captured_type, msg));
         });
         global_env_->define_initialized(spec.name);
         global_env_->set(spec.name, Value::object(ObjectPtr(sub_fn)));
     }
+
+    // Build console.log
+    auto log_fn = RcPtr<JSFunction>::make();
+    log_fn->set_name(std::string("log"));
+    log_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool is_new_call) -> EvalResult {
+        if (is_new_call) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: console.log is not a constructor"});
+        }
+        std::string result;
+        for (size_t i = 0; i < args.size(); ++i) {
+            if (i > 0) result += " ";
+            result += Interpreter::to_string_val(args[i]);
+        }
+        std::cout << result << "\n";
+        return EvalResult::ok(Value::undefined());
+    });
+
+    // Build console object
+    auto console_obj = RcPtr<JSObject>::make();
+    console_obj->set_proto(object_prototype_);
+    console_obj->set_property("log", Value::object(ObjectPtr(log_fn)));
+    global_env_->define("console", VarKind::Const);
+    global_env_->initialize("console", Value::object(ObjectPtr(console_obj)));
+
+    // Build Array.prototype
+    array_prototype_ = RcPtr<JSObject>::make();
+    array_prototype_->set_proto(object_prototype_);
+
+    // Array.prototype.push
+    auto push_fn = RcPtr<JSFunction>::make();
+    push_fn->set_name(std::string("push"));
+    push_fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: push called on non-array"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        for (auto& arg : args) {
+            if (arr->array_length_ == UINT32_MAX) {
+                return EvalResult::err(Error{ErrorKind::Runtime, "RangeError: Invalid array length"});
+            }
+            arr->elements_[arr->array_length_] = std::move(arg);
+            arr->array_length_++;
+        }
+        return EvalResult::ok(Value::number(static_cast<double>(arr->array_length_)));
+    });
+    array_prototype_->set_property("push", Value::object(ObjectPtr(push_fn)));
+
+    // Array.prototype.pop
+    auto pop_fn = RcPtr<JSFunction>::make();
+    pop_fn->set_name(std::string("pop"));
+    pop_fn->set_native_fn([](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: pop called on non-array"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        if (arr->array_length_ == 0) {
+            return EvalResult::ok(Value::undefined());
+        }
+        uint32_t last_idx = arr->array_length_ - 1;
+        Value last = Value::undefined();
+        auto it = arr->elements_.find(last_idx);
+        if (it != arr->elements_.end()) {
+            last = std::move(it->second);
+            arr->elements_.erase(it);
+        }
+        arr->array_length_ = last_idx;
+        return EvalResult::ok(std::move(last));
+    });
+    array_prototype_->set_property("pop", Value::object(ObjectPtr(pop_fn)));
+
+    // Array.prototype.forEach
+    auto foreach_fn = RcPtr<JSFunction>::make();
+    foreach_fn->set_name(std::string("forEach"));
+    foreach_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: forEach called on non-array"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        if (args.empty() || !args[0].is_object()) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: callback is not a function"});
+        }
+        Value callback = args[0];
+        uint32_t len = arr->array_length_;
+        for (uint32_t i = 0; i < len; i++) {
+            auto elem_it = arr->elements_.find(i);
+            Value elem = elem_it != arr->elements_.end() ? elem_it->second : Value::undefined();
+            Value call_args[3] = {elem, Value::number(static_cast<double>(i)), this_val};
+            auto res = call_function_val(callback, Value::undefined(), {call_args, 3});
+            if (!res.is_ok()) return res;
+        }
+        return EvalResult::ok(Value::undefined());
+    });
+    array_prototype_->set_property("forEach", Value::object(ObjectPtr(foreach_fn)));
 }
 
 Interpreter::Interpreter() {
@@ -365,16 +462,19 @@ EvalResult Interpreter::exec(const Program& program) {
                 }
                 global_env_->clear_function_bindings();
                 object_prototype_->clear_function_properties();
+                if (array_prototype_) array_prototype_->clear_function_properties();
                 return EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
             }
             global_env_->clear_function_bindings();
             object_prototype_->clear_function_properties();
+            if (array_prototype_) array_prototype_->clear_function_properties();
             return EvalResult::err(result.error());
         }
         const Completion& c = result.completion();
         if (c.is_return()) {
             global_env_->clear_function_bindings();
             object_prototype_->clear_function_properties();
+            if (array_prototype_) array_prototype_->clear_function_properties();
             return EvalResult::ok(c.value);
         }
         if (c.is_throw()) {
@@ -390,11 +490,13 @@ EvalResult Interpreter::exec(const Program& program) {
                     std::string message = m.is_string() ? m.as_string() : "";
                     global_env_->clear_function_bindings();
                     object_prototype_->clear_function_properties();
+                    if (array_prototype_) array_prototype_->clear_function_properties();
                     return EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
                 }
             }
             global_env_->clear_function_bindings();
             object_prototype_->clear_function_properties();
+            if (array_prototype_) array_prototype_->clear_function_properties();
             return EvalResult::err(Error(ErrorKind::Runtime, to_string_val(thrown)));
         }
         if (c.is_normal()) {
@@ -403,6 +505,7 @@ EvalResult Interpreter::exec(const Program& program) {
     }
     global_env_->clear_function_bindings();
     object_prototype_->clear_function_properties();
+    if (array_prototype_) array_prototype_->clear_function_properties();
     return EvalResult::ok(last);
 }
 
@@ -585,8 +688,21 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const FunctionExpression& e) { return eval_function_expr(e); },
             [this](const CallExpression& e) { return eval_call_expr(e); },
             [this](const NewExpression& e) { return eval_new_expr(e); },
+            [this](const ArrayExpression& e) { return eval_array_expr(e); },
         },
         expr.v);
+}
+
+EvalResult Interpreter::eval_array_expr(const ArrayExpression& expr) {
+    auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+    arr->set_proto(array_prototype_);
+    for (const auto& elem_expr : expr.elements) {
+        auto v = eval_expr(*elem_expr);
+        if (!v.is_ok()) return v;
+        arr->elements_[arr->array_length_] = v.value();
+        arr->array_length_++;
+    }
+    return EvalResult::ok(Value::object(ObjectPtr(arr)));
 }
 
 EvalResult Interpreter::eval_identifier(const Identifier& expr) {
@@ -1140,7 +1256,7 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
         }
         return EvalResult::ok(Value::undefined());
     }
-    if (raw_obj->object_kind() != ObjectKind::kOrdinary) {
+    if (raw_obj->object_kind() != ObjectKind::kOrdinary && raw_obj->object_kind() != ObjectKind::kArray) {
         return EvalResult::ok(Value::undefined());
     }
     auto* js_obj = static_cast<JSObject*>(raw_obj);
@@ -1177,13 +1293,20 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
     }
 
     RcObject* raw_obj2 = obj_val.as_object_raw();
-    if (raw_obj2->object_kind() != ObjectKind::kOrdinary) {
+    if (raw_obj2->object_kind() != ObjectKind::kOrdinary && raw_obj2->object_kind() != ObjectKind::kArray) {
         pending_throw_ = make_error_value(NativeErrorType::kTypeError,
             "Cannot set properties of non-ordinary object");
         return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
     auto* js_obj = static_cast<JSObject*>(raw_obj2);
-    js_obj->set_property(key, val_result.value());
+    auto set_result = js_obj->set_property_ex(key, val_result.value());
+    if (!set_result.is_ok()) {
+        const std::string& msg = set_result.error().message();
+        NativeErrorType err_type = NativeErrorType::kRangeError;
+        if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+        pending_throw_ = make_error_value(err_type, strip_error_prefix(msg));
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
     return EvalResult::ok(val_result.value());
 }
 
@@ -1207,9 +1330,9 @@ Value Interpreter::make_function_value(std::optional<std::string> name, std::vec
 }
 
 StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
-                                      std::vector<Value> args) {
+                                      std::vector<Value> args, bool is_new_call) {
     if (fn->is_native()) {
-        auto r = fn->native_fn()(std::move(args), /*is_new_call=*/false);
+        auto r = fn->native_fn()(this_val, std::move(args), is_new_call);
         if (!r.is_ok()) {
             return StmtResult::err(r.error());
         }
@@ -1490,7 +1613,7 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
         RcObject* obj_ptr = this_val.as_object_raw();
-        if (obj_ptr->object_kind() == ObjectKind::kOrdinary) {
+        if (obj_ptr->object_kind() == ObjectKind::kOrdinary || obj_ptr->object_kind() == ObjectKind::kArray) {
             auto* js_obj = static_cast<JSObject*>(obj_ptr);
             callee_val = js_obj->get_property(key);
         } else if (obj_ptr->object_kind() == ObjectKind::kFunction) {
@@ -1541,6 +1664,26 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
     return EvalResult::ok(call_result.completion().value);
 }
 
+EvalResult Interpreter::call_function_val(Value fn_val, Value this_val, std::span<Value> args) {
+    if (!fn_val.is_object() || !fn_val.as_object_raw() ||
+        fn_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError, "value is not a function");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+    auto* fn_raw = static_cast<JSFunction*>(fn_val.as_object_raw());
+    auto fn = RcPtr<JSFunction>(fn_raw);
+    std::vector<Value> args_vec(args.begin(), args.end());
+    auto call_result = call_function(fn, std::move(this_val), std::move(args_vec));
+    if (!call_result.is_ok()) {
+        return EvalResult::err(call_result.error());
+    }
+    if (call_result.completion().is_throw()) {
+        pending_throw_ = call_result.completion().value;
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+    return EvalResult::ok(call_result.completion().value);
+}
+
 EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
     if (call_depth_ >= kMaxCallDepth) {
         pending_throw_ = make_error_value(NativeErrorType::kRangeError,
@@ -1579,7 +1722,7 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
     }
 
     Value this_val = Value::object(ObjectPtr(new_obj));
-    auto call_result = call_function(fn, this_val, std::move(args));
+    auto call_result = call_function(fn, this_val, std::move(args), /*is_new_call=*/true);
     if (!call_result.is_ok()) {
         return EvalResult::err(call_result.error());
     }

@@ -6,7 +6,7 @@
 
 namespace qppjs {
 
-enum class ObjectKind { kOrdinary, kFunction };
+enum class ObjectKind { kOrdinary, kFunction, kArray };
 
 // Base class for all heap-allocated JS objects with non-atomic reference counting.
 // Subclasses must call RcObject(ObjectKind) in their constructor.

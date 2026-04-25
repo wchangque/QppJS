@@ -210,6 +210,12 @@ std::string dump_expr(const ExprNode& node, int indent) {
                                result += dump_expr(*arg, indent + 2);
                            }
                        },
+                       [&](const ArrayExpression& ae) {
+                           result = prefix + "ArrayExpression\n";
+                           for (const auto& elem : ae.elements) {
+                               result += dump_expr(*elem, indent + 1);
+                           }
+                       },
                },
                node.v);
 

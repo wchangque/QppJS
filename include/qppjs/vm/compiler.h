@@ -83,6 +83,7 @@ private:
     void compile_function_expr(const FunctionExpression& expr);
     void compile_call_expr(const CallExpression& expr);
     void compile_new_expr(const NewExpression& expr);
+    void compile_array_expr(const ArrayExpression& expr);
 
     // Emit helpers
     void emit(Opcode op);

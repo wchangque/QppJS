@@ -141,7 +141,7 @@ void Environment::clear_function_bindings(std::unordered_set<const Environment*>
             binding->cell->value = Value::undefined();
             continue;
         }
-        if (raw->object_kind() == ObjectKind::kOrdinary) {
+        if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
             static_cast<JSObject*>(raw)->clear_function_properties();
         }
     }

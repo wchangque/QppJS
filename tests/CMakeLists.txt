@@ -18,6 +18,8 @@ add_executable(qppjs_unit_tests
     unit/value_nanboxing_test.cpp
     unit/vm_error_test.cpp
     unit/interpreter_error_test.cpp
+    unit/console_test.cpp
+    unit/array_test.cpp
 )
 
 target_link_libraries(qppjs_unit_tests PRIVATE qppjs_core GTest::gtest_main)

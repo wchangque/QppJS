@@ -447,6 +447,7 @@ void Compiler::compile_expr(const ExprNode& expr) {
             [this](const FunctionExpression& e) { compile_function_expr(e); },
             [this](const CallExpression& e) { compile_call_expr(e); },
             [this](const NewExpression& e) { compile_new_expr(e); },
+            [this](const ArrayExpression& e) { compile_array_expr(e); },
         },
         expr.v);
 }
@@ -649,6 +650,28 @@ void Compiler::compile_new_expr(const NewExpression& expr) {
     }
     emit(Opcode::kNewCall);
     emit_u8(static_cast<uint8_t>(expr.arguments.size()));
+}
+
+void Compiler::compile_array_expr(const ArrayExpression& expr) {
+    // Emit NewArray to create an empty array, then push each element via push method.
+    // Strategy: NewArray, then for each element: dup arr, compile elem, call push(elem).
+    // Simpler: NewArray, then for each element: dup arr, elem_val, SetElem with numeric key.
+    // Even simpler: NewArray, then for each element at index i: dup arr, load i, elem, SetElem.
+    // But SetElem needs stack: [obj, val, key] — wait, kSetElem pops key/val/obj.
+    // Actually looking at compile_member_assign: obj is pushed first, then val, then key for SetElem.
+    // kSetElem stack order (from vm.cpp): key_val = pop, val = pop, obj_val = pop.
+    // So stack must be: [obj, val, key] from bottom to top.
+    emit(Opcode::kNewArray);
+    for (size_t i = 0; i < expr.elements.size(); ++i) {
+        emit(Opcode::kDup);               // dup arr
+        compile_expr(*expr.elements[i]);  // push element value
+        uint16_t idx_const = add_constant(Value::number(static_cast<double>(i)));
+        emit(Opcode::kLoadNumber);
+        emit_u16(idx_const);
+        emit(Opcode::kSetElem);           // arr[i] = elem; pops key/val/arr, pushes val
+        emit(Opcode::kPop);               // discard val, leave arr on stack
+    }
+    // stack: arr
 }
 
 // ============================================================

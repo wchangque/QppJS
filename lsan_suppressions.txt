@@ -1,0 +1,7 @@
+# macOS system library false positives triggered by std::cout / libxpc initialization
+leak:_fetchInitializingClassList
+leak:_libxpc_initializer
+leak:libSystem_initializer
+# macOS libsystem_c dtoa (floating-point to string) internal pool
+leak:__Balloc_D2A
+leak:__dtoa

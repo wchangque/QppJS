@@ -123,6 +123,12 @@ struct FunctionExpression {
     SourceRange range;
 };
 
+// 数组字面量 [elem0, elem1, ...]
+struct ArrayExpression {
+    std::vector<std::unique_ptr<ExprNode>> elements;
+    SourceRange range;
+};
+
 // 调用表达式 callee(args)
 struct CallExpression {
     std::unique_ptr<ExprNode> callee;
@@ -143,7 +149,7 @@ struct ExprNode {
     std::variant<NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, Identifier, UnaryExpression,
                  BinaryExpression, LogicalExpression, AssignmentExpression,
                  ObjectExpression, MemberExpression, MemberAssignmentExpression,
-                 FunctionExpression, CallExpression, NewExpression>
+                 FunctionExpression, CallExpression, NewExpression, ArrayExpression>
             v;
 
     ExprNode() = default;

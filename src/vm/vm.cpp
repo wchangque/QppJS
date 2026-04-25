@@ -14,6 +14,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
+#include <iostream>
 #include <limits>
 #include <span>
 #include <string>
@@ -190,7 +191,7 @@ void VM::init_global_env() {
     error_fn->set_name(std::string("Error"));
     error_fn->set_prototype_obj(error_proto);
     error_proto->set_constructor_property(error_fn.get());
-    error_fn->set_native_fn([this](std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
+    error_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
         std::string msg = args.empty() ? "" : value_to_message_string(args[0]);
         return EvalResult::ok(make_error_value(NativeErrorType::kError, msg));
     });
@@ -220,7 +221,7 @@ void VM::init_global_env() {
         sub_fn->set_prototype_obj(sub_proto);
         sub_proto->set_constructor_property(sub_fn.get());
         NativeErrorType captured_type = spec.type;
-        sub_fn->set_native_fn([this, captured_type](std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
+        sub_fn->set_native_fn([this, captured_type](Value /*this_val*/, std::vector<Value> args, bool /*is_new_call*/) -> EvalResult {
             std::string msg = args.empty() ? "" : value_to_message_string(args[0]);
             return EvalResult::ok(make_error_value(captured_type, msg));
         });
@@ -228,6 +229,103 @@ void VM::init_global_env() {
         global_env_->define(spec.name, VarKind::Const);
         global_env_->initialize(spec.name, Value::object(ObjectPtr(sub_fn)));
     }
+
+    // Build console.log
+    auto log_fn = RcPtr<JSFunction>::make();
+    log_fn->set_name(std::string("log"));
+    log_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool is_new_call) -> EvalResult {
+        if (is_new_call) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: console.log is not a constructor"});
+        }
+        std::string result;
+        for (size_t i = 0; i < args.size(); ++i) {
+            if (i > 0) result += " ";
+            result += VM::to_string_val(args[i]);
+        }
+        std::cout << result << "\n";
+        return EvalResult::ok(Value::undefined());
+    });
+
+    // Build console object
+    auto console_obj = RcPtr<JSObject>::make();
+    console_obj->set_proto(object_prototype_);
+    console_obj->set_property("log", Value::object(ObjectPtr(log_fn)));
+    global_env_->define("console", VarKind::Const);
+    global_env_->initialize("console", Value::object(ObjectPtr(console_obj)));
+
+    // Build Array.prototype
+    array_prototype_ = RcPtr<JSObject>::make();
+    array_prototype_->set_proto(object_prototype_);
+
+    // Array.prototype.push
+    auto push_fn = RcPtr<JSFunction>::make();
+    push_fn->set_name(std::string("push"));
+    push_fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: push called on non-array"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        for (auto& arg : args) {
+            if (arr->array_length_ == UINT32_MAX) {
+                return EvalResult::err(Error{ErrorKind::Runtime, "RangeError: Invalid array length"});
+            }
+            arr->elements_[arr->array_length_] = std::move(arg);
+            arr->array_length_++;
+        }
+        return EvalResult::ok(Value::number(static_cast<double>(arr->array_length_)));
+    });
+    array_prototype_->set_property("push", Value::object(ObjectPtr(push_fn)));
+
+    // Array.prototype.pop
+    auto pop_fn = RcPtr<JSFunction>::make();
+    pop_fn->set_name(std::string("pop"));
+    pop_fn->set_native_fn([](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: pop called on non-array"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        if (arr->array_length_ == 0) {
+            return EvalResult::ok(Value::undefined());
+        }
+        uint32_t last_idx = arr->array_length_ - 1;
+        Value last = Value::undefined();
+        auto it = arr->elements_.find(last_idx);
+        if (it != arr->elements_.end()) {
+            last = std::move(it->second);
+            arr->elements_.erase(it);
+        }
+        arr->array_length_ = last_idx;
+        return EvalResult::ok(std::move(last));
+    });
+    array_prototype_->set_property("pop", Value::object(ObjectPtr(pop_fn)));
+
+    // Array.prototype.forEach — captured VM* for call_function_val
+    auto foreach_fn = RcPtr<JSFunction>::make();
+    foreach_fn->set_name(std::string("forEach"));
+    foreach_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: forEach called on non-array"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        if (args.empty() || !args[0].is_object()) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: callback is not a function"});
+        }
+        Value callback = args[0];
+        uint32_t len = arr->array_length_;
+        for (uint32_t i = 0; i < len; i++) {
+            auto elem_it = arr->elements_.find(i);
+            Value elem = elem_it != arr->elements_.end() ? elem_it->second : Value::undefined();
+            Value call_args[3] = {elem, Value::number(static_cast<double>(i)), this_val};
+            std::span<Value> arg_span(call_args, 3);
+            auto res = call_function_val(callback, Value::undefined(), arg_span);
+            if (!res.is_ok()) return res;
+        }
+        return EvalResult::ok(Value::undefined());
+    });
+    array_prototype_->set_property("forEach", Value::object(ObjectPtr(foreach_fn)));
 }
 
 std::shared_ptr<Environment> VM::clone_closure_env(const std::shared_ptr<Environment>& env,
@@ -264,6 +362,7 @@ EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
     EvalResult result = run(0);
     global_env_->clear_function_bindings();
     object_prototype_->clear_function_properties();
+    if (array_prototype_) array_prototype_->clear_function_properties();
     return result;
 }
 
@@ -347,10 +446,26 @@ EvalResult VM::push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<V
 }
 
 // ============================================================
-// Helper: handle return from current frame
-// Returns true if run() should return (reached exit_depth).
-// On error, sets error_result.
+// call_function_val — call a JS/native function from within a NativeFn
 // ============================================================
+
+EvalResult VM::call_function_val(Value fn_val, Value this_val, std::span<Value> args) {
+    if (!fn_val.is_object() || !fn_val.as_object_raw() ||
+        fn_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
+        return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: value is not a function"));
+    }
+    auto* fn_raw = static_cast<JSFunction*>(fn_val.as_object_raw());
+    auto fn = RcPtr<JSFunction>(fn_raw);
+
+    if (fn->is_native()) {
+        return fn->native_fn()(this_val, std::vector<Value>(args.begin(), args.end()), false);
+    }
+
+    size_t exit_depth = call_stack_.size();
+    auto push_res = push_call_frame(fn, std::move(this_val), args);
+    if (!push_res.is_ok()) return push_res;
+    return run(exit_depth);
+}
 
 // ============================================================
 // Main dispatch loop
@@ -587,6 +702,13 @@ EvalResult VM::run(size_t exit_depth) {
             break;
         }
 
+        case Opcode::kNewArray: {
+            auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+            arr->set_proto(array_prototype_);
+            stack.push_back(Value::object(ObjectPtr(arr)));
+            break;
+        }
+
         case Opcode::kGetProp: {
             uint16_t idx = read_u16(bc, pc);
             const std::string& name = bc->names[idx];
@@ -613,7 +735,7 @@ EvalResult VM::run(size_t exit_depth) {
                 }
                 break;
             }
-            if (raw_obj->object_kind() != ObjectKind::kOrdinary) {
+            if (raw_obj->object_kind() != ObjectKind::kOrdinary && raw_obj->object_kind() != ObjectKind::kArray) {
                 stack.push_back(Value::undefined());
                 break;
             }
@@ -648,13 +770,20 @@ EvalResult VM::run(size_t exit_depth) {
                 stack.push_back(std::move(val));
                 break;
             }
-            if (raw_set->object_kind() != ObjectKind::kOrdinary) {
+            if (raw_set->object_kind() != ObjectKind::kOrdinary && raw_set->object_kind() != ObjectKind::kArray) {
                 frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
                     "Cannot set property '" + name + "' on non-JSObject");
                 continue;
             }
             auto* obj = static_cast<JSObject*>(raw_set);
-            obj->set_property(name, val);
+            auto set_ex_res = obj->set_property_ex(name, val);
+            if (!set_ex_res.is_ok()) {
+                const std::string& msg = set_ex_res.error().message();
+                NativeErrorType err_type = NativeErrorType::kRangeError;
+                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
             stack.push_back(std::move(val));
             break;
         }
@@ -670,7 +799,26 @@ EvalResult VM::run(size_t exit_depth) {
                 continue;
             }
             RcObject* raw_elem = obj_val.as_object_raw();
-            if (!raw_elem || raw_elem->object_kind() != ObjectKind::kOrdinary) {
+            if (!raw_elem) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot read element of non-JSObject");
+                continue;
+            }
+            if (raw_elem->object_kind() == ObjectKind::kArray) {
+                auto* arr = static_cast<JSObject*>(raw_elem);
+                if (key_val.is_number()) {
+                    double d = key_val.as_number();
+                    if (d >= 0.0 && d == std::floor(d) && d < static_cast<double>(UINT32_MAX)) {
+                        uint32_t idx = static_cast<uint32_t>(d);
+                        auto it = arr->elements_.find(idx);
+                        stack.push_back(it != arr->elements_.end() ? it->second : Value::undefined());
+                        break;
+                    }
+                }
+                stack.push_back(arr->get_property(to_string_val(key_val)));
+                break;
+            }
+            if (raw_elem->object_kind() != ObjectKind::kOrdinary) {
                 frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
                     "Cannot read element of non-JSObject");
                 continue;
@@ -693,7 +841,26 @@ EvalResult VM::run(size_t exit_depth) {
                 continue;
             }
             RcObject* raw_setelem = obj_val.as_object_raw();
-            if (!raw_setelem || raw_setelem->object_kind() != ObjectKind::kOrdinary) {
+            if (!raw_setelem) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot set element on non-JSObject");
+                continue;
+            }
+            if (raw_setelem->object_kind() == ObjectKind::kArray) {
+                auto* arr = static_cast<JSObject*>(raw_setelem);
+                std::string key_str = to_string_val(key_val);
+                auto set_ex_res = arr->set_property_ex(key_str, val);
+                if (!set_ex_res.is_ok()) {
+                    const std::string& msg = set_ex_res.error().message();
+                    NativeErrorType err_type = NativeErrorType::kRangeError;
+                    if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                    frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                    continue;
+                }
+                stack.push_back(std::move(val));
+                break;
+            }
+            if (raw_setelem->object_kind() != ObjectKind::kOrdinary) {
                 frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
                     "Cannot set element on non-JSObject");
                 continue;
@@ -757,7 +924,7 @@ EvalResult VM::run(size_t exit_depth) {
             }
             auto fn = RcPtr<JSFunction>(static_cast<JSFunction*>(call_raw));
             if (fn->is_native()) {
-                auto res = fn->native_fn()(std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/false);
+                auto res = fn->native_fn()(Value::undefined(), std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/false);
                 if (!res.is_ok()) {
                     const std::string& msg = res.error().message();
                     NativeErrorType err_type = NativeErrorType::kTypeError;
@@ -818,7 +985,7 @@ EvalResult VM::run(size_t exit_depth) {
             }
             auto fn = RcPtr<JSFunction>(static_cast<JSFunction*>(callm_raw));
             if (fn->is_native()) {
-                auto res = fn->native_fn()(std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/false);
+                auto res = fn->native_fn()(receiver, std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/false);
                 if (!res.is_ok()) {
                     const std::string& msg = res.error().message();
                     NativeErrorType err_type = NativeErrorType::kTypeError;
@@ -876,7 +1043,7 @@ EvalResult VM::run(size_t exit_depth) {
             }
             auto fn = RcPtr<JSFunction>(static_cast<JSFunction*>(ctor_raw));
             if (fn->is_native()) {
-                auto res = fn->native_fn()(std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/true);
+                auto res = fn->native_fn()(Value::undefined(), std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/true);
                 if (!res.is_ok()) {
                     const std::string& msg = res.error().message();
                     NativeErrorType err_type = NativeErrorType::kTypeError;

@@ -17,8 +17,8 @@ namespace qppjs {
 class JSObject;
 struct BytecodeFunction;
 
-// Native function signature: receives evaluated args; is_new_call is true when called via new.
-using NativeFn = std::function<EvalResult(std::vector<Value> args, bool is_new_call)>;
+// Native function signature: receives this_val, evaluated args; is_new_call is true when called via new.
+using NativeFn = std::function<EvalResult(Value this_val, std::vector<Value> args, bool is_new_call)>;
 
 class JSFunction : public RcObject {
 public:

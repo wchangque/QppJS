@@ -28,6 +28,7 @@ namespace qppjs {
     X(PopScope, 0)                      \
     /* Object properties */             \
     X(NewObject, 0)                     \
+    X(NewArray, 0)                      \
     X(GetProp, 2)                       \
     X(SetProp, 2)                       \
     X(GetElem, 0)                       \

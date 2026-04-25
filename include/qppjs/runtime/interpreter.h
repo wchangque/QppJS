@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -64,6 +65,7 @@ private:
     EvalResult eval_function_expr(const FunctionExpression& expr);
     EvalResult eval_call_expr(const CallExpression& expr);
     EvalResult eval_new_expr(const NewExpression& expr);
+    EvalResult eval_array_expr(const ArrayExpression& expr);
 
     // Type conversions (static)
     static bool to_boolean(const Value& v);
@@ -83,7 +85,11 @@ private:
 
     // Execute a function with given this_val and args.
     // Returns StmtResult so callers can distinguish explicit return from natural completion.
-    StmtResult call_function(RcPtr<JSFunction> fn, Value this_val, std::vector<Value> args);
+    StmtResult call_function(RcPtr<JSFunction> fn, Value this_val, std::vector<Value> args,
+                             bool is_new_call = false);
+
+    // Overload accepting span (used by forEach NativeFn to avoid heap allocation).
+    EvalResult call_function_val(Value fn_val, Value this_val, std::span<Value> args);
 
     // RAII scope switcher; optionally increments call_depth_ and restores on destruction.
     struct ScopeGuard {
@@ -103,6 +109,7 @@ private:
     std::shared_ptr<Environment> var_env_;  // current function-level var scope
     Value current_this_;                    // current this binding
     RcPtr<JSObject> object_prototype_;  // global Object.prototype
+    RcPtr<JSObject> array_prototype_;   // Array.prototype
     int call_depth_ = 0;
     static constexpr int kMaxCallDepth = 500;
 

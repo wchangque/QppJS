@@ -41,6 +41,10 @@ fi
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
     export ASAN_OPTIONS="${ASAN_OPTIONS:-}detect_leaks=1"
+    SUPP_FILE="${ROOT_DIR}/lsan_suppressions.txt"
+    if [[ -f "$SUPP_FILE" ]]; then
+        export LSAN_OPTIONS="${LSAN_OPTIONS:-}suppressions=${SUPP_FILE}"
+    fi
 fi
 
 ctest "${CTEST_ARGS[@]}"
