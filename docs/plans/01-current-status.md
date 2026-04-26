@@ -6,20 +6,25 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | Phase 8 进行中（8.1～8.7 已完成，所有 P2 遗留问题修复） |
-| 测试计数 | 1219/1219 通过（coverage）；run_ut 4 个 LSan 泄露（P3-2 遗留） |
+| 当前阶段 | Phase 9 完成（GC Review M1/M2 修复） |
+| 测试计数 | 1312/1312 通过（coverage）；run_ut 1306/1306 通过，0 个 LSan 泄露 |
 | 最近更新 | 2026-04-26 |
-| 下一步 | Phase 9 — GC / 性能优化 或 Phase 8 收尾验证 |
+| 下一步 | Phase 10（待定） |
 
 ## 已知遗留问题
 
 - ~~**P2-1**：已在 8.6 修复~~
 - ~~**P2-2**：已在 8.7 修复~~
-- **P3-1**：`JSString` 二次堆分配（`std::string` 成员），已知技术债务，Phase 9 优化
-- **P3-2**：闭包循环引用（`Environment ↔ Cell ↔ JSFunction`），4 个解释器层用例 LSan 失败；根因是 `shared_ptr` 环，引用计数无法打断，需要标记清除 GC（Phase 9）才能根本解决
+- **P3-1**：`JSString` 二次堆分配（`std::string` 成员），已知技术债务，Phase 10 优化
+- ~~**P3-2**：已在 Phase 9.1-9.5 通过 mark-sweep GC 修复~~
 
 ## 最近完成
 
+- [x] Phase 9 GC Review M1/M2 修复：`GcHeap::Collect()` Phase 1 同时重置 roots 的 `gc_mark_`（修复长期根对象第二次 exec 后子对象被误回收的 UAF）；interpreter.cpp 和 vm.cpp 中 Object.keys/Object.create/Object() 构造器的 native lambda 内新分配的 JSObject 补加 `gc_heap_.Register()`（vm.cpp create_fn 同步改为 `[this]` 捕获）；追加 4 个测试（M1/M2 各 Interp+VM 对称）。1312/1312 通过，run_ut 1306/1306 通过，0 个 LSan 泄露。
+- [x] Phase 9.1-9.5 Testing Agent 边界补测：在 `tests/unit/gc_heap_test.cpp` 追加 28 个测试（14 组 Interp+VM 对称）。新增覆盖：对象自环/二元环 GC 回收、exec() 返回值作为 GC 根不被误回收、throw 路径 GC 不崩溃、try/catch 捕获对象 GC 后可访问、数组持有函数 GC 后可调用、闭包捕获数组 GC 后可访问、named function expression 递归 GC 后正确、bound function 作为构造器 GC 后实例属性正确、大量短生命周期对象不积累内存、原型链 GC 后 instanceof 正确、多次 exec() 调用 GcHeap 状态不残留、空程序 GC 不崩溃、三重闭包循环 kGcSentinel no-op 不 double-free。1308/1308 通过，run_ut 1306/1306 通过，0 个 LSan 泄露。
+- [x] Phase 9.1-9.5：mark-sweep GC 实现 + P3-2 修复。新增 `GcHeap`（gc_heap.h/cpp），三阶段 mark-sweep（reset → mark from roots → sweep）；RcObject 添加 `gc_mark_`、`gc_heap_` 指针、`set_gc_sentinel()`、纯虚 `TraceRefs` 和 `ClearRefs`；JSObject/JSFunction/Environment 各自实现 TraceRefs（遍历子对象）和 ClearRefs（正常 release RcPtr 成员，kGcSentinel 确保 GC 对象 release 是 no-op）；JSFunction 新增 `is_bound_` 字段及 accessor，bind lambda 从显式字段读取（替代 lambda 捕获，解决 GC 无法追踪 lambda 捕获的问题）；Interpreter 和 VM 各自注册执行期间创建的对象（fn_env、block_env、for_env、catch_env、JSFunction、JSObject），exec() 末尾先 GC（roots = 所有 interpreter 成员 + final_result）再 clear_function_bindings；新增 `tests/unit/gc_heap_test.cpp`（16 个测试）。1280/1280 通过，run_ut 1278/1278 通过，0 个 LSan 泄露（P3-2 根本修复）。
+- [x] Phase 9.0 测试补充（Testing Agent）：新增 `tests/unit/env_rc_lifecycle_test.cpp`，45 个测试覆盖 RcPtr<Environment> 引用计数正确性与生命周期安全：kPopScope 自我赋值修复回归（深度嵌套 block/for 循环）、闭包 outer_ 链不提前释放（工厂返回后读写、三层链不断裂）、多闭包共享 env 独立性、named function expression 自引用语义、try/catch/finally 各路径作用域弹出、break/continue/labeled-break 路径作用域弹出、函数调用帧恢复、TDZ 错误路径、压力测试（50 个闭包）。1264/1264 通过，run_ut 4 个 LSan 失败（P3-2 遗留，不增加）。
+- [x] Phase 9.0：Environment 从 shared_ptr 迁移到 RcPtr<Environment>（RcObject 体系）。追加 ObjectKind::kEnvironment；Environment 继承 RcObject；outer_/closure_env_ 等字段全部改为 RcPtr<Environment>；interpreter.h/cpp 和 vm.h/vm.cpp 同步迁移；修复 kPopScope 的自我赋值 SEGFAULT（先拷贝 outer 再赋值）。1219/1219 通过，run_ut 4 个 LSan 失败（P3-2 遗留，不增加）。
 - [x] Phase 8.6/8.7：VM catch 作用域修复（P2-1）+ VM labeled break 修复（P2-2）。compile_try_stmt 两处 catch 分支改用 compile_block_stmt（外层 scope 绑定 catch 参数，内层 scope 由 compile_block_stmt 按需创建）；compile_labeled_stmt else 分支注册到 loop_env_stack_，支持 labeled block break。新增 6 个测试，1219/1219 通过。
 - [x] Phase 8.5 审查修复（M1/M2/S1）：bind 生成函数用作构造器时正确忽略 bound_this、创建新实例（Interpreter 和 VM 两侧对称）；apply array-like 分支对负数/NaN/Infinity length 做 ToLength 语义校验（视为 0，>65535 抛 RangeError）；链式 bind name 优先读 own_properties_["name"] 修复 "bound bound foo"。新增 10 个测试（Interp 5 + VM 5），1213/1213 通过。
 - [x] Phase 8.5：Function 内建方法 — `Function.prototype.call`、`apply`、`bind`，Interpreter 和 VM 两侧对称。新增 `function_prototype_` 成员（JSObject），注册 call/apply/bind；eval_member_expr/kGetProp 的 kFunction 分支加 function_prototype_ 二次查找；bind 用 native_fn_ lambda 封装（捕获 target/bound_this/bound_args），支持二次 bind；apply 支持 kArray 和 array-like（kOrdinary + length 属性）展开；exec/run 清理路径同步添加 function_prototype_ 清理。新增 32 个测试（16 Interp + 16 VM），1171/1171 通过。
@@ -50,7 +55,7 @@
 
 ## 未开始
 
-- Phase 9（GC / 性能优化）尚未启动
+- Phase 10（待定）
 
 ## 阻塞
 

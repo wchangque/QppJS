@@ -3,6 +3,7 @@
 #include "qppjs/frontend/ast.h"
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/environment.h"
+#include "qppjs/runtime/gc_heap.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/native_errors.h"
@@ -79,7 +80,7 @@ private:
     // Create a JSFunction value with eager prototype initialization.
     Value make_function_value(std::optional<std::string> name, std::vector<std::string> params,
                               std::shared_ptr<std::vector<StmtNode>> body,
-                              std::shared_ptr<Environment> closure_env,
+                              RcPtr<Environment> closure_env,
                               bool is_named_expr = false);
 
     Value make_error_value(NativeErrorType type, const std::string& message);
@@ -95,19 +96,21 @@ private:
     // RAII scope switcher; optionally increments call_depth_ and restores on destruction.
     struct ScopeGuard {
         Interpreter& interp;
-        std::shared_ptr<Environment> saved_env;
-        std::shared_ptr<Environment> saved_var_env;
+        RcPtr<Environment> saved_env;
+        RcPtr<Environment> saved_var_env;
         Value saved_this;
         bool owns_call_depth;
-        ScopeGuard(Interpreter& i, std::shared_ptr<Environment> new_env,
-                   std::shared_ptr<Environment> new_var_env, Value new_this,
+        ScopeGuard(Interpreter& i, RcPtr<Environment> new_env,
+                   RcPtr<Environment> new_var_env, Value new_this,
                    bool is_call = false);
         ~ScopeGuard();
     };
 
-    std::shared_ptr<Environment> global_env_;
-    std::shared_ptr<Environment> current_env_;
-    std::shared_ptr<Environment> var_env_;  // current function-level var scope
+    GcHeap gc_heap_;
+
+    RcPtr<Environment> global_env_;
+    RcPtr<Environment> current_env_;
+    RcPtr<Environment> var_env_;  // current function-level var scope
     Value current_this_;                    // current this binding
     RcPtr<JSObject> object_prototype_;   // global Object.prototype
     RcPtr<JSObject> array_prototype_;    // Array.prototype

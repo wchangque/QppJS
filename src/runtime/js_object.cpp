@@ -1,5 +1,6 @@
 #include "qppjs/runtime/js_object.h"
 
+#include "qppjs/runtime/gc_heap.h"
 #include "qppjs/runtime/js_function.h"
 
 #include <cmath>
@@ -7,6 +8,28 @@
 #include <unordered_set>
 
 namespace qppjs {
+
+void JSObject::TraceRefs(GcHeap& heap) {
+    if (proto_) heap.MarkPending(proto_.get());
+    for (const auto& entry : properties_) {
+        if (entry.value.is_object()) heap.MarkPending(entry.value.as_object_raw());
+    }
+    for (const auto& [idx, val] : elements_) {
+        if (val.is_object()) heap.MarkPending(val.as_object_raw());
+    }
+    // constructor_property_ is a raw weak ref; do not trace — kept alive by JSFunction::prototype_
+}
+
+void JSObject::ClearRefs() {
+    // Release normally: non-GC objects get their ref_count decremented;
+    // GC-swept objects have kGcSentinel so release() is a no-op.
+    proto_ = RcPtr<JSObject>();
+    properties_.clear();
+    index_map_.clear();
+    elements_.clear();
+    constructor_property_ = nullptr;
+    has_constructor_property_ = false;
+}
 
 // Returns true and sets idx if key is a valid canonical array index (uint32, no leading zeros,
 // value < 2^32 - 1).

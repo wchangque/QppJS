@@ -103,8 +103,8 @@ const Error& StmtResult::error() const { return std::get<Error>(data); }
 // ScopeGuard
 // ============================================================
 
-Interpreter::ScopeGuard::ScopeGuard(Interpreter& i, std::shared_ptr<Environment> new_env,
-                                     std::shared_ptr<Environment> new_var_env, Value new_this,
+Interpreter::ScopeGuard::ScopeGuard(Interpreter& i, RcPtr<Environment> new_env,
+                                     RcPtr<Environment> new_var_env, Value new_this,
                                      bool is_call)
     : interp(i), saved_env(i.current_env_), saved_var_env(i.var_env_),
       saved_this(i.current_this_), owns_call_depth(is_call) {
@@ -135,7 +135,7 @@ Value Interpreter::make_error_value(NativeErrorType type, const std::string& mes
 }
 
 void Interpreter::init_runtime() {
-    global_env_ = std::make_shared<Environment>(nullptr);
+    global_env_ = RcPtr<Environment>::make(RcPtr<Environment>());
     current_env_ = global_env_;
     var_env_ = global_env_;
     current_this_ = Value::undefined();
@@ -303,6 +303,7 @@ void Interpreter::init_runtime() {
         RcObject* raw = args[0].as_object_raw();
         if (raw->object_kind() == ObjectKind::kFunction) {
             auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+            gc_heap_.Register(arr.get());
             arr->set_proto(array_prototype_);
             arr->array_length_ = 0;
             return EvalResult::ok(Value::object(ObjectPtr(arr)));
@@ -310,6 +311,7 @@ void Interpreter::init_runtime() {
         auto* obj = static_cast<JSObject*>(raw);
         auto keys = obj->own_enumerable_string_keys();
         auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(arr.get());
         arr->set_proto(array_prototype_);
         for (size_t i = 0; i < keys.size(); ++i) {
             arr->elements_[static_cast<uint32_t>(i)] = Value::string(keys[i]);
@@ -375,6 +377,7 @@ void Interpreter::init_runtime() {
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
         auto new_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(new_obj.get());
         if (!proto_arg.is_null()) {
             RcObject* proto_raw = proto_arg.as_object_raw();
             ObjectKind kind = proto_raw->object_kind();
@@ -396,6 +399,7 @@ void Interpreter::init_runtime() {
         bool wrap = args.empty() || args[0].is_null() || args[0].is_undefined();
         if (wrap) {
             auto obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(obj.get());
             obj->set_proto(object_prototype_);
             return EvalResult::ok(Value::object(ObjectPtr(obj)));
         }
@@ -531,11 +535,13 @@ void Interpreter::init_runtime() {
         }
 
         auto new_fn = RcPtr<JSFunction>::make();
-        Value captured_target = this_val;
-        Value captured_this = bound_this;
-        std::vector<Value> captured_args = bound_args;
-        new_fn->set_native_fn([this, captured_target, captured_this, captured_args]
-                              (Value /*this_val*/, std::vector<Value> call_args, bool is_new_call) mutable -> EvalResult {
+        new_fn->set_bound(this_val, std::move(bound_this), std::move(bound_args));
+        JSFunction* self_raw = new_fn.get();
+        new_fn->set_native_fn([this, self_raw]
+                              (Value /*this_val*/, std::vector<Value> call_args, bool is_new_call) -> EvalResult {
+            const Value& captured_target = self_raw->bound_target();
+            const Value& captured_this = self_raw->bound_this_val();
+            const std::vector<Value>& captured_args = self_raw->bound_args();
             std::vector<Value> merged;
             merged.reserve(captured_args.size() + call_args.size());
             merged = captured_args;
@@ -546,6 +552,7 @@ void Interpreter::init_runtime() {
                 auto target_fn = RcPtr<JSFunction>(target_fn_raw);
                 RcPtr<JSObject> proto = target_fn->prototype_obj() ? target_fn->prototype_obj() : object_prototype_;
                 auto new_obj = RcPtr<JSObject>::make();
+                gc_heap_.Register(new_obj.get());
                 new_obj->set_proto(proto);
                 Value new_this = Value::object(ObjectPtr(new_obj));
                 auto call_result = call_function(target_fn, new_this, std::move(merged), /*is_new_call=*/true);
@@ -567,10 +574,15 @@ void Interpreter::init_runtime() {
         });
         new_fn->set_property("length", Value::number(bound_length));
         new_fn->set_property("name", Value::string("bound " + target_name));
+        gc_heap_.Register(new_fn.get());
 
         return EvalResult::ok(Value::object(ObjectPtr(new_fn)));
     });
     function_prototype_->set_property("bind", Value::object(ObjectPtr(bind_fn)));
+
+    // Register the global environment with GcHeap so user-created closures reachable
+    // from it are treated as roots and not swept.
+    gc_heap_.Register(global_env_.get());
 }
 
 Interpreter::Interpreter() {
@@ -720,6 +732,10 @@ EvalResult Interpreter::exec(const Program& program) {
     init_runtime();
     hoist_vars(program.body, *var_env_);
 
+    // Run the program, collecting the final result or error.
+    EvalResult final_result = EvalResult::ok(Value::undefined());
+    bool has_result = false;
+
     Value last = Value::undefined();
     for (const auto& stmt : program.body) {
         auto result = eval_stmt(stmt);
@@ -741,28 +757,18 @@ EvalResult Interpreter::exec(const Program& program) {
                         if (m.is_string()) message = m.as_string();
                     }
                 }
-                global_env_->clear_function_bindings();
-                object_prototype_->clear_function_properties();
-                if (array_prototype_) array_prototype_->clear_function_properties();
-                if (function_prototype_) function_prototype_->clear_function_properties();
-                if (object_constructor_) object_constructor_->clear_own_properties();
-                return EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
+                final_result = EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
+            } else {
+                final_result = EvalResult::err(result.error());
             }
-            global_env_->clear_function_bindings();
-            object_prototype_->clear_function_properties();
-            if (array_prototype_) array_prototype_->clear_function_properties();
-            if (function_prototype_) function_prototype_->clear_function_properties();
-            if (object_constructor_) object_constructor_->clear_own_properties();
-            return EvalResult::err(result.error());
+            has_result = true;
+            break;
         }
         const Completion& c = result.completion();
         if (c.is_return()) {
-            global_env_->clear_function_bindings();
-            object_prototype_->clear_function_properties();
-            if (array_prototype_) array_prototype_->clear_function_properties();
-            if (function_prototype_) function_prototype_->clear_function_properties();
-            if (object_constructor_) object_constructor_->clear_own_properties();
-            return EvalResult::ok(c.value);
+            final_result = EvalResult::ok(c.value);
+            has_result = true;
+            break;
         }
         if (c.is_throw()) {
             // Uncaught throw at top level → propagate as error
@@ -775,31 +781,55 @@ EvalResult Interpreter::exec(const Program& program) {
                     Value m = obj->get_property("message");
                     std::string name = n.is_string() ? n.as_string() : "Error";
                     std::string message = m.is_string() ? m.as_string() : "";
-                    global_env_->clear_function_bindings();
-                    object_prototype_->clear_function_properties();
-                    if (array_prototype_) array_prototype_->clear_function_properties();
-                    if (function_prototype_) function_prototype_->clear_function_properties();
-                    if (object_constructor_) object_constructor_->clear_own_properties();
-                    return EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
+                    final_result = EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
+                    has_result = true;
+                    break;
                 }
             }
-            global_env_->clear_function_bindings();
-            object_prototype_->clear_function_properties();
-            if (array_prototype_) array_prototype_->clear_function_properties();
-            if (function_prototype_) function_prototype_->clear_function_properties();
-            if (object_constructor_) object_constructor_->clear_own_properties();
-            return EvalResult::err(Error(ErrorKind::Runtime, to_string_val(thrown)));
+            final_result = EvalResult::err(Error(ErrorKind::Runtime, to_string_val(thrown)));
+            has_result = true;
+            break;
         }
         if (c.is_normal()) {
             last = c.value;
         }
     }
+    if (!has_result) {
+        final_result = EvalResult::ok(last);
+    }
+
+    // GC: collect unreachable objects (resolves P3-2 closure circular references).
+    // Run GC first (before clear_function_bindings) so that all reachable objects
+    // are correctly identified. Roots include all interpreter members and the result value.
+    {
+        std::vector<RcObject*> roots;
+        auto add_obj = [&](RcObject* p) { if (p) roots.push_back(p); };
+        auto add_val = [&](const Value& v) { if (v.is_object()) add_obj(v.as_object_raw()); };
+
+        add_obj(global_env_.get());
+        add_obj(current_env_.get());
+        add_obj(var_env_.get());
+        add_obj(object_prototype_.get());
+        add_obj(array_prototype_.get());
+        add_obj(function_prototype_.get());
+        add_obj(object_constructor_.get());
+        for (auto& ep : error_protos_) add_obj(ep.get());
+        add_val(current_this_);
+        if (pending_throw_.has_value()) add_val(*pending_throw_);
+        // Include the result value so it is not swept
+        if (final_result.is_ok()) add_val(final_result.value());
+
+        gc_heap_.Collect(roots);
+    }
+
+    // Cleanup: break remaining RC cycles from runtime objects.
     global_env_->clear_function_bindings();
     object_prototype_->clear_function_properties();
     if (array_prototype_) array_prototype_->clear_function_properties();
     if (function_prototype_) function_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
-    return EvalResult::ok(last);
+
+    return final_result;
 }
 
 // ---- Statement dispatch ----
@@ -882,7 +912,8 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
 }
 
 StmtResult Interpreter::eval_block_stmt(const BlockStatement& stmt) {
-    auto block_env = std::make_shared<Environment>(current_env_);
+    auto block_env = RcPtr<Environment>::make(current_env_);
+    gc_heap_.Register(block_env.get());
     ScopeGuard guard(*this, block_env, var_env_, current_this_);
 
     hoist_vars(stmt.body, *var_env_);
@@ -990,6 +1021,7 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
 
 EvalResult Interpreter::eval_array_expr(const ArrayExpression& expr) {
     auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+    gc_heap_.Register(arr.get());
     arr->set_proto(array_prototype_);
     for (const auto& elem_expr : expr.elements) {
         auto v = eval_expr(*elem_expr);
@@ -1507,6 +1539,7 @@ EvalResult Interpreter::eval_assignment(const AssignmentExpression& expr) {
 
 EvalResult Interpreter::eval_object_expr(const ObjectExpression& expr) {
     auto obj = RcPtr<JSObject>::make();
+    gc_heap_.Register(obj.get());
     obj->set_proto(object_prototype_);
     for (const auto& prop : expr.properties) {
         auto val = eval_expr(*prop.value);
@@ -1611,7 +1644,7 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
 
 Value Interpreter::make_function_value(std::optional<std::string> name, std::vector<std::string> params,
                                         std::shared_ptr<std::vector<StmtNode>> body,
-                                        std::shared_ptr<Environment> closure_env,
+                                        RcPtr<Environment> closure_env,
                                         bool is_named_expr) {
     auto fn = RcPtr<JSFunction>::make();
     fn->set_name(name);
@@ -1627,6 +1660,9 @@ Value Interpreter::make_function_value(std::optional<std::string> name, std::vec
     proto_obj->set_constructor_property(fn.get());
     fn->set_prototype_obj(proto_obj);
 
+    gc_heap_.Register(fn.get());
+    gc_heap_.Register(proto_obj.get());
+
     return fn_val;
 }
 
@@ -1640,8 +1676,9 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
         return StmtResult::ok(Completion::return_(r.value()));
     }
 
-    auto outer = fn->closure_env() ? fn->closure_env() : global_env_;
-    auto fn_env = std::make_shared<Environment>(outer);
+    RcPtr<Environment> outer = fn->closure_env() ? fn->closure_env() : global_env_;
+    auto fn_env = RcPtr<Environment>::make(outer);
+    gc_heap_.Register(fn_env.get());
     if (fn->is_named_expr() && fn->name().has_value()) {
         fn_env->define(fn->name().value(), VarKind::Const);
         auto init_result = fn_env->initialize(fn->name().value(), Value::object(ObjectPtr(fn)));
@@ -1710,7 +1747,8 @@ StmtResult Interpreter::eval_throw_stmt(const ThrowStatement& stmt) {
 }
 
 StmtResult Interpreter::exec_catch(const CatchClause& handler, Value thrown_val) {
-    auto catch_env = std::make_shared<Environment>(current_env_);
+    auto catch_env = RcPtr<Environment>::make(current_env_);
+    gc_heap_.Register(catch_env.get());
     auto old_env = current_env_;
     current_env_ = catch_env;
 
@@ -1800,7 +1838,8 @@ StmtResult Interpreter::eval_labeled_stmt(const LabeledStatement& stmt) {
 StmtResult Interpreter::eval_for_stmt(const ForStatement& stmt,
                                        std::optional<std::string> label) {
     // Create outer scope for for-init variables
-    auto for_env = std::make_shared<Environment>(current_env_);
+    auto for_env = RcPtr<Environment>::make(current_env_);
+    gc_heap_.Register(for_env.get());
     auto old_env = current_env_;
     current_env_ = for_env;
 
@@ -2012,6 +2051,7 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
 
     // Create new object with [[Prototype]] = F.prototype
     auto new_obj = RcPtr<JSObject>::make();
+    gc_heap_.Register(new_obj.get());
     new_obj->set_proto(proto);
 
     std::vector<Value> args;

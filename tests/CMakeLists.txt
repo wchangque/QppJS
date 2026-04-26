@@ -22,6 +22,8 @@ add_executable(qppjs_unit_tests
     unit/array_test.cpp
     unit/object_builtin_test.cpp
     unit/function_builtin_test.cpp
+    unit/env_rc_lifecycle_test.cpp
+    unit/gc_heap_test.cpp
 )
 
 target_link_libraries(qppjs_unit_tests PRIVATE qppjs_core GTest::gtest_main)

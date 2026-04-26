@@ -1,6 +1,7 @@
 #pragma once
 
 #include "qppjs/runtime/completion.h"
+#include "qppjs/runtime/gc_heap.h"
 #include "qppjs/runtime/rc_object.h"
 #include "qppjs/runtime/value.h"
 
@@ -16,6 +17,9 @@ class JSObject : public RcObject {
 public:
     JSObject() : RcObject(ObjectKind::kOrdinary) {}
     explicit JSObject(ObjectKind kind) : RcObject(kind) {}
+
+    void TraceRefs(GcHeap& heap) override;
+    void ClearRefs() override;
 
     void set_proto(RcPtr<JSObject> proto) { proto_ = std::move(proto); }
     const RcPtr<JSObject>& proto() const { return proto_; }

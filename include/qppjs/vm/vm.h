@@ -2,6 +2,7 @@
 
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/environment.h"
+#include "qppjs/runtime/gc_heap.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/native_errors.h"
@@ -31,7 +32,7 @@ struct CallFrame {
     const BytecodeFunction* bytecode = nullptr;
     size_t pc = 0;
     std::vector<Value> stack;
-    std::shared_ptr<Environment> env;
+    RcPtr<Environment> env;
     Value this_val = Value::undefined();
     bool is_new_call = false;                  // true if created by NewCall
     Value new_instance = Value::undefined();   // the new instance (only valid if is_new_call)
@@ -70,6 +71,8 @@ private:
 
     Value make_error_value(NativeErrorType type, const std::string& message);
 
+    GcHeap gc_heap_;
+
     // deque: push_back does not invalidate references to existing elements
     std::deque<CallFrame> call_stack_;
     int call_depth_ = 0;
@@ -79,7 +82,7 @@ private:
     RcPtr<JSObject> array_prototype_;
     RcPtr<JSObject> function_prototype_; // Function.prototype (call/apply/bind)
     RcPtr<JSFunction> object_constructor_;  // global Object function
-    std::shared_ptr<Environment> global_env_;
+    RcPtr<Environment> global_env_;
 
     // Error prototype cache: indexed by NativeErrorType
     std::array<RcPtr<JSObject>, static_cast<size_t>(NativeErrorType::kCount)> error_protos_;

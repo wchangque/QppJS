@@ -156,7 +156,7 @@ bool VM::abstract_eq(const Value& a, const Value& b) {
 // ============================================================
 
 VM::VM() : object_prototype_(RcPtr<JSObject>::make()) {
-    global_env_ = std::make_shared<Environment>(nullptr);
+    global_env_ = RcPtr<Environment>::make(RcPtr<Environment>());
 }
 
 static std::string value_to_message_string(const Value& v) {
@@ -337,6 +337,7 @@ void VM::init_global_env() {
         RcObject* raw = args[0].as_object_raw();
         if (raw->object_kind() == ObjectKind::kFunction) {
             auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+            gc_heap_.Register(arr.get());
             arr->set_proto(array_prototype_);
             arr->array_length_ = 0;
             return EvalResult::ok(Value::object(ObjectPtr(arr)));
@@ -344,6 +345,7 @@ void VM::init_global_env() {
         auto* obj = static_cast<JSObject*>(raw);
         auto keys = obj->own_enumerable_string_keys();
         auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(arr.get());
         arr->set_proto(array_prototype_);
         for (size_t i = 0; i < keys.size(); ++i) {
             arr->elements_[static_cast<uint32_t>(i)] = Value::string(keys[i]);
@@ -388,7 +390,7 @@ void VM::init_global_env() {
     // Build Object.create
     auto create_fn = RcPtr<JSFunction>::make();
     create_fn->set_name(std::string("create"));
-    create_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+    create_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
         if (args.empty()) {
             return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: Object.create requires an argument"});
         }
@@ -398,6 +400,7 @@ void VM::init_global_env() {
                                         "TypeError: Object prototype may only be an Object or null"});
         }
         auto new_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(new_obj.get());
         if (!proto_arg.is_null()) {
             RcObject* proto_raw = proto_arg.as_object_raw();
             ObjectKind kind = proto_raw->object_kind();
@@ -418,6 +421,7 @@ void VM::init_global_env() {
         bool wrap = args.empty() || args[0].is_null() || args[0].is_undefined();
         if (wrap) {
             auto obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(obj.get());
             obj->set_proto(object_prototype_);
             return EvalResult::ok(Value::object(ObjectPtr(obj)));
         }
@@ -546,11 +550,13 @@ void VM::init_global_env() {
         }
 
         auto new_fn = RcPtr<JSFunction>::make();
-        Value captured_target = this_val;
-        Value captured_this = bound_this;
-        std::vector<Value> captured_args = bound_args;
-        new_fn->set_native_fn([this, captured_target, captured_this, captured_args]
-                              (Value /*this_val*/, std::vector<Value> call_args, bool is_new_call) mutable -> EvalResult {
+        new_fn->set_bound(this_val, std::move(bound_this), std::move(bound_args));
+        JSFunction* self_raw = new_fn.get();
+        new_fn->set_native_fn([this, self_raw]
+                              (Value /*this_val*/, std::vector<Value> call_args, bool is_new_call) -> EvalResult {
+            const Value& captured_target = self_raw->bound_target();
+            const Value& captured_this = self_raw->bound_this_val();
+            const std::vector<Value>& captured_args = self_raw->bound_args();
             std::vector<Value> merged;
             merged.reserve(captured_args.size() + call_args.size());
             merged = captured_args;
@@ -565,6 +571,7 @@ void VM::init_global_env() {
                                                   /*is_new_call=*/true);
                 }
                 auto instance = RcPtr<JSObject>::make();
+                gc_heap_.Register(instance.get());
                 const auto& proto_obj = target_fn->prototype_obj();
                 if (proto_obj) {
                     instance->set_proto(proto_obj);
@@ -585,10 +592,14 @@ void VM::init_global_env() {
         });
         new_fn->set_property("length", Value::number(bound_length));
         new_fn->set_property("name", Value::string("bound " + target_name));
+        gc_heap_.Register(new_fn.get());
 
         return EvalResult::ok(Value::object(ObjectPtr(new_fn)));
     });
     function_prototype_->set_property("bind", Value::object(ObjectPtr(bind_fn)));
+
+    // Register the global environment with GcHeap.
+    gc_heap_.Register(global_env_.get());
 }
 
 // ============================================================
@@ -596,7 +607,7 @@ void VM::init_global_env() {
 // ============================================================
 
 EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
-    global_env_ = std::make_shared<Environment>(nullptr);
+    global_env_ = RcPtr<Environment>::make(RcPtr<Environment>());
     init_global_env();
 
     // Pre-define var_decls for the top-level scope
@@ -615,11 +626,41 @@ EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
 
     call_stack_.push_back(std::move(frame));
     EvalResult result = run(0);
+
+    // GC: collect unreachable objects (resolves P3-2 closure circular references).
+    // Run GC before clear_function_bindings so all reachable objects are correctly identified.
+    {
+        std::vector<RcObject*> roots;
+        auto add_obj = [&](RcObject* p) { if (p) roots.push_back(p); };
+        auto add_val = [&](const Value& v) { if (v.is_object()) add_obj(v.as_object_raw()); };
+
+        add_obj(global_env_.get());
+        add_obj(object_prototype_.get());
+        add_obj(array_prototype_.get());
+        add_obj(function_prototype_.get());
+        add_obj(object_constructor_.get());
+        for (auto& ep : error_protos_) add_obj(ep.get());
+        // Include call stack frames
+        for (auto& cf : call_stack_) {
+            add_obj(cf.env.get());
+            add_val(cf.this_val);
+            add_val(cf.new_instance);
+            for (const auto& v : cf.stack) add_val(v);
+            if (cf.pending_throw.has_value()) add_val(*cf.pending_throw);
+            if (cf.caught_exception.has_value()) add_val(*cf.caught_exception);
+        }
+        // Include the result value
+        if (result.is_ok()) add_val(result.value());
+
+        gc_heap_.Collect(roots);
+    }
+
     global_env_->clear_function_bindings();
     object_prototype_->clear_function_properties();
     if (array_prototype_) array_prototype_->clear_function_properties();
     if (function_prototype_) function_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
+
     return result;
 }
 
@@ -663,8 +704,9 @@ EvalResult VM::push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<V
         return EvalResult::err(Error(ErrorKind::Runtime, "Internal: function has no bytecode"));
     }
 
-    auto outer = fn->closure_env() ? fn->closure_env() : global_env_;
-    auto fn_env = std::make_shared<Environment>(outer);
+    RcPtr<Environment> outer = fn->closure_env() ? fn->closure_env() : global_env_;
+    auto fn_env = RcPtr<Environment>::make(outer);
+    gc_heap_.Register(fn_env.get());
     if (fn->is_named_expr() && fn->name().has_value()) {
         fn_env->define(fn->name().value(), VarKind::Const);
         auto init_result = fn_env->initialize(fn->name().value(), Value::object(ObjectPtr(fn)));
@@ -745,7 +787,8 @@ EvalResult VM::run(size_t exit_depth) {
                 }
                 // Restore scope depth (pop extra scopes)
                 while (frame.scope_depth > handler.scope_depth) {
-                    frame.env = frame.env->outer();
+                    RcPtr<Environment> parent = frame.env->outer();
+                    frame.env = std::move(parent);
                     frame.scope_depth--;
                 }
                 frame.pc = handler.catch_target;
@@ -822,7 +865,7 @@ EvalResult VM::run(size_t exit_depth) {
 
         size_t& pc = frame.pc;
         std::vector<Value>& stack = frame.stack;
-        std::shared_ptr<Environment>& env = frame.env;
+        RcPtr<Environment>& env = frame.env;
 
         auto op = static_cast<Opcode>(read_u8(bc, pc));
 
@@ -940,20 +983,26 @@ EvalResult VM::run(size_t exit_depth) {
 
         // ---- Scope ----
 
-        case Opcode::kPushScope:
-            env = std::make_shared<Environment>(env);
+        case Opcode::kPushScope: {
+            auto new_env = RcPtr<Environment>::make(env);
+            gc_heap_.Register(new_env.get());
+            env = std::move(new_env);
             frame.scope_depth++;
             break;
+        }
 
-        case Opcode::kPopScope:
-            env = env->outer();
+        case Opcode::kPopScope: {
+            RcPtr<Environment> parent = env->outer();
+            env = std::move(parent);
             frame.scope_depth--;
             break;
+        }
 
         // ---- Object properties ----
 
         case Opcode::kNewObject: {
             auto obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(obj.get());
             obj->set_proto(object_prototype_);
             stack.push_back(Value::object(ObjectPtr(obj)));
             break;
@@ -961,6 +1010,7 @@ EvalResult VM::run(size_t exit_depth) {
 
         case Opcode::kNewArray: {
             auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+            gc_heap_.Register(arr.get());
             arr->set_proto(array_prototype_);
             stack.push_back(Value::object(ObjectPtr(arr)));
             break;
@@ -1150,6 +1200,8 @@ EvalResult VM::run(size_t exit_depth) {
             proto_obj->set_proto(object_prototype_);
             proto_obj->set_constructor_property(fn.get());
             fn->set_prototype_obj(proto_obj);
+            gc_heap_.Register(fn.get());
+            gc_heap_.Register(proto_obj.get());
             stack.push_back(Value::object(ObjectPtr(fn)));
             break;
         }
@@ -1323,6 +1375,7 @@ EvalResult VM::run(size_t exit_depth) {
 
             // Create instance
             auto instance = RcPtr<JSObject>::make();
+            gc_heap_.Register(instance.get());
             const auto& proto_obj = fn->prototype_obj();
             if (proto_obj) {
                 instance->set_proto(proto_obj);

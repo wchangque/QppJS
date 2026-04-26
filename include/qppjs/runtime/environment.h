@@ -2,6 +2,7 @@
 
 #include "qppjs/frontend/ast.h"
 #include "qppjs/runtime/completion.h"
+#include "qppjs/runtime/gc_heap.h"
 #include "qppjs/runtime/rc_object.h"
 #include "qppjs/runtime/value.h"
 
@@ -12,6 +13,8 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+// Note: <memory> is still needed for std::unique_ptr used in FlatBindingMap.
 
 namespace qppjs {
 
@@ -139,9 +142,12 @@ private:
     std::unique_ptr<std::unordered_map<std::string, Binding>> large_;
 };
 
-class Environment : public std::enable_shared_from_this<Environment> {
+class Environment : public RcObject {
 public:
-    explicit Environment(std::shared_ptr<Environment> outer);
+    explicit Environment(RcPtr<Environment> outer);
+
+    void TraceRefs(GcHeap& heap) override;
+    void ClearRefs() override;
 
     // Declare binding by VarKind:
     //   Var   -> initialized=true,  value=undefined, mutable=true
@@ -164,7 +170,7 @@ public:
     // Initialize a TDZ binding (called when let/const declaration executes).
     EvalResult initialize(const std::string& name, Value value);
 
-    std::shared_ptr<Environment> outer() const { return outer_; }
+    const RcPtr<Environment>& outer() const { return outer_; }
     const FlatBindingMap& bindings() const { return bindings_; }
     void clear_function_bindings();
 
@@ -173,7 +179,7 @@ private:
 
 private:
     FlatBindingMap bindings_;
-    std::shared_ptr<Environment> outer_;
+    RcPtr<Environment> outer_;
 };
 
 }  // namespace qppjs

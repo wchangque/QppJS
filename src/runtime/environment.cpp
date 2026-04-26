@@ -16,7 +16,30 @@ CellPtr MakeCell(Value value) {
 
 }  // namespace
 
-Environment::Environment(std::shared_ptr<Environment> outer) : outer_(std::move(outer)) {}
+Environment::Environment(RcPtr<Environment> outer)
+    : RcObject(ObjectKind::kEnvironment), outer_(std::move(outer)) {}
+
+void Environment::TraceRefs(GcHeap& heap) {
+    if (outer_) heap.MarkPending(outer_.get());
+    for (Binding* b : bindings_.binding_ptrs()) {
+        if (b->cell && b->cell->value.is_object()) {
+            RcObject* raw = b->cell->value.as_object_raw();
+            if (raw) heap.MarkPending(raw);
+        }
+    }
+}
+
+void Environment::ClearRefs() {
+    // Release outer_ normally: if outer_ is a non-GC object, its ref_count decrements
+    // correctly; if it's also being swept (kGcSentinel), release() is a no-op.
+    outer_ = RcPtr<Environment>();
+    // Clear all cell values that hold object references.
+    for (Binding* b : bindings_.binding_ptrs()) {
+        if (b->cell) {
+            b->cell->value = Value::undefined();
+        }
+    }
+}
 
 void Environment::define(const std::string& name, VarKind kind) {
     switch (kind) {
@@ -100,7 +123,7 @@ void Environment::clear_function_bindings(std::unordered_set<const Environment*>
     if (visited.contains(this)) {
         return;
     }
-    std::shared_ptr<Environment> self = shared_from_this();
+    RcPtr<Environment> self(this);
     visited.insert(this);
 
     for (Binding* binding : bindings_.binding_ptrs()) {
@@ -115,7 +138,7 @@ void Environment::clear_function_bindings(std::unordered_set<const Environment*>
         if (raw->object_kind() == ObjectKind::kFunction) {
             auto* function = static_cast<JSFunction*>(raw);
             RcPtr<JSObject> prototype = function->prototype_obj();
-            std::shared_ptr<Environment> closure_env = function->closure_env();
+            RcPtr<Environment> closure_env = function->closure_env();
             if (closure_env) {
                 closure_env->clear_function_bindings(visited);
             }
