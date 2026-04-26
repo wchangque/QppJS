@@ -5,6 +5,7 @@
 #include "qppjs/runtime/gc_heap.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
+#include "qppjs/runtime/module_loader.h"
 #include "qppjs/runtime/native_errors.h"
 #include "qppjs/runtime/rc_object.h"
 #include "qppjs/runtime/value.h"
@@ -12,15 +13,18 @@
 
 #include <array>
 #include <deque>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace qppjs {
 
 class JSObject;
 class JSFunction;
+class ModuleRecord;
 
 struct ExceptionHandler {
     size_t catch_target;  // bytecode absolute offset of the catch/finally handler
@@ -43,6 +47,9 @@ struct CallFrame {
     std::optional<Value> caught_exception;  // set by exception_handler for GetException to consume
     std::vector<size_t> finally_return_stack;  // gosub return address stack
     size_t scope_depth = 0;
+
+    // Phase 10.2: 当前模块（非拥有指针，仅模块顶层帧有效）
+    ModuleRecord* current_module = nullptr;
 };
 
 class VM {
@@ -51,10 +58,20 @@ public:
 
     EvalResult exec(std::shared_ptr<BytecodeFunction> bytecode);
 
+    // 执行入口模块文件（ESM）
+    EvalResult exec_module(const std::string& entry_path);
+
 private:
     void init_global_env();
     // Main dispatch loop. Runs until call_stack_.size() == exit_depth.
     EvalResult run(size_t exit_depth = 0);
+
+    // Module: Link 阶段（DFS）
+    EvalResult link_module(ModuleRecord& mod);
+    // Module: Evaluate 阶段（DFS）
+    EvalResult evaluate_module(ModuleRecord& mod);
+    // Module: 执行模块体（编译 + 运行）
+    EvalResult exec_module_body(ModuleRecord& mod);
 
     // Push a new CallFrame. Returns error if call depth exceeded.
     EvalResult push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<Value> args,
@@ -72,6 +89,7 @@ private:
     Value make_error_value(NativeErrorType type, const std::string& message);
 
     GcHeap gc_heap_;
+    ModuleLoader module_loader_;
 
     // deque: push_back does not invalidate references to existing elements
     std::deque<CallFrame> call_stack_;

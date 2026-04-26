@@ -6,10 +6,10 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | Phase 10.1 完成（import/export 语法节点与 Parser 扩展 + Testing Agent 边界补测 + Review M1/M2/M3 修复） |
-| 测试计数 | 1376/1376 通过（coverage） |
+| 当前阶段 | Phase 10.2 Review M1/M2/M3 修复完成（ESM live binding、TDZ、export default 具名函数绑定） |
+| 测试计数 | 1458/1458 通过（coverage + run_ut），0 LSan 泄漏 |
 | 最近更新 | 2026-04-26 |
-| 下一步 | Phase 10.2（ESM 运行时语义，待定） |
+| 下一步 | Phase 11（待定，可能是 P3-1 JSString 优化或更多内建对象） |
 
 ## 已知遗留问题
 
@@ -20,6 +20,9 @@
 
 ## 最近完成
 
+- [x] Phase 10.2 Review M1/M2/M3 修复：M1：`export { x as y }` live binding 修复（Load 阶段为 export_name 分配 Cell，Link 阶段以 local_name 为 key 注入 module_env，删除 exec_module_body 末尾快照逻辑，Interpreter + VM 两侧对称）；M2：`export let/const` TDZ 跨模块共享（Cell 增加 `initialized` 字段，`define_binding_with_cell` 增加 `initialized` 参数，`define_import_binding` 改为 `initialized=false`，`get()` 改为检查 `cell->initialized`，`initialize()` 同时设置两者；hoist 阶段为 var/function 标记 `cell->initialized=true`）；M3：`export default function foo(){}` 模块内 `foo` 绑定（AST `ExportDefaultDeclaration` 增加 `local_name` 字段，Parser 保留 fn_name，Interpreter hoist_module_vars 建立 foo Binding，执行时 set(foo, fn_val)；VM compiler emit kDup+kSetVar，exec_module_body 预定义 foo Binding）。新增 6 个测试（M36/M37/M38 各 Interp+VM 对称）。1458/1458 通过，0 LSan 泄漏。
+- [x] Phase 10.2 Testing Agent 边界补测：追加 42 个测试（21 组 Interp+VM 对称）。新增覆盖：export var live binding、export function 提升（同时修复 Interpreter 侧 hoist_module_vars 未对 export function 做提升的 bug）、模块执行顺序、同一模块被多个 importer 共享 Cell、相对路径 `../` 跨目录、裸模块说明符报错、模块作用域隔离（非导出 let/var 不泄漏）、错误缓存两次 import 同一失败模块、多条 import 语句从同一模块导入、循环依赖中 var 无 TDZ、副作用模块确实被执行、re-export 别名、re-export live binding（Cell 共享）、默认+具名导出共存（分两条 import）、多别名 export specifier、导入不存在的默认导出报 SyntaxError、导入不存在的 re-export 名报 SyntaxError、export let 无初始值为 undefined、非导出 var 隔离、模块缓存幂等性（三个 importer 读同一模块只执行一次）。1452/1452 通过，0 LSan 泄漏。
+- [x] Phase 10.2：ESM 模块系统实现。新增 `ModuleRecord`（继承 RcObject，kModule）、`ModuleLoader`（文件加载+缓存）；扩展 AST `ExportNamedDeclaration` 添加 `source` 字段（re-export）；Parser 支持 `export { v } from './a.js'`；扩展 Environment（`define_binding_with_cell`、`define_import_binding`）；Interpreter 和 VM 各自实现 Load/Link/Evaluate 三阶段；VM 新增 `kSetExportDefault` 指令；Compiler 修改 export function 提升逻辑；循环依赖、模块缓存、错误缓存、live binding、re-export、副作用导入全部实现。新增 36 个测试（18 Interp + 18 VM），1410/1410 通过，0 LSan 泄漏。
 - [x] Phase 10.1 Review M1/M2/M3 修复：M1：VM compiler 三个 no-op visitor 改为 emit kLoadString+kThrow，执行时产生运行时错误（与 interpreter stub 行为对齐）；M2：从 lexer kKeywords 移除 import/export（改为 contextual keyword），在 parse_stmt() 入口用文本比较识别，修复 `({ import: 1 }).import`/`obj.export` 等合法属性名解析失败；M3：labeled statement body 解析前将 is_top_level_ 置 false（先保存后恢复），修复 `label: import './m'` 被错误接受。新增 4 个测试（M2 回归 ×2 + M3 回归 ×2）。1375/1375 通过，0 回归。
 - [x] Phase 10.1 Testing Agent 边界补测：追加 39 个测试，覆盖 import/export 错误路径（缺少 `}`/`as`/`from`/specifier、非法 token）、合法边界（空 `{}`、尾随逗号、混合 alias、`from` 作为 local name、路径 specifier）、export 边界（`let`/`var` 形式、空 specifier 列表、`default` 表达式类型、具名函数含参数）、重复导出混合场景、`is_top_level_` 在 `if`/`while`/`for` non-block 语句体内的遗漏（修复 parser.cpp 三处）、ASI 行为、多语句顺序、contextual keyword 不污染普通标识符。1371/1371 通过，0 回归。
 - [x] Phase 10.1：import/export 语法节点与 Parser 扩展。新增 `KwImport`/`KwExport` token，扩展 `StmtNode` variant（`ImportDeclaration`、`ExportNamedDeclaration`、`ExportDefaultDeclaration`），Parser 实现全部 5 种 import 形式和 4 种 export 形式，`is_top_level_` 检查确保 import/export 只在顶层，重复导出名检查，`from`/`as`/`default` 作为 contextual keyword，interpreter/compiler 添加 stub。新增 20 个测试，1332/1332 通过，0 回归。
@@ -58,7 +61,7 @@
 
 ## 未开始
 
-- Phase 10（待定）
+- Phase 11（Promise / Async）
 
 ## 阻塞
 

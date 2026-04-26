@@ -1344,12 +1344,13 @@ struct Parser {
                 if (!body_result.ok()) return ParseResult<StmtNode>::Err(body_result.error());
                 uint32_t fn_end = range_end(body_result.value().second);
                 auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
+                std::optional<std::string> saved_fn_name = fn_name;
                 auto fe = FunctionExpression{std::move(fn_name), std::move(params_result.value()),
                                              std::move(body_ptr), span(fn_tok.range.offset, fn_end)};
                 auto expr_node = std::make_unique<ExprNode>(std::move(fe));
                 uint32_t decl_end = fn_end;
                 return ParseResult<StmtNode>::Ok(StmtNode{ExportDefaultDeclaration{
-                        std::move(expr_node), span(kw.range.offset, decl_end)}});
+                        std::move(expr_node), std::move(saved_fn_name), span(kw.range.offset, decl_end)}});
             }
             // export default expr
             auto expr = parse_expr(0);
@@ -1360,7 +1361,7 @@ struct Parser {
             if (end == semi.value().range.offset) end = range_end(expr_range(expr.value()));
             auto expr_node = std::make_unique<ExprNode>(std::move(expr.value()));
             return ParseResult<StmtNode>::Ok(StmtNode{ExportDefaultDeclaration{
-                    std::move(expr_node), span(kw.range.offset, end)}});
+                    std::move(expr_node), std::nullopt, span(kw.range.offset, end)}});
         }
 
         // export { x, y as z }
@@ -1395,12 +1396,23 @@ struct Parser {
             }
             auto rb = expect(TokenKind::RBrace);
             if (!rb.ok()) return ParseResult<StmtNode>::Err(rb.error());
+            // 可选 from 子句（re-export）
+            std::optional<std::string> re_source;
+            if (is_contextual_keyword("from")) {
+                advance();  // 消费 from
+                if (cur.kind != TokenKind::String) {
+                    return ParseResult<StmtNode>::Err(
+                            make_parse_error(source, cur, "expected module specifier string after 'from'"));
+                }
+                re_source = decode_string(token_text(cur));
+                advance();
+            }
             auto semi = consume_semicolon();
             if (!semi.ok()) return ParseResult<StmtNode>::Err(semi.error());
             uint32_t end = range_end(semi.value().range);
             if (end == semi.value().range.offset) end = range_end(rb.value().range);
             return ParseResult<StmtNode>::Ok(StmtNode{ExportNamedDeclaration{
-                    nullptr, std::move(specifiers), span(kw.range.offset, end)}});
+                    nullptr, std::move(specifiers), std::move(re_source), span(kw.range.offset, end)}});
         }
 
         // export const/let/var/function ...
@@ -1417,7 +1429,7 @@ struct Parser {
         auto decl_ptr = std::make_unique<StmtNode>(std::move(inner_result.value()));
         uint32_t end = range_end(stmt_range(*decl_ptr));
         return ParseResult<StmtNode>::Ok(StmtNode{ExportNamedDeclaration{
-                std::move(decl_ptr), {}, span(kw.range.offset, end)}});
+                std::move(decl_ptr), {}, std::nullopt, span(kw.range.offset, end)}});
     }
 
     ParseResult<StmtNode> parse_stmt() {

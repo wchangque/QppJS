@@ -6,6 +6,8 @@
 #include "qppjs/runtime/environment.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
+#include "qppjs/runtime/module_loader.h"
+#include "qppjs/runtime/module_record.h"
 #include "qppjs/runtime/native_errors.h"
 #include "qppjs/runtime/value.h"
 
@@ -14,6 +16,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <sstream>
@@ -726,6 +729,47 @@ void Interpreter::hoist_vars(const std::vector<StmtNode>& stmts, Environment& va
     }
 }
 
+void Interpreter::hoist_module_vars(const std::vector<StmtNode>& stmts, Environment& module_env) {
+    for (const auto& stmt : stmts) {
+        if (const auto* exp = std::get_if<ExportNamedDeclaration>(&stmt.v)) {
+            // export let/const/var/function：Binding 已由 Link 阶段建立，跳过
+            (void)exp;
+        } else if (const auto* def = std::get_if<ExportDefaultDeclaration>(&stmt.v)) {
+            // export default function foo() {}：在模块作用域建立 foo 的 var binding
+            if (def->local_name.has_value() && module_env.find_local(*def->local_name) == nullptr) {
+                module_env.define_function(*def->local_name);
+            }
+        } else if (std::holds_alternative<FunctionDeclaration>(stmt.v)) {
+            const auto& fd = std::get<FunctionDeclaration>(stmt.v);
+            Binding* b = module_env.find_local(fd.name);
+            if (b == nullptr) {
+                module_env.define_function(fd.name);
+            } else if (!b->cell->initialized) {
+                // Link 阶段为 export { fn } 建立的 Binding，函数声明提升后无 TDZ
+                b->initialized = true;
+                b->cell->initialized = true;
+            }
+        } else if (std::holds_alternative<VariableDeclaration>(stmt.v)) {
+            const auto& vd = std::get<VariableDeclaration>(stmt.v);
+            if (vd.kind == VarKind::Var) {
+                Binding* b = module_env.find_local(vd.name);
+                if (b == nullptr) {
+                    module_env.define_initialized(vd.name);
+                } else if (!b->initialized && !b->cell->initialized) {
+                    // Link 阶段建立的 Binding 是 TDZ，但 var 无 TDZ
+                    b->initialized = true;
+                    b->cell->initialized = true;
+                }
+            } else {
+                // let/const 非导出：需要在模块环境中建立 TDZ binding
+                if (module_env.find_local(vd.name) == nullptr) {
+                    module_env.define(vd.name, vd.kind);
+                }
+            }
+        }
+    }
+}
+
 // ---- exec ----
 
 EvalResult Interpreter::exec(const Program& program) {
@@ -851,13 +895,57 @@ StmtResult Interpreter::eval_stmt(const StmtNode& stmt) {
             [this](const LabeledStatement& s) { return eval_labeled_stmt(s); },
             [this](const ForStatement& s) { return eval_for_stmt(s); },
             [](const ImportDeclaration&) -> StmtResult {
-                return StmtResult::err(Error{ErrorKind::Syntax, "import not implemented"});
+                // Link 阶段已处理，执行时 no-op
+                return StmtResult::ok(Completion::normal(Value::undefined()));
             },
-            [](const ExportNamedDeclaration&) -> StmtResult {
-                return StmtResult::err(Error{ErrorKind::Syntax, "export not implemented"});
+            [this](const ExportNamedDeclaration& s) -> StmtResult {
+                if (s.source.has_value()) {
+                    // re-export：no-op（Link 阶段已将 Cell 共享）
+                    return StmtResult::ok(Completion::normal(Value::undefined()));
+                }
+                if (s.declaration) {
+                    if (const auto* vd = std::get_if<VariableDeclaration>(&s.declaration->v)) {
+                        if (vd->kind != VarKind::Var) {
+                            // export let/const：Binding 已由 Link 阶段建立（共享 Cell），
+                            // 跳过 define，直接执行初始化
+                            if (vd->init.has_value()) {
+                                auto init_result = eval_expr(vd->init.value());
+                                if (!init_result.is_ok()) return StmtResult::err(init_result.error());
+                                auto set_result = current_env_->initialize(vd->name, init_result.value());
+                                if (!set_result.is_ok()) return StmtResult::err(set_result.error());
+                            } else {
+                                // 无初始值：初始化为 undefined
+                                auto set_result = current_env_->initialize(vd->name, Value::undefined());
+                                if (!set_result.is_ok()) return StmtResult::err(set_result.error());
+                            }
+                            return StmtResult::ok(Completion::normal(Value::undefined()));
+                        }
+                    }
+                    // export var/function：正常执行声明
+                    return eval_stmt(*s.declaration);
+                }
+                // export { x, x as y }（无 source，无 declaration）
+                // no-op：模块体执行完毕后在 exec_module_body 中统一写入 Cell
+                return StmtResult::ok(Completion::normal(Value::undefined()));
             },
-            [](const ExportDefaultDeclaration&) -> StmtResult {
-                return StmtResult::err(Error{ErrorKind::Syntax, "export default not implemented"});
+            [this](const ExportDefaultDeclaration& s) -> StmtResult {
+                // 求值 expression，写入当前模块的 "default" Cell
+                auto val = eval_expr(*s.expression);
+                if (!val.is_ok()) return StmtResult::err(val.error());
+                // 通过 current_module_ 找到 "default" Cell 并写入
+                if (current_module_) {
+                    Cell* cell = current_module_->find_export("default");
+                    if (cell) {
+                        cell->value = val.value();
+                        cell->initialized = true;
+                    }
+                }
+                // export default function foo() {}：同时在模块作用域绑定 foo
+                if (s.local_name.has_value()) {
+                    auto set_result = current_env_->set(*s.local_name, val.value());
+                    if (!set_result.is_ok()) return StmtResult::err(set_result.error());
+                }
+                return StmtResult::ok(Completion::normal(Value::undefined()));
             },
         },
         stmt.v);
@@ -894,7 +982,10 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
         }
     } else {
         // let / const: create TDZ binding in current scope, then initialize
-        current_env_->define(decl.name, decl.kind);
+        // 若 Link 阶段已建立共享 Cell Binding（export let/const 或 export { x }），跳过 define
+        if (current_env_->find_local(decl.name) == nullptr) {
+            current_env_->define(decl.name, decl.kind);
+        }
         if (decl.init.has_value()) {
             const auto* fn_expr = std::get_if<FunctionExpression>(&decl.init->v);
             EvalResult init_result = fn_expr
@@ -2089,6 +2180,335 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
         return EvalResult::ok(c.value);
     }
     return EvalResult::ok(this_val);
+}
+
+// ============================================================
+// ESM 模块执行
+// ============================================================
+
+EvalResult Interpreter::exec_module(const std::string& entry_path) {
+    init_runtime();
+
+    std::string abs_path = std::filesystem::weakly_canonical(entry_path).string();
+    std::string base_dir = std::filesystem::path(abs_path).parent_path().string();
+
+    // Load 入口模块
+    auto load_result = module_loader_.Load(abs_path, base_dir);
+    if (!load_result.ok()) {
+        return EvalResult::err(load_result.error());
+    }
+    auto entry_mod = load_result.value();
+
+    // Link 阶段
+    auto link_result = link_module(*entry_mod);
+    if (!link_result.is_ok()) {
+        return link_result;
+    }
+
+    // Evaluate 阶段
+    auto eval_result = evaluate_module(*entry_mod);
+    if (!eval_result.is_ok()) {
+        return eval_result;
+    }
+
+    // 收集最终结果：入口模块的最后一个表达式值（通过 exec_module_body 的返回值）
+    // 已在 evaluate_module 中执行，返回 eval_result（模块执行结果）
+    EvalResult final_result = eval_result;
+
+    // GC
+    {
+        std::vector<RcObject*> roots;
+        auto add_obj = [&](RcObject* p) { if (p) roots.push_back(p); };
+        auto add_val = [&](const Value& v) { if (v.is_object()) add_obj(v.as_object_raw()); };
+
+        add_obj(global_env_.get());
+        add_obj(current_env_.get());
+        add_obj(var_env_.get());
+        add_obj(object_prototype_.get());
+        add_obj(array_prototype_.get());
+        add_obj(function_prototype_.get());
+        add_obj(object_constructor_.get());
+        for (auto& ep : error_protos_) add_obj(ep.get());
+        add_val(current_this_);
+        if (pending_throw_.has_value()) add_val(*pending_throw_);
+        if (final_result.is_ok()) add_val(final_result.value());
+        module_loader_.TraceRoots(gc_heap_);
+
+        gc_heap_.Collect(roots);
+    }
+
+    global_env_->clear_function_bindings();
+    object_prototype_->clear_function_properties();
+    if (array_prototype_) array_prototype_->clear_function_properties();
+    if (function_prototype_) function_prototype_->clear_function_properties();
+    if (object_constructor_) object_constructor_->clear_own_properties();
+    // 清理所有模块环境中的函数引用（打破 module_env ↔ JSFunction 循环引用）
+    module_loader_.ClearModuleEnvs();
+    module_loader_.Clear();
+
+    return final_result;
+}
+
+EvalResult Interpreter::link_module(ModuleRecord& mod) {
+    if (mod.status == ModuleStatus::kLinked ||
+        mod.status == ModuleStatus::kEvaluated ||
+        mod.status == ModuleStatus::kEvaluating) {
+        return EvalResult::ok(Value::undefined());
+    }
+    if (mod.status == ModuleStatus::kLinking) {
+        return EvalResult::ok(Value::undefined());  // 循环依赖，正常
+    }
+    mod.status = ModuleStatus::kLinking;
+
+    std::string base_dir = std::filesystem::path(mod.specifier).parent_path().string();
+
+    // 加载并 Link 所有依赖
+    for (const auto& dep_specifier : mod.requested_modules) {
+        auto load_result = module_loader_.Load(dep_specifier, base_dir);
+        if (!load_result.ok()) {
+            return EvalResult::err(load_result.error());
+        }
+        auto dep = load_result.value();
+        mod.dependencies.push_back(dep);
+        auto link_result = link_module(*dep);
+        if (!link_result.is_ok()) return link_result;
+    }
+
+    // 创建模块环境（outer = global_env_）
+    auto module_env = RcPtr<Environment>::make(global_env_);
+    gc_heap_.Register(module_env.get());
+    mod.module_env = module_env;
+
+    // 建立导出变量 Binding（共享 Cell）
+    for (const auto& stmt : mod.ast.body) {
+        if (const auto* exp = std::get_if<ExportNamedDeclaration>(&stmt.v)) {
+            if (exp->source.has_value()) continue;  // re-export，跳过
+            if (exp->declaration) {
+                std::string name;
+                bool is_mutable = true;
+                bool initialized = false;
+                if (const auto* vd = std::get_if<VariableDeclaration>(&exp->declaration->v)) {
+                    name = vd->name;
+                    is_mutable = (vd->kind != VarKind::Const);
+                    initialized = (vd->kind == VarKind::Var);  // var 无 TDZ
+                } else if (const auto* fd = std::get_if<FunctionDeclaration>(&exp->declaration->v)) {
+                    name = fd->name;
+                    is_mutable = true;
+                    initialized = true;  // function 声明提升，无 TDZ
+                }
+                if (!name.empty()) {
+                    Cell* cell = mod.find_export(name);
+                    if (cell) {
+                        cell->initialized = initialized;
+                        module_env->define_binding_with_cell(name, RcPtr<Cell>(cell), is_mutable, initialized);
+                    }
+                }
+            } else {
+                // export { x as y }（本地 specifiers，无 source）：live binding
+                // Load 阶段已为 local_name 预分配 Cell，并将 exports[export_name] 指向同一 Cell
+                // Link 阶段将 local_name 的 Cell 注入 module_env，建立共享 Binding
+                for (const auto& spec : exp->specifiers) {
+                    Cell* cell = mod.find_export(spec.export_name);
+                    if (cell) {
+                        module_env->define_binding_with_cell(spec.local_name, RcPtr<Cell>(cell), true, false);
+                    }
+                }
+            }
+        }
+    }
+
+    // 建立 import Binding
+    for (const auto& stmt : mod.ast.body) {
+        if (const auto* imp = std::get_if<ImportDeclaration>(&stmt.v)) {
+            // 找到对应依赖
+            RcPtr<ModuleRecord> dep_mod;
+            for (const auto& dep : mod.dependencies) {
+                // 通过 requested_modules 的顺序对应 dependencies
+                // 这里需要按 specifier 匹配
+                std::string resolved = std::filesystem::weakly_canonical(
+                    std::filesystem::path(base_dir) / imp->specifier).string();
+                if (dep->specifier == resolved) {
+                    dep_mod = dep;
+                    break;
+                }
+            }
+            if (!dep_mod) {
+                return EvalResult::err(Error{ErrorKind::Runtime,
+                    "Error: Cannot find dependency for '" + imp->specifier + "'"});
+            }
+
+            for (const auto& spec : imp->specifiers) {
+                if (spec.is_namespace) continue;  // 不支持 namespace import
+                const std::string& imported_name = spec.imported_name;
+                const std::string& local_name = spec.local_name;
+
+                // 查找导出 Cell（直接导出或 re-export）
+                Cell* cell = dep_mod->find_export(imported_name);
+                if (cell == nullptr) {
+                    // 尝试 re-export 解析
+                    for (const auto& re : dep_mod->re_exports) {
+                        if (re.export_name == imported_name) {
+                            // 找到 re-export 的来源模块
+                            std::string re_base = std::filesystem::path(dep_mod->specifier).parent_path().string();
+                            std::string re_resolved = std::filesystem::weakly_canonical(
+                                std::filesystem::path(re_base) / re.source_specifier).string();
+                            for (const auto& re_dep : dep_mod->dependencies) {
+                                if (re_dep->specifier == re_resolved) {
+                                    cell = re_dep->find_export(re.import_name);
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                if (cell == nullptr) {
+                    return EvalResult::err(Error{ErrorKind::Syntax,
+                        "SyntaxError: The requested module '" + imp->specifier +
+                        "' does not provide an export named '" + imported_name + "'"});
+                }
+                module_env->define_import_binding(local_name, RcPtr<Cell>(cell));
+            }
+        }
+    }
+
+    mod.status = ModuleStatus::kLinked;
+    return EvalResult::ok(Value::undefined());
+}
+
+EvalResult Interpreter::evaluate_module(ModuleRecord& mod) {
+    if (mod.status == ModuleStatus::kEvaluated) {
+        return EvalResult::ok(Value::undefined());
+    }
+    if (mod.status == ModuleStatus::kErrored) {
+        // 错误缓存：直接重抛
+        if (mod.eval_exception.has_value()) {
+            pending_throw_ = mod.eval_exception;
+            return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+        }
+        return EvalResult::err(Error{ErrorKind::Runtime, "Error: module evaluation failed"});
+    }
+    if (mod.status == ModuleStatus::kEvaluating) {
+        return EvalResult::ok(Value::undefined());  // 循环依赖
+    }
+
+    mod.status = ModuleStatus::kEvaluating;
+
+    // 先求值所有依赖
+    for (auto& dep : mod.dependencies) {
+        auto dep_result = evaluate_module(*dep);
+        if (!dep_result.is_ok()) {
+            mod.status = ModuleStatus::kErrored;
+            return dep_result;
+        }
+    }
+
+    // 执行模块体
+    auto body_result = exec_module_body(mod);
+    if (!body_result.is_ok()) {
+        mod.status = ModuleStatus::kErrored;
+        // 缓存错误（目前只缓存 pending_throw_，不缓存 C++ Error）
+        if (pending_throw_.has_value()) {
+            mod.eval_exception = pending_throw_;
+        }
+        return body_result;
+    }
+
+    mod.status = ModuleStatus::kEvaluated;
+    return body_result;
+}
+
+EvalResult Interpreter::exec_module_body(ModuleRecord& mod) {
+    // 切换到模块环境，this = undefined
+    ScopeGuard guard(*this, mod.module_env, mod.module_env, Value::undefined());
+
+    // 保存并设置 current_module_
+    ModuleRecord* saved_module = current_module_;
+    current_module_ = &mod;
+
+    // 变量提升：只提升非导出的 var 和 function（export let/const/var/function 的 Binding
+    // 已由 Link 阶段通过 define_binding_with_cell 建立，不重复 define）
+    hoist_module_vars(mod.ast.body, *mod.module_env);
+
+    // export function 提升：在模块体执行前将函数值写入共享 Cell
+    // （与 VM compiler 在函数体入口 emit kMakeFunction+kSetVar 的行为对齐）
+    for (const auto& stmt : mod.ast.body) {
+        if (const auto* exp = std::get_if<ExportNamedDeclaration>(&stmt.v)) {
+            if (!exp->source.has_value() && exp->declaration) {
+                if (const auto* fd = std::get_if<FunctionDeclaration>(&exp->declaration->v)) {
+                    Value fn_val = make_function_value(
+                        fd->name, fd->params, fd->body, current_env_, false);
+                    current_env_->set(fd->name, fn_val);
+                }
+            }
+        }
+    }
+
+    // 执行模块体语句
+    Value last = Value::undefined();
+    EvalResult final_result = EvalResult::ok(Value::undefined());
+    bool has_error = false;
+
+    for (const auto& stmt : mod.ast.body) {
+        auto result = eval_stmt(stmt);
+        if (!result.is_ok()) {
+            // C++ 错误
+            const std::string& emsg = result.error().message();
+            if (emsg == kPendingThrowSentinel && pending_throw_.has_value()) {
+                Value thrown = std::move(*pending_throw_);
+                pending_throw_ = std::nullopt;
+                std::string name = "Error";
+                std::string message;
+                if (thrown.is_object()) {
+                    RcObject* raw = thrown.as_object_raw();
+                    if (raw && raw->object_kind() == ObjectKind::kOrdinary) {
+                        auto* obj = static_cast<JSObject*>(raw);
+                        Value n = obj->get_property("name");
+                        Value m = obj->get_property("message");
+                        if (n.is_string()) name = n.as_string();
+                        if (m.is_string()) message = m.as_string();
+                    }
+                }
+                // 重新设置 pending_throw_ 以便错误缓存
+                pending_throw_ = thrown;
+                final_result = EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
+            } else {
+                final_result = EvalResult::err(result.error());
+            }
+            has_error = true;
+            break;
+        }
+        const Completion& c = result.completion();
+        if (c.is_throw()) {
+            const Value& thrown = c.value;
+            pending_throw_ = thrown;
+            if (thrown.is_object()) {
+                RcObject* raw = thrown.as_object_raw();
+                if (raw && raw->object_kind() == ObjectKind::kOrdinary) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    Value n = obj->get_property("name");
+                    Value m = obj->get_property("message");
+                    std::string name = n.is_string() ? n.as_string() : "Error";
+                    std::string message = m.is_string() ? m.as_string() : "";
+                    final_result = EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
+                } else {
+                    final_result = EvalResult::err(Error(ErrorKind::Runtime, to_string_val(thrown)));
+                }
+            } else {
+                final_result = EvalResult::err(Error(ErrorKind::Runtime, to_string_val(thrown)));
+            }
+            has_error = true;
+            break;
+        }
+        if (c.is_normal()) {
+            last = c.value;
+        }
+    }
+
+    current_module_ = saved_module;
+
+    if (has_error) return final_result;
+    return EvalResult::ok(last);
 }
 
 }  // namespace qppjs

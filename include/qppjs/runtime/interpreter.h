@@ -6,6 +6,7 @@
 #include "qppjs/runtime/gc_heap.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
+#include "qppjs/runtime/module_loader.h"
 #include "qppjs/runtime/native_errors.h"
 #include "qppjs/runtime/rc_object.h"
 #include "qppjs/vm/bytecode.h"
@@ -13,6 +14,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
@@ -24,12 +26,16 @@ namespace qppjs {
 class Compiler;
 class JSObject;
 class JSFunction;
+class ModuleRecord;
 
 class Interpreter {
 public:
     Interpreter();
 
     EvalResult exec(const Program& program);
+
+    // 执行入口模块文件（ESM）
+    EvalResult exec_module(const std::string& entry_path);
 
 private:
     void init_runtime();
@@ -77,6 +83,9 @@ private:
     void hoist_vars(const std::vector<StmtNode>& stmts, Environment& var_target);
     void hoist_vars_stmt(const StmtNode& stmt, Environment& var_target);
 
+    // Module-specific hoisting: skip exported let/const (already defined by Link phase).
+    void hoist_module_vars(const std::vector<StmtNode>& stmts, Environment& module_env);
+
     // Create a JSFunction value with eager prototype initialization.
     Value make_function_value(std::optional<std::string> name, std::vector<std::string> params,
                               std::shared_ptr<std::vector<StmtNode>> body,
@@ -106,7 +115,15 @@ private:
         ~ScopeGuard();
     };
 
+    // Module: Link 阶段（DFS）
+    EvalResult link_module(ModuleRecord& mod);
+    // Module: Evaluate 阶段（DFS）
+    EvalResult evaluate_module(ModuleRecord& mod);
+    // Module: 执行模块体
+    EvalResult exec_module_body(ModuleRecord& mod);
+
     GcHeap gc_heap_;
+    ModuleLoader module_loader_;
 
     RcPtr<Environment> global_env_;
     RcPtr<Environment> current_env_;
@@ -118,6 +135,7 @@ private:
     RcPtr<JSFunction> object_constructor_;  // global Object function
     int call_depth_ = 0;
     static constexpr int kMaxCallDepth = 500;
+    ModuleRecord* current_module_ = nullptr;  // 当前正在执行的模块（非拥有指针）
 
     // Error prototype cache: indexed by NativeErrorType
     std::array<RcPtr<JSObject>, static_cast<size_t>(NativeErrorType::kCount)> error_protos_;

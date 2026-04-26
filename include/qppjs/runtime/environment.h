@@ -21,6 +21,7 @@ namespace qppjs {
 struct Cell {
     Value value;
     int32_t ref_count = 0;
+    bool initialized = false;  // TDZ 标志，导出/导入双方共享
 
     void add_ref() { ++ref_count; }
 
@@ -170,8 +171,18 @@ public:
     // Initialize a TDZ binding (called when let/const declaration executes).
     EvalResult initialize(const std::string& name, Value value);
 
+    // 将已有 Cell 注入 Binding（live binding 核心，用于模块导出变量）
+    // initialized=false 表示 TDZ（let/const 导出），initialized=true 表示无 TDZ（var/function 导出）
+    void define_binding_with_cell(const std::string& name, RcPtr<Cell> cell, bool is_mutable,
+                                  bool initialized = false);
+
+    // 创建不可变 import binding（共享 Cell，赋值抛 TypeError）
+    void define_import_binding(const std::string& name, RcPtr<Cell> cell);
+
     const RcPtr<Environment>& outer() const { return outer_; }
     const FlatBindingMap& bindings() const { return bindings_; }
+    // 只在本层查找（不沿 outer 链），返回可修改指针
+    Binding* find_local(const std::string& name) { return bindings_.find(name); }
     void clear_function_bindings();
 
 private:

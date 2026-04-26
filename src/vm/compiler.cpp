@@ -164,6 +164,11 @@ void Compiler::hoist_vars_scan_stmt(const StmtNode& stmt) {
     } else if (std::holds_alternative<LabeledStatement>(stmt.v)) {
         const auto& labeled = std::get<LabeledStatement>(stmt.v);
         if (labeled.body) hoist_vars_scan_stmt(*labeled.body);
+    } else if (std::holds_alternative<ExportNamedDeclaration>(stmt.v)) {
+        const auto& exp = std::get<ExportNamedDeclaration>(stmt.v);
+        if (exp.declaration) {
+            hoist_vars_scan_stmt(*exp.declaration);
+        }
     }
     // Do NOT recurse into FunctionDeclaration/FunctionExpression bodies
 }
@@ -198,13 +203,20 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
 
     // Hoist function declarations: emit MakeFunction + SetVar at entry
     for (const auto& stmt : body) {
+        const FunctionDeclaration* fdecl_ptr = nullptr;
         if (std::holds_alternative<FunctionDeclaration>(stmt.v)) {
-            const auto& fdecl = std::get<FunctionDeclaration>(stmt.v);
-            auto child = compile_function(fdecl.name, fdecl.params, *fdecl.body);
+            fdecl_ptr = &std::get<FunctionDeclaration>(stmt.v);
+        } else if (const auto* exp = std::get_if<ExportNamedDeclaration>(&stmt.v)) {
+            if (exp->declaration && std::holds_alternative<FunctionDeclaration>(exp->declaration->v)) {
+                fdecl_ptr = &std::get<FunctionDeclaration>(exp->declaration->v);
+            }
+        }
+        if (fdecl_ptr) {
+            auto child = compile_function(fdecl_ptr->name, fdecl_ptr->params, *fdecl_ptr->body);
             uint16_t fn_idx = add_function(std::move(child));
             emit(Opcode::kMakeFunction);
             emit_u16(fn_idx);
-            uint16_t name_idx = add_name(fdecl.name);
+            uint16_t name_idx = add_name(fdecl_ptr->name);
             emit(Opcode::kSetVar);
             emit_u16(name_idx);
             emit(Opcode::kPop);
@@ -255,23 +267,33 @@ void Compiler::compile_stmt(const StmtNode& stmt) {
             [this](const ContinueStatement& s) { compile_continue_stmt(s); },
             [this](const LabeledStatement& s) { compile_labeled_stmt(s); },
             [this](const ForStatement& s) { compile_for_stmt(s); },
-            [this](const ImportDeclaration&) {
-                uint16_t idx = add_constant(Value::string("SyntaxError: import not implemented"));
-                emit(Opcode::kLoadString);
-                emit_u16(idx);
-                emit(Opcode::kThrow);
+            [](const ImportDeclaration&) {
+                // Link 阶段已处理，编译时 no-op
             },
-            [this](const ExportNamedDeclaration&) {
-                uint16_t idx = add_constant(Value::string("SyntaxError: export not implemented"));
-                emit(Opcode::kLoadString);
-                emit_u16(idx);
-                emit(Opcode::kThrow);
+            [this](const ExportNamedDeclaration& s) {
+                if (s.source.has_value()) {
+                    // re-export：no-op（Link 阶段已处理）
+                    return;
+                }
+                if (s.declaration) {
+                    // export let/const/var/function：正常编译声明
+                    compile_stmt(*s.declaration);
+                }
+                // export { x, y }（无 declaration）：no-op
+                // Link 阶段已将导出 Cell 注入 module_env Binding，
+                // 执行时 SetVar 即可写入（Cell 共享）
             },
-            [this](const ExportDefaultDeclaration&) {
-                uint16_t idx = add_constant(Value::string("SyntaxError: export default not implemented"));
-                emit(Opcode::kLoadString);
-                emit_u16(idx);
-                emit(Opcode::kThrow);
+            [this](const ExportDefaultDeclaration& s) {
+                // 编译 expression，再 emit SetExportDefault（从栈顶取值写入 default Cell）
+                compile_expr(*s.expression);
+                // export default function foo() {}：同时在模块作用域绑定 foo
+                if (s.local_name.has_value()) {
+                    emit(Opcode::kDup);
+                    uint16_t idx = add_name(*s.local_name);
+                    emit(Opcode::kSetVar);
+                    emit_u16(idx);
+                }
+                emit(Opcode::kSetExportDefault);
             },
         },
         stmt.v);

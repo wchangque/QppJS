@@ -270,11 +270,13 @@ struct ExportSpecifier {
 struct ExportNamedDeclaration {
     std::unique_ptr<StmtNode> declaration;  // 含声明时非空
     std::vector<ExportSpecifier> specifiers;
+    std::optional<std::string> source;  // re-export 来源模块（如 "./a.js"），非空时为 re-export
     SourceRange range;
 };
 
 struct ExportDefaultDeclaration {
     std::unique_ptr<ExprNode> expression;
+    std::optional<std::string> local_name;  // 具名 function/class 在模块作用域的绑定名
     SourceRange range;
 };
 

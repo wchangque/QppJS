@@ -6,6 +6,8 @@ add_library(qppjs_core
     runtime/js_function.cpp
     runtime/js_object.cpp
     runtime/native_errors.cpp
+    runtime/module_record.cpp
+    runtime/module_loader.cpp
     runtime/interpreter.cpp
     debug/format.cpp
     frontend/token.cpp

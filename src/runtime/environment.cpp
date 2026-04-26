@@ -10,8 +10,8 @@ namespace qppjs {
 
 namespace {
 
-CellPtr MakeCell(Value value) {
-    return RcPtr<Cell>::make(Cell{std::move(value)});
+CellPtr MakeCell(Value value, bool initialized = false) {
+    return RcPtr<Cell>::make(Cell{std::move(value), 0, initialized});
 }
 
 }  // namespace
@@ -44,13 +44,13 @@ void Environment::ClearRefs() {
 void Environment::define(const std::string& name, VarKind kind) {
     switch (kind) {
     case VarKind::Var:
-        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined()), true, true, false});
+        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined(), true), true, true, false});
         break;
     case VarKind::Let:
-        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined()), true, false, false});
+        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined(), false), true, false, false});
         break;
     case VarKind::Const:
-        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined()), false, false, false});
+        bindings_.insert_or_assign(name, Binding{MakeCell(Value::undefined(), false), false, false, false});
         break;
     }
 }
@@ -59,14 +59,14 @@ void Environment::define_initialized(const std::string& name) {
     if (bindings_.count(name) != 0) {
         return;
     }
-    bindings_.emplace(name, Binding{MakeCell(Value::undefined()), true, true, false});
+    bindings_.emplace(name, Binding{MakeCell(Value::undefined(), true), true, true, false});
 }
 
 void Environment::define_function(const std::string& name) {
     if (bindings_.count(name) != 0) {
         return;
     }
-    bindings_.emplace(name, Binding{MakeCell(Value::undefined()), true, true, true});
+    bindings_.emplace(name, Binding{MakeCell(Value::undefined(), true), true, true, true});
 }
 
 Binding* Environment::lookup(const std::string& name) {
@@ -85,7 +85,8 @@ EvalResult Environment::get(const std::string& name) {
     if (b == nullptr) {
         return EvalResult::err(Error(ErrorKind::Runtime, "ReferenceError: " + name + " is not defined"));
     }
-    if (!b->initialized) {
+    // 优先检查 Cell 的 initialized 标志（跨模块共享），再检查 Binding 的 initialized
+    if (!b->cell->initialized && !b->initialized) {
         return EvalResult::err(
             Error(ErrorKind::Runtime, "ReferenceError: Cannot access '" + name + "' before initialization"));
     }
@@ -110,8 +111,21 @@ EvalResult Environment::initialize(const std::string& name, Value value) {
         return EvalResult::err(Error(ErrorKind::Runtime, "ReferenceError: " + name + " is not defined"));
     }
     b->initialized = true;
+    b->cell->initialized = true;
     b->cell->value = std::move(value);
     return EvalResult::ok(b->cell->value);
+}
+
+void Environment::define_binding_with_cell(const std::string& name, RcPtr<Cell> cell, bool is_mutable,
+                                            bool initialized) {
+    // Binding.initialized 与 Cell.initialized 保持一致，确保 get() 检查正确
+    bindings_.insert_or_assign(name, Binding{std::move(cell), is_mutable, initialized, false});
+}
+
+void Environment::define_import_binding(const std::string& name, RcPtr<Cell> cell) {
+    // import binding：共享 Cell，不可变（赋值抛 TypeError）
+    // initialized=false：TDZ 由 Cell.initialized 控制，导出方初始化后导入方自动可见
+    bindings_.insert_or_assign(name, Binding{std::move(cell), false, false, false});
 }
 
 void Environment::clear_function_bindings() {
@@ -127,7 +141,7 @@ void Environment::clear_function_bindings(std::unordered_set<const Environment*>
     visited.insert(this);
 
     for (Binding* binding : bindings_.binding_ptrs()) {
-        if (!binding->initialized || !binding->cell->value.is_object()) {
+        if ((!binding->initialized && !binding->cell->initialized) || !binding->cell->value.is_object()) {
             continue;
         }
         RcObject* raw = binding->cell->value.as_object_raw();
