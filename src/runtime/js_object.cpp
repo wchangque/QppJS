@@ -172,4 +172,29 @@ void JSObject::clear_function_properties(std::unordered_set<const JSObject*>& vi
     }
 }
 
+std::vector<std::string> JSObject::own_enumerable_string_keys() const {
+    std::vector<std::string> result;
+    if (object_kind() == ObjectKind::kArray) {
+        // Collect integer indices in sorted order, then non-index properties
+        std::vector<uint32_t> indices;
+        indices.reserve(elements_.size());
+        for (const auto& [k, v] : elements_) {
+            indices.push_back(k);
+        }
+        std::sort(indices.begin(), indices.end());
+        for (uint32_t idx : indices) {
+            result.push_back(std::to_string(idx));
+        }
+        for (const auto& entry : properties_) {
+            result.push_back(entry.key);
+        }
+    } else {
+        // kOrdinary or kFunction: insertion-order properties
+        for (const auto& entry : properties_) {
+            result.push_back(entry.key);
+        }
+    }
+    return result;
+}
+
 }  // namespace qppjs

@@ -6,20 +6,25 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | Phase 8 进行中（8.1、8.2、8.3 已完成） |
-| 测试计数 | 1061/1061 通过（coverage）；run_ut 4 个 LSan 泄露（P3-2 遗留） |
+| 当前阶段 | Phase 8 进行中（8.1～8.7 已完成，所有 P2 遗留问题修复） |
+| 测试计数 | 1219/1219 通过（coverage）；run_ut 4 个 LSan 泄露（P3-2 遗留） |
 | 最近更新 | 2026-04-26 |
-| 下一步 | Phase 8.4 — Object 内建方法 |
+| 下一步 | Phase 9 — GC / 性能优化 或 Phase 8 收尾验证 |
 
 ## 已知遗留问题
 
-- **P2-1**：VM catch 参数与 catch 体共享同一 scope，规范要求两层独立作用域
-- **P2-2**：VM `compile_labeled_stmt` 对非循环体的 labeled break 触发 `assert(false)`
+- ~~**P2-1**：已在 8.6 修复~~
+- ~~**P2-2**：已在 8.7 修复~~
 - **P3-1**：`JSString` 二次堆分配（`std::string` 成员），已知技术债务，Phase 9 优化
 - **P3-2**：闭包循环引用（`Environment ↔ Cell ↔ JSFunction`），4 个解释器层用例 LSan 失败；根因是 `shared_ptr` 环，引用计数无法打断，需要标记清除 GC（Phase 9）才能根本解决
 
 ## 最近完成
 
+- [x] Phase 8.6/8.7：VM catch 作用域修复（P2-1）+ VM labeled break 修复（P2-2）。compile_try_stmt 两处 catch 分支改用 compile_block_stmt（外层 scope 绑定 catch 参数，内层 scope 由 compile_block_stmt 按需创建）；compile_labeled_stmt else 分支注册到 loop_env_stack_，支持 labeled block break。新增 6 个测试，1219/1219 通过。
+- [x] Phase 8.5 审查修复（M1/M2/S1）：bind 生成函数用作构造器时正确忽略 bound_this、创建新实例（Interpreter 和 VM 两侧对称）；apply array-like 分支对负数/NaN/Infinity length 做 ToLength 语义校验（视为 0，>65535 抛 RangeError）；链式 bind name 优先读 own_properties_["name"] 修复 "bound bound foo"。新增 10 个测试（Interp 5 + VM 5），1213/1213 通过。
+- [x] Phase 8.5：Function 内建方法 — `Function.prototype.call`、`apply`、`bind`，Interpreter 和 VM 两侧对称。新增 `function_prototype_` 成员（JSObject），注册 call/apply/bind；eval_member_expr/kGetProp 的 kFunction 分支加 function_prototype_ 二次查找；bind 用 native_fn_ lambda 封装（捕获 target/bound_this/bound_args），支持二次 bind；apply 支持 kArray 和 array-like（kOrdinary + length 属性）展开；exec/run 清理路径同步添加 function_prototype_ 清理。新增 32 个测试（16 Interp + 16 VM），1171/1171 通过。
+- [x] Phase 8.4 审查修复（M1/M2/M3）：Object 构造函数原型链修复（`new Object() instanceof Object` → true）、Object.create 对函数参数抛 TypeError、Object.assign 对数组 target 走 set_property_ex，新增 8 个测试，1139/1139 通过
+- [x] Phase 8.4：Object 内建方法 — Object.keys / Object.assign / Object.create，Interpreter 和 VM 两侧对称，新增 42 个测试（21 Interp + 21 VM），1103/1103 通过。新增 JSFunction 属性字典（`own_properties_`），修复 Interpreter `eval_call_expr` 和 `eval_member_expr` 中 kFunction 属性读取，修复 VM `GetProp` 中 kFunction 属性读取；Object 注册为可覆盖绑定（`define_initialized`）避免用户重定义冲突
 - [x] 闭包环境共享修复 + named function expression 自引用修复：删除 `clone_for_closure` / `clone_closure_env` / `define_binding` 整套克隆机制，`MakeFunction` 直接共享当前 env；解释器/VM 同步修复。新增 `is_named_expr` 标记，named function expression 在 `fn_env` 本层无条件注册自引用绑定（不走 `lookup` 链）。coverage 1061/1061 全部通过；run_ut 4 个 LSan 泄露为预先存在的 P3-2 遗留问题
 - [x] `scripts/qppjs.py` `split_log` 重构：提取上下文管理器统一"写 raw → 成功 rename / 失败分流"逻辑，`TestRunner` 和 `CoverageRunner` 三处重复代码消除
 - [x] build skill 工具使用规范：明确 `coverage.sh` 用于 UT 功能验证（无 ASAN/LSan 噪音），`run_ut.sh` 专用于内存泄露检查；更新 SKILL.md 和 CLAUDE.md 快速参考
@@ -45,10 +50,7 @@
 
 ## 未开始
 
-- [ ] Phase 8.4：Object 内建方法
-- [ ] Phase 8.5：Function 内建方法
-- [ ] Phase 8.6：VM catch 作用域修复（P2-1）
-- [ ] Phase 8.7：VM labeled break 修复（P2-2）
+- Phase 9（GC / 性能优化）尚未启动
 
 ## 阻塞
 

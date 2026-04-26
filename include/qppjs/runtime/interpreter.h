@@ -109,8 +109,10 @@ private:
     std::shared_ptr<Environment> current_env_;
     std::shared_ptr<Environment> var_env_;  // current function-level var scope
     Value current_this_;                    // current this binding
-    RcPtr<JSObject> object_prototype_;  // global Object.prototype
-    RcPtr<JSObject> array_prototype_;   // Array.prototype
+    RcPtr<JSObject> object_prototype_;   // global Object.prototype
+    RcPtr<JSObject> array_prototype_;    // Array.prototype
+    RcPtr<JSObject> function_prototype_; // Function.prototype (call/apply/bind)
+    RcPtr<JSFunction> object_constructor_;  // global Object function
     int call_depth_ = 0;
     static constexpr int kMaxCallDepth = 500;
 

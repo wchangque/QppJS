@@ -2,6 +2,7 @@ add_library(qppjs_core
     base/error.cpp
     runtime/value.cpp
     runtime/environment.cpp
+    runtime/js_function.cpp
     runtime/js_object.cpp
     runtime/native_errors.cpp
     runtime/interpreter.cpp

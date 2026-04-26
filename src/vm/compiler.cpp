@@ -754,9 +754,7 @@ void Compiler::compile_try_stmt(const TryStatement& stmt) {
             emit(Opcode::kInitVar);
             emit_u16(param_idx);
             emit(Opcode::kPop);
-            for (const auto& s : stmt.handler->body.body) {
-                compile_stmt(s);
-            }
+            compile_block_stmt(stmt.handler->body);
             emit(Opcode::kPopScope);
             std::vector<size_t> catch_gosub_patches = std::move(finally_info_stack_.back().gosub_patches);
             finally_info_stack_.pop_back();
@@ -879,9 +877,7 @@ void Compiler::compile_try_stmt(const TryStatement& stmt) {
         emit(Opcode::kInitVar);
         emit_u16(param_idx);
         emit(Opcode::kPop);
-        for (const auto& s : stmt.handler->body.body) {
-            compile_stmt(s);
-        }
+        compile_block_stmt(stmt.handler->body);
         emit(Opcode::kPopScope);
 
         // [after_catch]
@@ -934,7 +930,13 @@ void Compiler::compile_labeled_stmt(const LabeledStatement& stmt) {
     } else if (std::holds_alternative<WhileStatement>(stmt.body->v)) {
         compile_while_stmt(std::get<WhileStatement>(stmt.body->v), stmt.label);
     } else {
+        loop_env_stack_.push_back(LoopEnv{stmt.label, 0, {}, {}, {}});
         compile_stmt(*stmt.body);
+        size_t after_block = current_offset();
+        for (size_t p : loop_env_stack_.back().break_patches) {
+            patch_jump_to(p, after_block);
+        }
+        loop_env_stack_.pop_back();
     }
 }
 

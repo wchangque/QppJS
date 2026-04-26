@@ -77,6 +77,8 @@ private:
 
     RcPtr<JSObject> object_prototype_;
     RcPtr<JSObject> array_prototype_;
+    RcPtr<JSObject> function_prototype_; // Function.prototype (call/apply/bind)
+    RcPtr<JSFunction> object_constructor_;  // global Object function
     std::shared_ptr<Environment> global_env_;
 
     // Error prototype cache: indexed by NativeErrorType

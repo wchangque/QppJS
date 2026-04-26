@@ -20,6 +20,8 @@ add_executable(qppjs_unit_tests
     unit/interpreter_error_test.cpp
     unit/console_test.cpp
     unit/array_test.cpp
+    unit/object_builtin_test.cpp
+    unit/function_builtin_test.cpp
 )
 
 target_link_libraries(qppjs_unit_tests PRIVATE qppjs_core GTest::gtest_main)

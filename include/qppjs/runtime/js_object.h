@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <algorithm>
 
 namespace qppjs {
 
@@ -27,6 +28,7 @@ public:
     void set_constructor_property(RcObject* value);
     bool has_own_property(const std::string& key) const;
     void clear_function_properties();
+    std::vector<std::string> own_enumerable_string_keys() const;
 
     // Only used by kArray objects — sparse storage + explicit length
     std::unordered_map<uint32_t, Value> elements_;

@@ -343,4 +343,72 @@ TEST(VMForEdge, ContinueDoesNotSkipUpdate) {
     EXPECT_EQ(v.as_number(), 4.0);
 }
 
+// ============================================================
+// Phase 8.6 — catch 作用域两层独立（P2-1）
+// ============================================================
+
+// catch 参数在 body 中可读
+TEST(VMCatchScopeP21, CatchParamReadableInBody) {
+    auto v = vm_ok(
+        "var r;"
+        "try { throw 42; } catch(e) { r = e; }"
+        "r");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 42.0);
+}
+
+// catch body 中用 let 声明不同名变量，可读 catch 参数
+TEST(VMCatchScopeP21, CatchBodyLetCanReadParam) {
+    auto v = vm_ok(
+        "var r;"
+        "try { throw 1; } catch(e) { let x = e + 1; r = x; }"
+        "r");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// catch body 中用 let 声明同名变量（遮蔽），外层 catch 参数不受影响
+// 修复后 catch 参数在外层 scope，let e 在内层 scope，两者独立
+TEST(VMCatchScopeP21, CatchBodyLetSameNameShadows) {
+    auto v = vm_ok(
+        "var r = 0;"
+        "try { throw 10; } catch(e) { let e = 2; r = e; }"
+        "r");
+    // 内层 let e = 2 遮蔽外层 catch 参数 e，r = 2
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// ============================================================
+// Phase 8.7 — labeled block break（P2-2）
+// ============================================================
+
+// labeled block break 正常工作
+TEST(VMLabeledBlockBreak, BasicLabeledBlockBreak) {
+    auto v = vm_ok(
+        "var r = 0;"
+        "outer: { r = 1; break outer; r = 2; }"
+        "r");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// labeled block 中 var 声明提升，赋值执行
+TEST(VMLabeledBlockBreak, VarHoistingInLabeledBlock) {
+    auto v = vm_ok(
+        "outer: { var x = 1; break outer; }"
+        "x");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// labeled block 不影响 return
+TEST(VMLabeledBlockBreak, LabeledBlockDoesNotAffectReturn) {
+    auto v = vm_ok(
+        "function f() { outer: { return 1; break outer; } return 2; }"
+        "f()");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
 }  // namespace

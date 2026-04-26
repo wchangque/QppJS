@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace qppjs {
@@ -44,6 +45,11 @@ public:
     bool is_named_expr() const { return is_named_expr_; }
     const NativeFn& native_fn() const { return *native_fn_; }
 
+    // Static properties on the function object itself (e.g., Object.keys, Array.isArray).
+    void set_property(const std::string& key, Value value);
+    Value get_property(const std::string& key) const;
+    void clear_own_properties();
+
 private:
     std::optional<std::string> name_;
     std::vector<std::string> params_;
@@ -53,6 +59,8 @@ private:
     std::shared_ptr<BytecodeFunction> bytecode_;
     std::optional<NativeFn> native_fn_;
     bool is_named_expr_ = false;
+    // Own properties (e.g., Object.keys, Object.assign, Object.create)
+    std::unordered_map<std::string, Value> own_properties_;
 };
 
 }  // namespace qppjs

@@ -326,6 +326,269 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::undefined());
     });
     array_prototype_->set_property("forEach", Value::object(ObjectPtr(foreach_fn)));
+
+    // Build Object.keys
+    auto keys_fn = RcPtr<JSFunction>::make();
+    keys_fn->set_name(std::string("keys"));
+    keys_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_object()) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: Object.keys called on non-object"});
+        }
+        RcObject* raw = args[0].as_object_raw();
+        if (raw->object_kind() == ObjectKind::kFunction) {
+            auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+            arr->set_proto(array_prototype_);
+            arr->array_length_ = 0;
+            return EvalResult::ok(Value::object(ObjectPtr(arr)));
+        }
+        auto* obj = static_cast<JSObject*>(raw);
+        auto keys = obj->own_enumerable_string_keys();
+        auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+        arr->set_proto(array_prototype_);
+        for (size_t i = 0; i < keys.size(); ++i) {
+            arr->elements_[static_cast<uint32_t>(i)] = Value::string(keys[i]);
+        }
+        arr->array_length_ = static_cast<uint32_t>(keys.size());
+        return EvalResult::ok(Value::object(ObjectPtr(arr)));
+    });
+
+    // Build Object.assign
+    auto assign_fn = RcPtr<JSFunction>::make();
+    assign_fn->set_name(std::string("assign"));
+    assign_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_object()) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: Object.assign called on non-object"});
+        }
+        RcObject* target_raw = args[0].as_object_raw();
+        if (target_raw->object_kind() == ObjectKind::kFunction) {
+            return EvalResult::ok(args[0]);
+        }
+        auto* target = static_cast<JSObject*>(target_raw);
+        bool target_is_array = target_raw->object_kind() == ObjectKind::kArray;
+        for (size_t i = 1; i < args.size(); ++i) {
+            const Value& source = args[i];
+            if (source.is_null() || source.is_undefined()) continue;
+            if (!source.is_object()) continue;
+            RcObject* src_raw = source.as_object_raw();
+            if (src_raw->object_kind() == ObjectKind::kFunction) continue;
+            auto* src = static_cast<JSObject*>(src_raw);
+            auto keys = src->own_enumerable_string_keys();
+            for (const auto& key : keys) {
+                if (target_is_array) {
+                    auto res = target->set_property_ex(key, src->get_property(key));
+                    if (!res.is_ok()) return res;
+                } else {
+                    target->set_property(key, src->get_property(key));
+                }
+            }
+        }
+        return EvalResult::ok(args[0]);
+    });
+
+    // Build Object.create
+    auto create_fn = RcPtr<JSFunction>::make();
+    create_fn->set_name(std::string("create"));
+    create_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty()) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: Object.create requires an argument"});
+        }
+        const Value& proto_arg = args[0];
+        if (!proto_arg.is_null() && !proto_arg.is_object()) {
+            return EvalResult::err(Error{ErrorKind::Runtime,
+                                        "TypeError: Object prototype may only be an Object or null"});
+        }
+        auto new_obj = RcPtr<JSObject>::make();
+        if (!proto_arg.is_null()) {
+            RcObject* proto_raw = proto_arg.as_object_raw();
+            ObjectKind kind = proto_raw->object_kind();
+            if (kind == ObjectKind::kFunction) {
+                return EvalResult::err(Error{ErrorKind::Runtime,
+                                            "TypeError: Object prototype may only be an Object or null"});
+            }
+            new_obj->set_proto(RcPtr<JSObject>(static_cast<JSObject*>(proto_raw)));
+        }
+        return EvalResult::ok(Value::object(ObjectPtr(new_obj)));
+    });
+
+    // Build Object constructor function
+    object_constructor_ = RcPtr<JSFunction>::make();
+    object_constructor_->set_name(std::string("Object"));
+    object_constructor_->set_prototype_obj(object_prototype_);
+    object_constructor_->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        bool wrap = args.empty() || args[0].is_null() || args[0].is_undefined();
+        if (wrap) {
+            auto obj = RcPtr<JSObject>::make();
+            obj->set_proto(object_prototype_);
+            return EvalResult::ok(Value::object(ObjectPtr(obj)));
+        }
+        return EvalResult::ok(args[0]);
+    });
+    object_constructor_->set_property("keys", Value::object(ObjectPtr(keys_fn)));
+    object_constructor_->set_property("assign", Value::object(ObjectPtr(assign_fn)));
+    object_constructor_->set_property("create", Value::object(ObjectPtr(create_fn)));
+
+    global_env_->define_initialized("Object");
+    global_env_->set("Object", Value::object(ObjectPtr(object_constructor_)));
+
+    // Build Function.prototype with call/apply/bind
+    function_prototype_ = RcPtr<JSObject>::make();
+    function_prototype_->set_proto(object_prototype_);
+
+    // Function.prototype.call
+    auto call_fn = RcPtr<JSFunction>::make();
+    call_fn->set_name(std::string("call"));
+    call_fn->set_property("length", Value::number(1.0));
+    call_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (!this_val.is_object() || !this_val.as_object_raw() ||
+            this_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            return EvalResult::err(Error(ErrorKind::Runtime,
+                                        "TypeError: Function.prototype.call called on non-function"));
+        }
+        Value new_this = args.empty() ? Value::undefined() : args[0];
+        std::span<Value> call_args;
+        if (args.size() > 1) {
+            call_args = std::span<Value>(args.data() + 1, args.size() - 1);
+        }
+        return call_function_val(this_val, std::move(new_this), call_args);
+    });
+    function_prototype_->set_property("call", Value::object(ObjectPtr(call_fn)));
+
+    // Function.prototype.apply
+    auto apply_fn = RcPtr<JSFunction>::make();
+    apply_fn->set_name(std::string("apply"));
+    apply_fn->set_property("length", Value::number(2.0));
+    apply_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (!this_val.is_object() || !this_val.as_object_raw() ||
+            this_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            return EvalResult::err(Error(ErrorKind::Runtime,
+                                        "TypeError: Function.prototype.apply called on non-function"));
+        }
+        Value new_this = args.empty() ? Value::undefined() : args[0];
+        Value args_array = args.size() > 1 ? args[1] : Value::undefined();
+        if (args_array.is_null() || args_array.is_undefined()) {
+            std::span<Value> empty_span;
+            return call_function_val(this_val, std::move(new_this), empty_span);
+        }
+        if (!args_array.is_object()) {
+            return EvalResult::err(Error(ErrorKind::Runtime,
+                "TypeError: apply argument must be an array or array-like object"));
+        }
+        RcObject* arr_raw = args_array.as_object_raw();
+        std::vector<Value> call_args;
+        if (arr_raw->object_kind() == ObjectKind::kArray) {
+            auto* arr = static_cast<JSObject*>(arr_raw);
+            uint32_t len = arr->array_length_;
+            call_args.reserve(len);
+            for (uint32_t i = 0; i < len; ++i) {
+                auto it = arr->elements_.find(i);
+                call_args.push_back(it != arr->elements_.end() ? it->second : Value::undefined());
+            }
+        } else if (arr_raw->object_kind() == ObjectKind::kOrdinary) {
+            auto* obj = static_cast<JSObject*>(arr_raw);
+            Value len_val = obj->get_property("length");
+            double len_num = len_val.is_number() ? len_val.as_number() : 0.0;
+            uint32_t len = 0;
+            if (!std::isnan(len_num) && len_num > 0.0) {
+                if (len_num > 65535.0) {
+                    return EvalResult::err(Error(ErrorKind::Runtime,
+                        "RangeError: apply argsArray length exceeds limit"));
+                }
+                len = static_cast<uint32_t>(len_num);
+            }
+            call_args.reserve(len);
+            for (uint32_t i = 0; i < len; ++i) {
+                call_args.push_back(obj->get_property(std::to_string(i)));
+            }
+        } else {
+            return EvalResult::err(Error(ErrorKind::Runtime,
+                "TypeError: apply argument must be an array or array-like object"));
+        }
+        return call_function_val(this_val, std::move(new_this),
+                                 std::span<Value>(call_args.data(), call_args.size()));
+    });
+    function_prototype_->set_property("apply", Value::object(ObjectPtr(apply_fn)));
+
+    // Function.prototype.bind
+    auto bind_fn = RcPtr<JSFunction>::make();
+    bind_fn->set_name(std::string("bind"));
+    bind_fn->set_property("length", Value::number(1.0));
+    bind_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (!this_val.is_object() || !this_val.as_object_raw() ||
+            this_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            return EvalResult::err(Error(ErrorKind::Runtime,
+                                        "TypeError: Function.prototype.bind called on non-function"));
+        }
+        Value bound_this = args.empty() ? Value::undefined() : args[0];
+        std::vector<Value> bound_args;
+        if (args.size() > 1) {
+            bound_args.assign(args.begin() + 1, args.end());
+        }
+
+        auto* target_raw = static_cast<JSFunction*>(this_val.as_object_raw());
+        double target_length = 0.0;
+        Value len_prop = target_raw->get_property("length");
+        if (len_prop.is_number()) {
+            target_length = len_prop.as_number();
+        } else {
+            target_length = static_cast<double>(target_raw->params().size());
+        }
+        double bound_length = std::max(0.0, target_length - static_cast<double>(bound_args.size()));
+
+        // Compute bound name — prefer own_properties_["name"] for chained bind
+        std::string target_name;
+        {
+            Value name_prop = target_raw->get_property("name");
+            if (name_prop.is_string()) {
+                target_name = name_prop.as_string();
+            } else if (target_raw->name().has_value()) {
+                target_name = target_raw->name().value();
+            }
+        }
+
+        auto new_fn = RcPtr<JSFunction>::make();
+        Value captured_target = this_val;
+        Value captured_this = bound_this;
+        std::vector<Value> captured_args = bound_args;
+        new_fn->set_native_fn([this, captured_target, captured_this, captured_args]
+                              (Value /*this_val*/, std::vector<Value> call_args, bool is_new_call) mutable -> EvalResult {
+            std::vector<Value> merged;
+            merged.reserve(captured_args.size() + call_args.size());
+            merged = captured_args;
+            merged.insert(merged.end(), call_args.begin(), call_args.end());
+            if (is_new_call) {
+                // new semantics: ignore captured_this, create new instance from target
+                auto* target_fn_raw = static_cast<JSFunction*>(captured_target.as_object_raw());
+                auto target_fn = RcPtr<JSFunction>(target_fn_raw);
+                if (target_fn->is_native()) {
+                    return target_fn->native_fn()(Value::undefined(),
+                                                  std::vector<Value>(merged.begin(), merged.end()),
+                                                  /*is_new_call=*/true);
+                }
+                auto instance = RcPtr<JSObject>::make();
+                const auto& proto_obj = target_fn->prototype_obj();
+                if (proto_obj) {
+                    instance->set_proto(proto_obj);
+                } else {
+                    instance->set_proto(object_prototype_);
+                }
+                Value instance_val = Value::object(ObjectPtr(instance));
+                Value instance_copy = instance_val;
+                size_t exit_depth = call_stack_.size();
+                auto push_res = push_call_frame(target_fn, instance_val,
+                                                std::span<Value>(merged.data(), merged.size()),
+                                                /*is_new=*/true, std::move(instance_copy));
+                if (!push_res.is_ok()) return push_res;
+                return run(exit_depth);
+            }
+            return call_function_val(captured_target, captured_this,
+                                     std::span<Value>(merged.data(), merged.size()));
+        });
+        new_fn->set_property("length", Value::number(bound_length));
+        new_fn->set_property("name", Value::string("bound " + target_name));
+
+        return EvalResult::ok(Value::object(ObjectPtr(new_fn)));
+    });
+    function_prototype_->set_property("bind", Value::object(ObjectPtr(bind_fn)));
 }
 
 // ============================================================
@@ -355,6 +618,8 @@ EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
     global_env_->clear_function_bindings();
     object_prototype_->clear_function_properties();
     if (array_prototype_) array_prototype_->clear_function_properties();
+    if (function_prototype_) function_prototype_->clear_function_properties();
+    if (object_constructor_) object_constructor_->clear_own_properties();
     return result;
 }
 
@@ -715,7 +980,7 @@ EvalResult VM::run(size_t exit_depth) {
                 stack.push_back(Value::undefined());
                 break;
             }
-            // Handle JSFunction specially (e.g., Fn.prototype)
+            // Handle JSFunction specially (e.g., Fn.prototype, Object.keys)
             RcObject* raw_obj = obj_val.as_object_raw();
             if (raw_obj->object_kind() == ObjectKind::kFunction) {
                 auto* fn = static_cast<JSFunction*>(raw_obj);
@@ -723,7 +988,14 @@ EvalResult VM::run(size_t exit_depth) {
                     const auto& proto = fn->prototype_obj();
                     stack.push_back(proto ? Value::object(ObjectPtr(proto)) : Value::undefined());
                 } else {
-                    stack.push_back(Value::undefined());
+                    Value own = fn->get_property(name);
+                    if (!own.is_undefined()) {
+                        stack.push_back(std::move(own));
+                    } else if (function_prototype_) {
+                        stack.push_back(function_prototype_->get_property(name));
+                    } else {
+                        stack.push_back(Value::undefined());
+                    }
                 }
                 break;
             }
