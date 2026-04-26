@@ -6,10 +6,10 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | Phase 9 完成（GC Review M1/M2 修复） |
-| 测试计数 | 1312/1312 通过（coverage）；run_ut 1306/1306 通过，0 个 LSan 泄露 |
+| 当前阶段 | Phase 10.1 完成（import/export 语法节点与 Parser 扩展 + Testing Agent 边界补测 + Review M1/M2/M3 修复） |
+| 测试计数 | 1376/1376 通过（coverage） |
 | 最近更新 | 2026-04-26 |
-| 下一步 | Phase 10（待定） |
+| 下一步 | Phase 10.2（ESM 运行时语义，待定） |
 
 ## 已知遗留问题
 
@@ -20,6 +20,9 @@
 
 ## 最近完成
 
+- [x] Phase 10.1 Review M1/M2/M3 修复：M1：VM compiler 三个 no-op visitor 改为 emit kLoadString+kThrow，执行时产生运行时错误（与 interpreter stub 行为对齐）；M2：从 lexer kKeywords 移除 import/export（改为 contextual keyword），在 parse_stmt() 入口用文本比较识别，修复 `({ import: 1 }).import`/`obj.export` 等合法属性名解析失败；M3：labeled statement body 解析前将 is_top_level_ 置 false（先保存后恢复），修复 `label: import './m'` 被错误接受。新增 4 个测试（M2 回归 ×2 + M3 回归 ×2）。1375/1375 通过，0 回归。
+- [x] Phase 10.1 Testing Agent 边界补测：追加 39 个测试，覆盖 import/export 错误路径（缺少 `}`/`as`/`from`/specifier、非法 token）、合法边界（空 `{}`、尾随逗号、混合 alias、`from` 作为 local name、路径 specifier）、export 边界（`let`/`var` 形式、空 specifier 列表、`default` 表达式类型、具名函数含参数）、重复导出混合场景、`is_top_level_` 在 `if`/`while`/`for` non-block 语句体内的遗漏（修复 parser.cpp 三处）、ASI 行为、多语句顺序、contextual keyword 不污染普通标识符。1371/1371 通过，0 回归。
+- [x] Phase 10.1：import/export 语法节点与 Parser 扩展。新增 `KwImport`/`KwExport` token，扩展 `StmtNode` variant（`ImportDeclaration`、`ExportNamedDeclaration`、`ExportDefaultDeclaration`），Parser 实现全部 5 种 import 形式和 4 种 export 形式，`is_top_level_` 检查确保 import/export 只在顶层，重复导出名检查，`from`/`as`/`default` 作为 contextual keyword，interpreter/compiler 添加 stub。新增 20 个测试，1332/1332 通过，0 回归。
 - [x] Phase 9 GC Review M1/M2 修复：`GcHeap::Collect()` Phase 1 同时重置 roots 的 `gc_mark_`（修复长期根对象第二次 exec 后子对象被误回收的 UAF）；interpreter.cpp 和 vm.cpp 中 Object.keys/Object.create/Object() 构造器的 native lambda 内新分配的 JSObject 补加 `gc_heap_.Register()`（vm.cpp create_fn 同步改为 `[this]` 捕获）；追加 4 个测试（M1/M2 各 Interp+VM 对称）。1312/1312 通过，run_ut 1306/1306 通过，0 个 LSan 泄露。
 - [x] Phase 9.1-9.5 Testing Agent 边界补测：在 `tests/unit/gc_heap_test.cpp` 追加 28 个测试（14 组 Interp+VM 对称）。新增覆盖：对象自环/二元环 GC 回收、exec() 返回值作为 GC 根不被误回收、throw 路径 GC 不崩溃、try/catch 捕获对象 GC 后可访问、数组持有函数 GC 后可调用、闭包捕获数组 GC 后可访问、named function expression 递归 GC 后正确、bound function 作为构造器 GC 后实例属性正确、大量短生命周期对象不积累内存、原型链 GC 后 instanceof 正确、多次 exec() 调用 GcHeap 状态不残留、空程序 GC 不崩溃、三重闭包循环 kGcSentinel no-op 不 double-free。1308/1308 通过，run_ut 1306/1306 通过，0 个 LSan 泄露。
 - [x] Phase 9.1-9.5：mark-sweep GC 实现 + P3-2 修复。新增 `GcHeap`（gc_heap.h/cpp），三阶段 mark-sweep（reset → mark from roots → sweep）；RcObject 添加 `gc_mark_`、`gc_heap_` 指针、`set_gc_sentinel()`、纯虚 `TraceRefs` 和 `ClearRefs`；JSObject/JSFunction/Environment 各自实现 TraceRefs（遍历子对象）和 ClearRefs（正常 release RcPtr 成员，kGcSentinel 确保 GC 对象 release 是 no-op）；JSFunction 新增 `is_bound_` 字段及 accessor，bind lambda 从显式字段读取（替代 lambda 捕获，解决 GC 无法追踪 lambda 捕获的问题）；Interpreter 和 VM 各自注册执行期间创建的对象（fn_env、block_env、for_env、catch_env、JSFunction、JSObject），exec() 末尾先 GC（roots = 所有 interpreter 成员 + final_result）再 clear_function_bindings；新增 `tests/unit/gc_heap_test.cpp`（16 个测试）。1280/1280 通过，run_ut 1278/1278 通过，0 个 LSan 泄露（P3-2 根本修复）。

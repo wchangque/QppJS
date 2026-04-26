@@ -850,6 +850,15 @@ StmtResult Interpreter::eval_stmt(const StmtNode& stmt) {
             [this](const ContinueStatement& s) { return eval_continue_stmt(s); },
             [this](const LabeledStatement& s) { return eval_labeled_stmt(s); },
             [this](const ForStatement& s) { return eval_for_stmt(s); },
+            [](const ImportDeclaration&) -> StmtResult {
+                return StmtResult::err(Error{ErrorKind::Syntax, "import not implemented"});
+            },
+            [](const ExportNamedDeclaration&) -> StmtResult {
+                return StmtResult::err(Error{ErrorKind::Syntax, "export not implemented"});
+            },
+            [](const ExportDefaultDeclaration&) -> StmtResult {
+                return StmtResult::err(Error{ErrorKind::Syntax, "export default not implemented"});
+            },
         },
         stmt.v);
 }

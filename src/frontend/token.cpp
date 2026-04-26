@@ -2,7 +2,7 @@
 
 namespace qppjs {
 
-bool is_keyword(TokenKind kind) { return kind >= TokenKind::KwLet && kind <= TokenKind::KwInstanceof; }
+bool is_keyword(TokenKind kind) { return kind >= TokenKind::KwLet && kind <= TokenKind::KwExport; }
 
 std::string_view token_kind_name(TokenKind kind) {
     switch (kind) {
@@ -64,6 +64,10 @@ std::string_view token_kind_name(TokenKind kind) {
             return "KwFinally";
         case TokenKind::KwInstanceof:
             return "KwInstanceof";
+        case TokenKind::KwImport:
+            return "KwImport";
+        case TokenKind::KwExport:
+            return "KwExport";
         case TokenKind::LParen:
             return "LParen";
         case TokenKind::RParen:

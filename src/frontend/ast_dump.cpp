@@ -354,6 +354,29 @@ std::string dump_stmt(const StmtNode& node, int indent) {
                            result += ind(indent + 1) + "body:\n";
                            result += dump_stmt(*fs.body, indent + 2);
                        },
+                       [&](const ImportDeclaration& id) {
+                           result = prefix + "ImportDeclaration \"" + id.specifier + "\"\n";
+                           for (const auto& spec : id.specifiers) {
+                               result += ind(indent + 1) + "ImportSpecifier " + spec.imported_name +
+                                         " as " + spec.local_name + "\n";
+                           }
+                       },
+                       [&](const ExportNamedDeclaration& en) {
+                           result = prefix + "ExportNamedDeclaration\n";
+                           if (en.declaration) {
+                               result += ind(indent + 1) + "declaration:\n";
+                               result += dump_stmt(*en.declaration, indent + 2);
+                           }
+                           for (const auto& spec : en.specifiers) {
+                               result += ind(indent + 1) + "ExportSpecifier " + spec.local_name +
+                                         " as " + spec.export_name + "\n";
+                           }
+                       },
+                       [&](const ExportDefaultDeclaration& ed) {
+                           result = prefix + "ExportDefaultDeclaration\n";
+                           result += ind(indent + 1) + "expression:\n";
+                           result += dump_expr(*ed.expression, indent + 2);
+                       },
                },
                node.v);
 

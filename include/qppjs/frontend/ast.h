@@ -248,13 +248,44 @@ struct ForStatement {
     SourceRange range;
 };
 
+struct ImportSpecifier {
+    std::string imported_name;  // 模块内名称；默认导入时为 "default"
+    std::string local_name;     // 本地绑定名
+    bool is_namespace = false;  // true => import * as ns
+    SourceRange range;
+};
+
+struct ImportDeclaration {
+    std::string specifier;                   // 模块路径字符串
+    std::vector<ImportSpecifier> specifiers; // 空 = 副作用导入
+    SourceRange range;
+};
+
+struct ExportSpecifier {
+    std::string local_name;
+    std::string export_name;
+    SourceRange range;
+};
+
+struct ExportNamedDeclaration {
+    std::unique_ptr<StmtNode> declaration;  // 含声明时非空
+    std::vector<ExportSpecifier> specifiers;
+    SourceRange range;
+};
+
+struct ExportDefaultDeclaration {
+    std::unique_ptr<ExprNode> expression;
+    SourceRange range;
+};
+
 // ---- StmtNode 完整定义（必须在所有语句 struct 定义之后）----
 
 struct StmtNode {
     std::variant<ExpressionStatement, VariableDeclaration, BlockStatement, IfStatement, WhileStatement,
                  ReturnStatement, FunctionDeclaration,
                  ThrowStatement, TryStatement, BreakStatement, ContinueStatement,
-                 LabeledStatement, ForStatement>
+                 LabeledStatement, ForStatement,
+                 ImportDeclaration, ExportNamedDeclaration, ExportDefaultDeclaration>
             v;
 
     StmtNode() = default;

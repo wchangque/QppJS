@@ -4,23 +4,24 @@
 
 ## 1. 下一阶段
 
-- 下一阶段：Phase 10（待定）
-- Phase 9 已全部完成（1280/1280 测试通过，0 LSan 失败）
+- 下一阶段：Phase 10.2（ESM 运行时语义，待定）
+- Phase 10.1 已完成（1332/1332 测试通过）
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 
 ## 2. 阶段目标
 
-待定。可能方向：
+Phase 10.2 候选方向：
+- ESM 模块加载器（静态 import/export 语义）
 - P3-1：JSString 二次堆分配优化（小字符串内联）
 - 更多内建对象（Array.map/filter/reduce、String 方法等）
-- 正则表达式支持
 
 ## 3. 进入前提
 
 当前已具备：
-- Phase 1～9 全部完成（1280/1280 测试通过，0 LSan 失败）
+- Phase 1～10.1 全部完成（1332/1332 测试通过，0 LSan 失败）
 - GC mark-sweep 已上线，P3-2 已根本修复
+- import/export AST 节点与 Parser 已就绪，可供 Phase 10.2 消费
 
 ## 4. 暂不纳入范围
 

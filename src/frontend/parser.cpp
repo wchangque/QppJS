@@ -9,6 +9,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 
 namespace qppjs {
 
@@ -246,6 +247,9 @@ static SourceRange stmt_range(const StmtNode& s) {
                               [](const ContinueStatement& n) { return n.range; },
                               [](const LabeledStatement& n) { return n.range; },
                               [](const ForStatement& n) { return n.range; },
+                              [](const ImportDeclaration& n) { return n.range; },
+                              [](const ExportNamedDeclaration& n) { return n.range; },
+                              [](const ExportDefaultDeclaration& n) { return n.range; },
                       },
                       s.v);
 }
@@ -255,11 +259,13 @@ static SourceRange stmt_range(const StmtNode& s) {
 struct Parser {
     std::string_view source;
     LexerState lex;
-    Token cur;   // 当前已消费 token（lookahead）
-    bool got_lf; // cur 前是否有换行（ASI 用）
+    Token cur;         // 当前已消费 token（lookahead）
+    bool got_lf;       // cur 前是否有换行（ASI 用）
+    bool is_top_level_; // import/export 只允许在顶层
 
     explicit Parser(std::string_view src)
-        : source(src), lex(lexer_init(src)), cur{TokenKind::Eof, {0, 0}}, got_lf(false) {
+        : source(src), lex(lexer_init(src)), cur{TokenKind::Eof, {0, 0}}, got_lf(false),
+          is_top_level_(true) {
         advance();  // 载入第一个 token
     }
 
@@ -271,6 +277,11 @@ struct Parser {
 
     // 返回当前 token 的原始文本
     std::string_view token_text(const Token& tok) const { return source.substr(tok.range.offset, tok.range.length); }
+
+    // 检查当前 token 是 Ident 且文本等于 name（上下文关键字，如 from/as）
+    bool is_contextual_keyword(std::string_view name) const {
+        return cur.kind == TokenKind::Ident && token_text(cur) == name;
+    }
 
     // 期望当前 token 是 kind，消费并推进；否则返回错误
     ParseResult<Token> expect(TokenKind kind) {
@@ -794,15 +805,19 @@ struct Parser {
         }
         Token lbrace = cur;
         advance();
+        bool saved_top_level = is_top_level_;
+        is_top_level_ = false;
         std::vector<StmtNode> body;
         while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
             auto stmt = parse_stmt();
             if (!stmt.ok()) {
+                is_top_level_ = saved_top_level;
                 return ParseResult<std::pair<std::vector<StmtNode>, SourceRange>>::Err(stmt.error());
             }
             body.push_back(std::move(stmt.value()));
         }
         auto rb = expect(TokenKind::RBrace);
+        is_top_level_ = saved_top_level;
         if (!rb.ok()) {
             return ParseResult<std::pair<std::vector<StmtNode>, SourceRange>>::Err(rb.error());
         }
@@ -873,13 +888,19 @@ struct Parser {
         // cur 是 LBrace
         Token lbrace = cur;
         advance();  // 消费 {
+        bool saved_top_level = is_top_level_;
+        is_top_level_ = false;
         std::vector<StmtNode> body;
         while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
             auto stmt = parse_stmt();
-            if (!stmt.ok()) return stmt;
+            if (!stmt.ok()) {
+                is_top_level_ = saved_top_level;
+                return stmt;
+            }
             body.push_back(std::move(stmt.value()));
         }
         auto rb = expect(TokenKind::RBrace);
+        is_top_level_ = saved_top_level;
         if (!rb.ok()) return ParseResult<StmtNode>::Err(rb.error());
         SourceRange range{lbrace.range.offset, rb.value().range.offset + 1 - lbrace.range.offset};
         return ParseResult<StmtNode>::Ok(StmtNode{BlockStatement{std::move(body), range}});
@@ -895,15 +916,24 @@ struct Parser {
         if (!test.ok()) return ParseResult<StmtNode>::Err(test.error());
         auto rp = expect(TokenKind::RParen);
         if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
+        bool saved_top_level = is_top_level_;
+        is_top_level_ = false;
         auto consequent = parse_stmt();
-        if (!consequent.ok()) return consequent;
+        if (!consequent.ok()) {
+            is_top_level_ = saved_top_level;
+            return consequent;
+        }
         std::unique_ptr<StmtNode> alt_ptr = nullptr;
         if (cur.kind == TokenKind::KwElse) {
             advance();
             auto alt = parse_stmt();
-            if (!alt.ok()) return alt;
+            if (!alt.ok()) {
+                is_top_level_ = saved_top_level;
+                return alt;
+            }
             alt_ptr = std::make_unique<StmtNode>(std::move(alt.value()));
         }
+        is_top_level_ = saved_top_level;
         uint32_t if_end = alt_ptr ? range_end(stmt_range(*alt_ptr)) : range_end(stmt_range(consequent.value()));
         return ParseResult<StmtNode>::Ok(
                 StmtNode{IfStatement{std::move(test.value()), std::make_unique<StmtNode>(std::move(consequent.value())),
@@ -919,7 +949,10 @@ struct Parser {
         if (!test.ok()) return ParseResult<StmtNode>::Err(test.error());
         auto rp = expect(TokenKind::RParen);
         if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
+        bool saved_top_level = is_top_level_;
+        is_top_level_ = false;
         auto body = parse_stmt();
+        is_top_level_ = saved_top_level;
         if (!body.ok()) return body;
         uint32_t while_end = range_end(stmt_range(body.value()));
         return ParseResult<StmtNode>::Ok(
@@ -1004,13 +1037,19 @@ struct Parser {
     ParseResult<BlockStatement> parse_block() {
         Token lbrace = cur;
         advance();  // 消费 {
+        bool saved_top_level = is_top_level_;
+        is_top_level_ = false;
         std::vector<StmtNode> body;
         while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
             auto stmt = parse_stmt();
-            if (!stmt.ok()) return ParseResult<BlockStatement>::Err(stmt.error());
+            if (!stmt.ok()) {
+                is_top_level_ = saved_top_level;
+                return ParseResult<BlockStatement>::Err(stmt.error());
+            }
             body.push_back(std::move(stmt.value()));
         }
         auto rb = expect(TokenKind::RBrace);
+        is_top_level_ = saved_top_level;
         if (!rb.ok()) return ParseResult<BlockStatement>::Err(rb.error());
         SourceRange range{lbrace.range.offset, rb.value().range.offset + 1 - lbrace.range.offset};
         return ParseResult<BlockStatement>::Ok(BlockStatement{std::move(body), range});
@@ -1157,7 +1196,10 @@ struct Parser {
             if (!rp2.ok()) return ParseResult<StmtNode>::Err(rp2.error());
         }
 
+        bool saved_top_level = is_top_level_;
+        is_top_level_ = false;
         auto body = parse_stmt();
+        is_top_level_ = saved_top_level;
         if (!body.ok()) return body;
         uint32_t for_end = range_end(stmt_range(body.value()));
         return ParseResult<StmtNode>::Ok(StmtNode{ForStatement{
@@ -1166,7 +1208,227 @@ struct Parser {
                 span(kw.range.offset, for_end)}});
     }
 
+    ParseResult<StmtNode> parse_import_decl() {
+        // cur 是 Ident("import")，由 parse_stmt 的上下文关键字检查分发至此
+        Token kw = cur;
+        advance();  // 消费 import
+
+        if (!is_top_level_) {
+            return ParseResult<StmtNode>::Err(
+                    make_parse_error(source, kw, "import declarations may only appear at top level"));
+        }
+
+        // 副作用导入：import 'specifier'
+        if (cur.kind == TokenKind::String) {
+            std::string spec = decode_string(token_text(cur));
+            Token spec_tok = cur;
+            advance();
+            auto semi = consume_semicolon();
+            if (!semi.ok()) return ParseResult<StmtNode>::Err(semi.error());
+            uint32_t end = range_end(semi.value().range);
+            if (end == semi.value().range.offset) end = range_end(spec_tok.range);
+            return ParseResult<StmtNode>::Ok(StmtNode{ImportDeclaration{
+                    std::move(spec), {}, span(kw.range.offset, end)}});
+        }
+
+        std::vector<ImportSpecifier> specifiers;
+
+        // import * as ns from '...'
+        if (cur.kind == TokenKind::Star) {
+            Token star_tok = cur;
+            advance();  // 消费 *
+            if (!is_contextual_keyword("as")) {
+                return ParseResult<StmtNode>::Err(
+                        make_parse_error(source, cur, "expected 'as' after '*' in import"));
+            }
+            advance();  // 消费 as
+            if (cur.kind != TokenKind::Ident) {
+                return ParseResult<StmtNode>::Err(
+                        make_parse_error(source, cur, "expected identifier after 'as'"));
+            }
+            std::string local{token_text(cur)};
+            SourceRange spec_range = span(star_tok.range.offset, range_end(cur.range));
+            advance();
+            specifiers.push_back(ImportSpecifier{"*", std::move(local), true, spec_range});
+        } else if (cur.kind == TokenKind::LBrace) {
+            // import { x, x as y, ... } from '...'
+            advance();  // 消费 {
+            while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
+                if (cur.kind != TokenKind::Ident) {
+                    return ParseResult<StmtNode>::Err(
+                            make_parse_error(source, cur, "expected identifier in import specifier"));
+                }
+                std::string imported{token_text(cur)};
+                uint32_t spec_start = cur.range.offset;
+                advance();
+                std::string local = imported;
+                if (is_contextual_keyword("as")) {
+                    advance();  // 消费 as
+                    if (cur.kind != TokenKind::Ident) {
+                        return ParseResult<StmtNode>::Err(
+                                make_parse_error(source, cur, "expected identifier after 'as'"));
+                    }
+                    local = std::string(token_text(cur));
+                    advance();
+                }
+                SourceRange spec_range = span(spec_start, range_end(cur.range));
+                specifiers.push_back(ImportSpecifier{std::move(imported), std::move(local), false, spec_range});
+                if (cur.kind == TokenKind::Comma) {
+                    advance();
+                } else {
+                    break;
+                }
+            }
+            auto rb = expect(TokenKind::RBrace);
+            if (!rb.ok()) return ParseResult<StmtNode>::Err(rb.error());
+        } else if (cur.kind == TokenKind::Ident) {
+            // import defaultExport from '...'
+            std::string local{token_text(cur)};
+            SourceRange spec_range = cur.range;
+            advance();
+            specifiers.push_back(ImportSpecifier{"default", std::move(local), false, spec_range});
+        } else {
+            return ParseResult<StmtNode>::Err(
+                    make_parse_error(source, cur, "unexpected token in import declaration"));
+        }
+
+        // 消费 from
+        if (!is_contextual_keyword("from")) {
+            return ParseResult<StmtNode>::Err(
+                    make_parse_error(source, cur, "expected 'from' in import declaration"));
+        }
+        advance();  // 消费 from
+
+        if (cur.kind != TokenKind::String) {
+            return ParseResult<StmtNode>::Err(
+                    make_parse_error(source, cur, "expected module specifier string"));
+        }
+        std::string spec = decode_string(token_text(cur));
+        Token spec_tok = cur;
+        advance();
+
+        auto semi = consume_semicolon();
+        if (!semi.ok()) return ParseResult<StmtNode>::Err(semi.error());
+        uint32_t end = range_end(semi.value().range);
+        if (end == semi.value().range.offset) end = range_end(spec_tok.range);
+
+        return ParseResult<StmtNode>::Ok(StmtNode{ImportDeclaration{
+                std::move(spec), std::move(specifiers), span(kw.range.offset, end)}});
+    }
+
+    ParseResult<StmtNode> parse_export_decl() {
+        // cur 是 Ident("export")，由 parse_stmt 的上下文关键字检查分发至此
+        Token kw = cur;
+        advance();  // 消费 export
+
+        if (!is_top_level_) {
+            return ParseResult<StmtNode>::Err(
+                    make_parse_error(source, kw, "export declarations may only appear at top level"));
+        }
+
+        // export default ...
+        if (is_contextual_keyword("default")) {
+            advance();  // 消费 default
+            // export default function [name]() {}
+            if (cur.kind == TokenKind::KwFunction) {
+                Token fn_tok = cur;
+                advance();  // 消费 function
+                std::optional<std::string> fn_name;
+                if (cur.kind == TokenKind::Ident) {
+                    fn_name = std::string(token_text(cur));
+                    advance();
+                }
+                auto params_result = parse_function_params();
+                if (!params_result.ok()) return ParseResult<StmtNode>::Err(params_result.error());
+                auto body_result = parse_function_body();
+                if (!body_result.ok()) return ParseResult<StmtNode>::Err(body_result.error());
+                uint32_t fn_end = range_end(body_result.value().second);
+                auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
+                auto fe = FunctionExpression{std::move(fn_name), std::move(params_result.value()),
+                                             std::move(body_ptr), span(fn_tok.range.offset, fn_end)};
+                auto expr_node = std::make_unique<ExprNode>(std::move(fe));
+                uint32_t decl_end = fn_end;
+                return ParseResult<StmtNode>::Ok(StmtNode{ExportDefaultDeclaration{
+                        std::move(expr_node), span(kw.range.offset, decl_end)}});
+            }
+            // export default expr
+            auto expr = parse_expr(0);
+            if (!expr.ok()) return ParseResult<StmtNode>::Err(expr.error());
+            auto semi = consume_semicolon();
+            if (!semi.ok()) return ParseResult<StmtNode>::Err(semi.error());
+            uint32_t end = range_end(semi.value().range);
+            if (end == semi.value().range.offset) end = range_end(expr_range(expr.value()));
+            auto expr_node = std::make_unique<ExprNode>(std::move(expr.value()));
+            return ParseResult<StmtNode>::Ok(StmtNode{ExportDefaultDeclaration{
+                    std::move(expr_node), span(kw.range.offset, end)}});
+        }
+
+        // export { x, y as z }
+        if (cur.kind == TokenKind::LBrace) {
+            advance();  // 消费 {
+            std::vector<ExportSpecifier> specifiers;
+            while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
+                if (cur.kind != TokenKind::Ident) {
+                    return ParseResult<StmtNode>::Err(
+                            make_parse_error(source, cur, "expected identifier in export specifier"));
+                }
+                std::string local{token_text(cur)};
+                uint32_t spec_start = cur.range.offset;
+                advance();
+                std::string exported = local;
+                if (is_contextual_keyword("as")) {
+                    advance();  // 消费 as
+                    if (cur.kind != TokenKind::Ident) {
+                        return ParseResult<StmtNode>::Err(
+                                make_parse_error(source, cur, "expected identifier after 'as'"));
+                    }
+                    exported = std::string(token_text(cur));
+                    advance();
+                }
+                SourceRange spec_range = span(spec_start, range_end(cur.range));
+                specifiers.push_back(ExportSpecifier{std::move(local), std::move(exported), spec_range});
+                if (cur.kind == TokenKind::Comma) {
+                    advance();
+                } else {
+                    break;
+                }
+            }
+            auto rb = expect(TokenKind::RBrace);
+            if (!rb.ok()) return ParseResult<StmtNode>::Err(rb.error());
+            auto semi = consume_semicolon();
+            if (!semi.ok()) return ParseResult<StmtNode>::Err(semi.error());
+            uint32_t end = range_end(semi.value().range);
+            if (end == semi.value().range.offset) end = range_end(rb.value().range);
+            return ParseResult<StmtNode>::Ok(StmtNode{ExportNamedDeclaration{
+                    nullptr, std::move(specifiers), span(kw.range.offset, end)}});
+        }
+
+        // export const/let/var/function ...
+        ParseResult<StmtNode> inner_result = ParseResult<StmtNode>::Err(
+                make_parse_error(source, cur, "unexpected token after export"));
+        if (cur.kind == TokenKind::KwConst || cur.kind == TokenKind::KwLet || cur.kind == TokenKind::KwVar) {
+            inner_result = parse_var_decl();
+        } else if (cur.kind == TokenKind::KwFunction) {
+            inner_result = parse_function_decl_stmt();
+        } else {
+            return inner_result;
+        }
+        if (!inner_result.ok()) return inner_result;
+        auto decl_ptr = std::make_unique<StmtNode>(std::move(inner_result.value()));
+        uint32_t end = range_end(stmt_range(*decl_ptr));
+        return ParseResult<StmtNode>::Ok(StmtNode{ExportNamedDeclaration{
+                std::move(decl_ptr), {}, span(kw.range.offset, end)}});
+    }
+
     ParseResult<StmtNode> parse_stmt() {
+        // import/export are contextual keywords (not in kKeywords), so the lexer
+        // produces Ident tokens for them. Only treat them as module declarations
+        // when at top level; otherwise they are ordinary identifiers.
+        if (is_top_level_ && cur.kind == TokenKind::Ident) {
+            auto text = token_text(cur);
+            if (text == "import") return parse_import_decl();
+            if (text == "export") return parse_export_decl();
+        }
         switch (cur.kind) {
             case TokenKind::KwLet:
             case TokenKind::KwConst:
@@ -1199,7 +1461,10 @@ struct Parser {
                 if (cur.kind == TokenKind::Colon) {
                     advance();  // 消费 :
                     std::string lbl{token_text(ident_tok)};
+                    bool saved_top_level = is_top_level_;
+                    is_top_level_ = false;
                     auto body = parse_stmt();
+                    is_top_level_ = saved_top_level;
                     if (!body.ok()) return body;
                     uint32_t lbl_end = range_end(stmt_range(body.value()));
                     return ParseResult<StmtNode>::Ok(StmtNode{LabeledStatement{
@@ -1243,6 +1508,41 @@ struct Parser {
             if (!stmt.ok()) return ParseResult<Program>::Err(stmt.error());
             body.push_back(std::move(stmt.value()));
         }
+
+        // 检查重复导出名
+        std::unordered_set<std::string> export_names;
+        for (const auto& stmt : body) {
+            if (const auto* e = std::get_if<ExportNamedDeclaration>(&stmt.v)) {
+                // 带声明的 export：收集声明名
+                if (e->declaration) {
+                    std::string decl_name;
+                    if (const auto* vd = std::get_if<VariableDeclaration>(&e->declaration->v)) {
+                        decl_name = vd->name;
+                    } else if (const auto* fd = std::get_if<FunctionDeclaration>(&e->declaration->v)) {
+                        decl_name = fd->name;
+                    }
+                    if (!decl_name.empty()) {
+                        if (!export_names.insert(decl_name).second) {
+                            return ParseResult<Program>::Err(
+                                    Error{ErrorKind::Syntax, "duplicate export name: " + decl_name});
+                        }
+                    }
+                }
+                // 带 specifiers 的 export
+                for (const auto& spec : e->specifiers) {
+                    if (!export_names.insert(spec.export_name).second) {
+                        return ParseResult<Program>::Err(
+                                Error{ErrorKind::Syntax, "duplicate export name: " + spec.export_name});
+                    }
+                }
+            } else if (std::holds_alternative<ExportDefaultDeclaration>(stmt.v)) {
+                if (!export_names.insert(std::string("default")).second) {
+                    return ParseResult<Program>::Err(
+                            Error{ErrorKind::Syntax, "duplicate export name: default"});
+                }
+            }
+        }
+
         uint32_t len = static_cast<uint32_t>(source.size());
         return ParseResult<Program>::Ok(Program{std::move(body), {0, len}});
     }

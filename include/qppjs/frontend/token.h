@@ -39,6 +39,8 @@ enum class TokenKind {
     KwCatch,
     KwFinally,
     KwInstanceof,
+    KwImport,
+    KwExport,
 
     // 标点
     LParen,

@@ -255,6 +255,24 @@ void Compiler::compile_stmt(const StmtNode& stmt) {
             [this](const ContinueStatement& s) { compile_continue_stmt(s); },
             [this](const LabeledStatement& s) { compile_labeled_stmt(s); },
             [this](const ForStatement& s) { compile_for_stmt(s); },
+            [this](const ImportDeclaration&) {
+                uint16_t idx = add_constant(Value::string("SyntaxError: import not implemented"));
+                emit(Opcode::kLoadString);
+                emit_u16(idx);
+                emit(Opcode::kThrow);
+            },
+            [this](const ExportNamedDeclaration&) {
+                uint16_t idx = add_constant(Value::string("SyntaxError: export not implemented"));
+                emit(Opcode::kLoadString);
+                emit_u16(idx);
+                emit(Opcode::kThrow);
+            },
+            [this](const ExportDefaultDeclaration&) {
+                uint16_t idx = add_constant(Value::string("SyntaxError: export default not implemented"));
+                emit(Opcode::kLoadString);
+                emit_u16(idx);
+                emit(Opcode::kThrow);
+            },
         },
         stmt.v);
 }
