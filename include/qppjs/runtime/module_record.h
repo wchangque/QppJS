@@ -1,7 +1,6 @@
 #pragma once
 
 #include "qppjs/frontend/ast.h"
-#include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/environment.h"
 #include "qppjs/runtime/gc_heap.h"
 #include "qppjs/runtime/rc_object.h"

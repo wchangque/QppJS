@@ -3,17 +3,18 @@
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/environment.h"
 #include "qppjs/runtime/gc_heap.h"
+#include "qppjs/runtime/job_queue.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/module_loader.h"
 #include "qppjs/runtime/native_errors.h"
+#include "qppjs/runtime/promise.h"
 #include "qppjs/runtime/rc_object.h"
 #include "qppjs/runtime/value.h"
 #include "qppjs/vm/bytecode.h"
 
 #include <array>
 #include <deque>
-#include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
@@ -88,8 +89,18 @@ private:
 
     Value make_error_value(NativeErrorType type, const std::string& message);
 
+    // Promise helpers
+    RcPtr<JSPromise> vm_promise_resolve(Value value);
+    void vm_execute_reaction_job(ReactionJob job);
+    void vm_drain_job_queue();
+
     GcHeap gc_heap_;
     ModuleLoader module_loader_;
+    JobQueue job_queue_;
+
+    // Pending throw value for native functions that need to re-throw
+    // (used when call_stack_ may be empty, e.g., during job queue drain).
+    std::optional<Value> native_pending_throw_;
 
     // deque: push_back does not invalidate references to existing elements
     std::deque<CallFrame> call_stack_;
@@ -99,6 +110,7 @@ private:
     RcPtr<JSObject> object_prototype_;
     RcPtr<JSObject> array_prototype_;
     RcPtr<JSObject> function_prototype_; // Function.prototype (call/apply/bind)
+    RcPtr<JSObject> promise_prototype_;  // Promise.prototype (then/catch/finally)
     RcPtr<JSFunction> object_constructor_;  // global Object function
     RcPtr<Environment> global_env_;
 

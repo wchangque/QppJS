@@ -227,6 +227,8 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const CallExpression& n) { return n.range; },
                               [](const NewExpression& n) { return n.range; },
                               [](const ArrayExpression& n) { return n.range; },
+                              [](const AwaitExpression& n) { return n.range; },
+                              [](const AsyncFunctionExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -241,6 +243,7 @@ static SourceRange stmt_range(const StmtNode& s) {
                               [](const WhileStatement& n) { return n.range; },
                               [](const ReturnStatement& n) { return n.range; },
                               [](const FunctionDeclaration& n) { return n.range; },
+                              [](const AsyncFunctionDeclaration& n) { return n.range; },
                               [](const ThrowStatement& n) { return n.range; },
                               [](const TryStatement& n) { return n.range; },
                               [](const BreakStatement& n) { return n.range; },
@@ -262,10 +265,11 @@ struct Parser {
     Token cur;         // 当前已消费 token（lookahead）
     bool got_lf;       // cur 前是否有换行（ASI 用）
     bool is_top_level_; // import/export 只允许在顶层
+    bool in_async_function_; // P2-E: await 只在 async 函数体内有效
 
     explicit Parser(std::string_view src)
         : source(src), lex(lexer_init(src)), cur{TokenKind::Eof, {0, 0}}, got_lf(false),
-          is_top_level_(true) {
+          is_top_level_(true), in_async_function_(false) {
         advance();  // 载入第一个 token
     }
 
@@ -373,7 +377,44 @@ struct Parser {
             case TokenKind::KwNull:
                 return ParseResult<ExprNode>::Ok(ExprNode{NullLiteral{tok.range}});
             case TokenKind::Ident: {
-                std::string name{token_text(tok)};
+                std::string_view tok_text = token_text(tok);
+                // async function [name](params) { body }  — async 函数表达式
+                // 条件：tok 文本为 "async"，且 cur 为 KwFunction，且 tok 与 cur 之间无换行
+                if (tok_text == "async" && cur.kind == TokenKind::KwFunction && !got_lf) {
+                    advance();  // 消费 function
+                    std::optional<std::string> fn_name;
+                    if (cur.kind == TokenKind::Ident) {
+                        fn_name = std::string(token_text(cur));
+                        advance();
+                    }
+                    auto params_result = parse_function_params();
+                    if (!params_result.ok()) return ParseResult<ExprNode>::Err(params_result.error());
+                    bool saved_in_async = in_async_function_;
+                    in_async_function_ = true;
+                    auto body_result = parse_function_body();
+                    in_async_function_ = saved_in_async;
+                    if (!body_result.ok()) return ParseResult<ExprNode>::Err(body_result.error());
+                    uint32_t fn_end = range_end(body_result.value().second);
+                    auto body_ptr = std::make_shared<std::vector<StmtNode>>(
+                        std::move(body_result.value().first));
+                    return ParseResult<ExprNode>::Ok(ExprNode{AsyncFunctionExpression{
+                        std::move(fn_name), std::move(params_result.value()),
+                        std::move(body_ptr), span(tok.range.offset, fn_end)}});
+                }
+                // await expr — await 表达式（只在 async 函数体内有效）
+                if (tok_text == "await" && !got_lf && in_async_function_) {
+                    // 只有当后续不是分号/}时才解析为 await 表达式
+                    if (cur.kind != TokenKind::Semicolon && cur.kind != TokenKind::RBrace &&
+                        cur.kind != TokenKind::Eof) {
+                        auto arg = parse_expr(14);  // 高优先级，不消费逗号/赋值
+                        if (!arg.ok()) return arg;
+                        uint32_t end = range_end(expr_range(arg.value()));
+                        return ParseResult<ExprNode>::Ok(ExprNode{AwaitExpression{
+                            std::make_unique<ExprNode>(std::move(arg.value())),
+                            span(tok.range.offset, end)}});
+                    }
+                }
+                std::string name{tok_text};
                 return ParseResult<ExprNode>::Ok(ExprNode{Identifier{std::move(name), tok.range}});
             }
             case TokenKind::KwThis:
@@ -466,7 +507,11 @@ struct Parser {
                 }
                 auto params_result = parse_function_params();
                 if (!params_result.ok()) return ParseResult<ExprNode>::Err(params_result.error());
+                // P2-E: non-async function body resets in_async_function_ context
+                bool saved_in_async_fe = in_async_function_;
+                in_async_function_ = false;
                 auto body_result = parse_function_body();
+                in_async_function_ = saved_in_async_fe;
                 if (!body_result.ok()) return ParseResult<ExprNode>::Err(body_result.error());
                 uint32_t fn_end = range_end(body_result.value().second);
                 auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
@@ -587,8 +632,10 @@ struct Parser {
         }
 
         // 成员访问：obj.prop
+        // 属性名可以是标识符或关键字（如 obj.catch, obj.finally, obj.return 等）
         if (kind == TokenKind::Dot) {
-            if (cur.kind != TokenKind::Ident) {
+            bool is_prop_name = cur.kind == TokenKind::Ident || is_keyword(cur.kind);
+            if (!is_prop_name) {
                 return ParseResult<ExprNode>::Err(
                         make_parse_error(source, cur, "expected property name after '.'"));
             }
@@ -1005,7 +1052,11 @@ struct Parser {
         advance();
         auto params_result = parse_function_params();
         if (!params_result.ok()) return ParseResult<StmtNode>::Err(params_result.error());
+        // P2-E: non-async function body resets in_async_function_ context
+        bool saved_in_async_fd = in_async_function_;
+        in_async_function_ = false;
         auto body_result = parse_function_body();
+        in_async_function_ = saved_in_async_fd;
         if (!body_result.ok()) return ParseResult<StmtNode>::Err(body_result.error());
         uint32_t fn_end = range_end(body_result.value().second);
         auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
@@ -1467,6 +1518,55 @@ struct Parser {
             case TokenKind::KwFor:
                 return parse_for_stmt();
             case TokenKind::Ident: {
+                // async function name(params) { body } — async 函数声明
+                if (token_text(cur) == "async") {
+                    Token async_tok = cur;
+                    advance();  // 消费 async
+                    if (cur.kind == TokenKind::KwFunction && !got_lf) {
+                        advance();  // 消费 function
+                        if (cur.kind != TokenKind::Ident) {
+                            return ParseResult<StmtNode>::Err(
+                                make_parse_error(source, cur, "expected function name after 'async function'"));
+                        }
+                        std::string fn_name{token_text(cur)};
+                        advance();
+                        auto params_result = parse_function_params();
+                        if (!params_result.ok()) return ParseResult<StmtNode>::Err(params_result.error());
+                        bool saved_in_async2 = in_async_function_;
+                        in_async_function_ = true;
+                        auto body_result = parse_function_body();
+                        in_async_function_ = saved_in_async2;
+                        if (!body_result.ok()) return ParseResult<StmtNode>::Err(body_result.error());
+                        uint32_t fn_end = range_end(body_result.value().second);
+                        auto body_ptr = std::make_shared<std::vector<StmtNode>>(
+                            std::move(body_result.value().first));
+                        return ParseResult<StmtNode>::Ok(StmtNode{AsyncFunctionDeclaration{
+                            std::move(fn_name), std::move(params_result.value()),
+                            std::move(body_ptr), span(async_tok.range.offset, fn_end)}});
+                    }
+                    // async 后面不是 function：回退，把 async_tok 当普通标识符处理
+                    // 将 async_tok 作为表达式 nud 处理
+                    Token ident_tok2 = async_tok;
+                    auto left2 = nud(ident_tok2);
+                    if (!left2.ok()) return ParseResult<StmtNode>::Err(left2.error());
+                    while (true) {
+                        int bp = lbp(cur.kind);
+                        if (bp <= 0) break;
+                        Token op_tok3 = cur;
+                        advance();
+                        auto res3 = led(op_tok3, std::move(left2.value()));
+                        if (!res3.ok()) return ParseResult<StmtNode>::Err(res3.error());
+                        left2 = std::move(res3);
+                    }
+                    auto semi3 = consume_semicolon();
+                    if (!semi3.ok()) return ParseResult<StmtNode>::Err(semi3.error());
+                    uint32_t es_end3 = range_end(semi3.value().range);
+                    if (es_end3 == semi3.value().range.offset) {
+                        es_end3 = range_end(expr_range(left2.value()));
+                    }
+                    return ParseResult<StmtNode>::Ok(StmtNode{ExpressionStatement{
+                        std::move(left2.value()), span(async_tok.range.offset, es_end3)}});
+                }
                 // 向前看：若下一个 token 是 ':'，则解析为 LabeledStatement
                 Token ident_tok = cur;
                 advance();

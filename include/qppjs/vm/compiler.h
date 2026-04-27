@@ -1,7 +1,6 @@
 #pragma once
 
 #include "qppjs/frontend/ast.h"
-#include "qppjs/runtime/completion.h"
 #include "qppjs/vm/bytecode.h"
 #include "qppjs/vm/opcode.h"
 
@@ -64,6 +63,7 @@ private:
     void compile_while_stmt(const WhileStatement& stmt, std::optional<std::string> label = std::nullopt);
     void compile_return_stmt(const ReturnStatement& stmt);
     void compile_function_decl(const FunctionDeclaration& stmt);
+    void compile_async_function_decl(const AsyncFunctionDeclaration& stmt);
     void compile_throw_stmt(const ThrowStatement& stmt);
     void compile_try_stmt(const TryStatement& stmt);
     void compile_break_stmt(const BreakStatement& stmt);
@@ -81,6 +81,7 @@ private:
     void compile_member_expr(const MemberExpression& expr);
     void compile_member_assign(const MemberAssignmentExpression& expr);
     void compile_function_expr(const FunctionExpression& expr);
+    void compile_async_function_expr(const AsyncFunctionExpression& expr);
     void compile_call_expr(const CallExpression& expr);
     void compile_new_expr(const NewExpression& expr);
     void compile_array_expr(const ArrayExpression& expr);

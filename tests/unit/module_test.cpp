@@ -14,9 +14,7 @@
 //  11. 模块顶层 this === undefined
 //  12. export const 模块内重赋值 → TypeError
 
-#include "qppjs/frontend/parser.h"
 #include "qppjs/runtime/interpreter.h"
-#include "qppjs/vm/compiler.h"
 #include "qppjs/vm/vm.h"
 
 #include <gtest/gtest.h>
@@ -24,7 +22,6 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <string_view>
 
 namespace {
 

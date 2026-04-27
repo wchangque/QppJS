@@ -3,7 +3,6 @@
 #include "qppjs/frontend/ast.h"
 
 #include <gtest/gtest.h>
-#include <string>
 
 using namespace qppjs;
 

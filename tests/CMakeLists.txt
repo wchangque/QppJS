@@ -26,6 +26,7 @@ add_executable(qppjs_unit_tests
     unit/gc_heap_test.cpp
     unit/parser_module_test.cpp
     unit/module_test.cpp
+    unit/promise_test.cpp
 )
 
 target_link_libraries(qppjs_unit_tests PRIVATE qppjs_core GTest::gtest_main)

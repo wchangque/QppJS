@@ -216,6 +216,26 @@ std::string dump_expr(const ExprNode& node, int indent) {
                                result += dump_expr(*elem, indent + 1);
                            }
                        },
+                       [&](const AwaitExpression& aw) {
+                           result = prefix + "AwaitExpression\n";
+                           result += ind(indent + 1) + "argument:\n";
+                           result += dump_expr(*aw.argument, indent + 2);
+                       },
+                       [&](const AsyncFunctionExpression& afe) {
+                           result = prefix + "AsyncFunctionExpression";
+                           if (afe.name.has_value()) result += " " + *afe.name;
+                           result += "\n";
+                           result += ind(indent + 1) + "params: (";
+                           for (size_t i = 0; i < afe.params.size(); ++i) {
+                               if (i > 0) result += ", ";
+                               result += afe.params[i];
+                           }
+                           result += ")\n";
+                           result += ind(indent + 1) + "body:\n";
+                           for (const auto& s : *afe.body) {
+                               result += dump_stmt(s, indent + 2);
+                           }
+                       },
                },
                node.v);
 
@@ -286,6 +306,19 @@ std::string dump_stmt(const StmtNode& node, int indent) {
                            result += ")\n";
                            result += ind(indent + 1) + "body:\n";
                            for (const auto& s : *fd.body) {
+                               result += dump_stmt(s, indent + 2);
+                           }
+                       },
+                       [&](const AsyncFunctionDeclaration& afd) {
+                           result = prefix + "AsyncFunctionDeclaration " + afd.name + "\n";
+                           result += ind(indent + 1) + "params: (";
+                           for (size_t i = 0; i < afd.params.size(); ++i) {
+                               if (i > 0) result += ", ";
+                               result += afd.params[i];
+                           }
+                           result += ")\n";
+                           result += ind(indent + 1) + "body:\n";
+                           for (const auto& s : *afd.body) {
                                result += dump_stmt(s, indent + 2);
                            }
                        },

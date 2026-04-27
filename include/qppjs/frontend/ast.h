@@ -129,6 +129,20 @@ struct ArrayExpression {
     SourceRange range;
 };
 
+// await 表达式（只在 async 函数体内合法）
+struct AwaitExpression {
+    std::unique_ptr<ExprNode> argument;
+    SourceRange range;
+};
+
+// async 函数表达式 async function [name](params) { body }
+struct AsyncFunctionExpression {
+    std::optional<std::string> name;
+    std::vector<std::string> params;
+    std::shared_ptr<std::vector<StmtNode>> body;
+    SourceRange range;
+};
+
 // 调用表达式 callee(args)
 struct CallExpression {
     std::unique_ptr<ExprNode> callee;
@@ -149,7 +163,8 @@ struct ExprNode {
     std::variant<NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, Identifier, UnaryExpression,
                  BinaryExpression, LogicalExpression, AssignmentExpression,
                  ObjectExpression, MemberExpression, MemberAssignmentExpression,
-                 FunctionExpression, CallExpression, NewExpression, ArrayExpression>
+                 FunctionExpression, CallExpression, NewExpression, ArrayExpression,
+                 AwaitExpression, AsyncFunctionExpression>
             v;
 
     ExprNode() = default;
@@ -199,6 +214,14 @@ struct ReturnStatement {
 
 // 函数声明语句 function name(params) { body }
 struct FunctionDeclaration {
+    std::string name;
+    std::vector<std::string> params;
+    std::shared_ptr<std::vector<StmtNode>> body;
+    SourceRange range;
+};
+
+// async 函数声明语句 async function name(params) { body }
+struct AsyncFunctionDeclaration {
     std::string name;
     std::vector<std::string> params;
     std::shared_ptr<std::vector<StmtNode>> body;
@@ -284,7 +307,7 @@ struct ExportDefaultDeclaration {
 
 struct StmtNode {
     std::variant<ExpressionStatement, VariableDeclaration, BlockStatement, IfStatement, WhileStatement,
-                 ReturnStatement, FunctionDeclaration,
+                 ReturnStatement, FunctionDeclaration, AsyncFunctionDeclaration,
                  ThrowStatement, TryStatement, BreakStatement, ContinueStatement,
                  LabeledStatement, ForStatement,
                  ImportDeclaration, ExportNamedDeclaration, ExportDefaultDeclaration>

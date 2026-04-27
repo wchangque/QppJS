@@ -1,13 +1,11 @@
 #pragma once
 
-#include "qppjs/base/error.h"
 #include "qppjs/base/result.h"
 #include "qppjs/runtime/module_record.h"
 #include "qppjs/runtime/rc_object.h"
 
 #include <string>
 #include <unordered_map>
-#include <vector>
 
 namespace qppjs {
 

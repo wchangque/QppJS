@@ -6,10 +6,10 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | Phase 10.2 Review M1/M2/M3 修复完成（ESM live binding、TDZ、export default 具名函数绑定） |
-| 测试计数 | 1458/1458 通过（coverage + run_ut），0 LSan 泄漏 |
-| 最近更新 | 2026-04-26 |
-| 下一步 | Phase 11（待定，可能是 P3-1 JSString 优化或更多内建对象） |
+| 当前阶段 | Phase 11 完成（Promise/Async/Await，Review 验证通过） |
+| 测试计数 | 1596/1596 通过（coverage），1594/1594 通过（run_ut ASAN），0 LSan 泄漏 |
+| 最近更新 | 2026-04-27 |
+| 下一步 | Phase 12（待定：P3-1 JSString 优化、更多内建对象、dynamic import()）|
 
 ## 已知遗留问题
 
@@ -17,9 +17,13 @@
 - ~~**P2-2**：已在 8.7 修复~~
 - **P3-1**：`JSString` 二次堆分配（`std::string` 成员），已知技术债务，Phase 10 优化
 - ~~**P3-2**：已在 Phase 9.1-9.5 通过 mark-sweep GC 修复~~
+- **P2-A**：`await` 异步顺序保证（await 后的代码应在下一个 microtask tick 执行，而非同步执行）——需要协程挂起/恢复机制，暂未实现
 
 ## 最近完成
 
+- [x] Phase 11 Review 修复（P2-B/C/D/E/F）：P2-B：Promise.prototype 挂载到构造函数（Interp+VM 两侧 set_property("prototype")，修复 kFunction 属性读取优先查 own_properties_）；P2-C：async 函数声明提升（Interpreter hoist_vars_stmt 立即赋值，eval_async_function_decl 改为 no-op；VM compiler hoist 循环增加 AsyncFunctionDeclaration 处理，compile_async_function_decl 改为 no-op）；P2-D：命名 async 函数表达式内部自引用绑定（Interp native_fn 里通过 fn_self_raw 在 fn_env 绑定名字；VM compile_async_function_expr 设置 is_named_expr，push_call_frame 已处理）；P2-E：await 解析限制在 async 函数体内（Parser 添加 in_async_function_ 标志，async 函数体设 true，非 async 函数体设 false，nud 里 await 仅在 in_async_function_ 时解析为 AwaitExpression）；P2-F：Promise 自循环 resolve 拒绝（execute_reaction_job/vm_execute_reaction_job 里检测 inner == cap_rc，reject with TypeError）。新增 16 个测试（8 组 Interp+VM 对称，覆盖 P2-B/C/D/E/F）。1596/1596 通过（coverage），1594/1594 通过（run_ut ASAN），0 LSan 泄漏。
+- [x] Phase 11 Testing Agent 边界补测：追加 80 个测试（40 组 Interp+VM 对称）。新增覆盖：C5/C6 settled 幂等（resolve/reject 多次调用静默忽略，resolve-after-reject）、C7 自解析（通过 resolve(fulfilled_promise) 验证 thenable 路径）、C10 then 返回新 Promise、C11 handler 非函数透传（null/undefined onFulfilled 透传值，null/undefined onRejected 透传 rejection）、C14 finally 不改变值/rejection、E9/C15 finally fn throw 替代原值、C15 finally fn 返回 rejected Promise 替代原值（同时修复 Interpreter 和 VM 侧 finally 实现 bug）、C16 Promise.resolve identity、C17 Promise.reject 始终新建、C2 同步代码先于微任务、C3 嵌套微任务在同一 DrainAll 轮处理、FIFO 并发顺序、C19 async 同步返回 Promise 类型检查、C22 async throw 不向外同步传播、C23 try/catch 捕获 await rejected、E12 await rejected 未捕获 reject 外层、async 表达式赋值、三层 await 串行、Promise.resolve(undefined/null)、catch recovery then chain、then onRejected 参数、executor 同步调用、async 无 await 路径、async 隐式 return undefined、await 原始值（string/null）、Promise constructor 非函数 TypeError、混合链 catch→then→catch、async await 继续执行步骤、finally after then throw、executor resolve-before-reject 幂等。修复 VM 侧 finally reject_wrapper 使用 `native_pending_throw_` 机制（原实现用字符串前缀编码导致 rejection reason 被包装为字符串）。1580/1580 通过（coverage），1580/1580 通过（run_ut ASAN），0 LSan 泄漏。
+- [x] Phase 11：Promise/Async/Await 实现。新增 `JobQueue`（微任务队列，ReactionJob 结构）、`JSPromise`（继承 RcObject，kPromise，Fulfill/Reject/PerformThen/EnqueueReactions）；扩展 AST（`AwaitExpression`、`AsyncFunctionExpression`、`AsyncFunctionDeclaration`）；Parser 支持 `async function` 声明/表达式、`await expr`（contextual keyword）；`obj.catch`/`obj.finally` 等关键字属性名修复（Dot 访问接受任意 keyword）；Interpreter 侧：`promise_prototype_`（then/catch/finally）、Promise 全局构造函数（Promise.resolve/reject）、`execute_reaction_job`/`drain_job_queue`、`make_async_function_value`（NativeFn 包装，DrainAll 同步化）、`eval_await_expr`（同步 DrainAll 方案）；VM 侧：对称实现，`kMakeFunction` 识别 `is_async` 标志创建 async wrapper，`kAwait` 指令同步 DrainAll；`exec()` 末尾 DrainAll + 重读最后标识符表达式；RcPtr 修复（lambda 捕获 promise 用 RcPtr 而非 raw pointer，消除 UAF）；GC 安全（async wrapper `own_properties_["__async_inner__"]` 使 inner_fn 可达）。新增 42 个测试（21 组 Interp+VM 对称），1500/1500 通过（coverage），1498/1498 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] Phase 10.2 Review M1/M2/M3 修复：M1：`export { x as y }` live binding 修复（Load 阶段为 export_name 分配 Cell，Link 阶段以 local_name 为 key 注入 module_env，删除 exec_module_body 末尾快照逻辑，Interpreter + VM 两侧对称）；M2：`export let/const` TDZ 跨模块共享（Cell 增加 `initialized` 字段，`define_binding_with_cell` 增加 `initialized` 参数，`define_import_binding` 改为 `initialized=false`，`get()` 改为检查 `cell->initialized`，`initialize()` 同时设置两者；hoist 阶段为 var/function 标记 `cell->initialized=true`）；M3：`export default function foo(){}` 模块内 `foo` 绑定（AST `ExportDefaultDeclaration` 增加 `local_name` 字段，Parser 保留 fn_name，Interpreter hoist_module_vars 建立 foo Binding，执行时 set(foo, fn_val)；VM compiler emit kDup+kSetVar，exec_module_body 预定义 foo Binding）。新增 6 个测试（M36/M37/M38 各 Interp+VM 对称）。1458/1458 通过，0 LSan 泄漏。
 - [x] Phase 10.2 Testing Agent 边界补测：追加 42 个测试（21 组 Interp+VM 对称）。新增覆盖：export var live binding、export function 提升（同时修复 Interpreter 侧 hoist_module_vars 未对 export function 做提升的 bug）、模块执行顺序、同一模块被多个 importer 共享 Cell、相对路径 `../` 跨目录、裸模块说明符报错、模块作用域隔离（非导出 let/var 不泄漏）、错误缓存两次 import 同一失败模块、多条 import 语句从同一模块导入、循环依赖中 var 无 TDZ、副作用模块确实被执行、re-export 别名、re-export live binding（Cell 共享）、默认+具名导出共存（分两条 import）、多别名 export specifier、导入不存在的默认导出报 SyntaxError、导入不存在的 re-export 名报 SyntaxError、export let 无初始值为 undefined、非导出 var 隔离、模块缓存幂等性（三个 importer 读同一模块只执行一次）。1452/1452 通过，0 LSan 泄漏。
 - [x] Phase 10.2：ESM 模块系统实现。新增 `ModuleRecord`（继承 RcObject，kModule）、`ModuleLoader`（文件加载+缓存）；扩展 AST `ExportNamedDeclaration` 添加 `source` 字段（re-export）；Parser 支持 `export { v } from './a.js'`；扩展 Environment（`define_binding_with_cell`、`define_import_binding`）；Interpreter 和 VM 各自实现 Load/Link/Evaluate 三阶段；VM 新增 `kSetExportDefault` 指令；Compiler 修改 export function 提升逻辑；循环依赖、模块缓存、错误缓存、live binding、re-export、副作用导入全部实现。新增 36 个测试（18 Interp + 18 VM），1410/1410 通过，0 LSan 泄漏。
@@ -61,7 +65,7 @@
 
 ## 未开始
 
-- Phase 11（Promise / Async）
+- Phase 12（QuickJS 风格优化，或 P3-1 JSString 优化、更多内建对象）
 
 ## 阻塞
 

@@ -583,6 +583,241 @@ void Interpreter::init_runtime() {
     });
     function_prototype_->set_property("bind", Value::object(ObjectPtr(bind_fn)));
 
+    // ---- Promise ----
+
+    // Build Promise.prototype
+    promise_prototype_ = RcPtr<JSObject>::make();
+    promise_prototype_->set_proto(object_prototype_);
+
+    // Promise.prototype.then
+    auto then_fn = RcPtr<JSFunction>::make();
+    then_fn->set_name(std::string("then"));
+    then_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kPromise) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Promise.prototype.then called on non-Promise");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* p = static_cast<JSPromise*>(raw);
+        auto promise_rc = RcPtr<JSPromise>(p);
+        Value on_fulfilled = args.size() > 0 ? args[0] : Value::undefined();
+        Value on_rejected = args.size() > 1 ? args[1] : Value::undefined();
+        auto result_promise = JSPromise::PerformThen(promise_rc, on_fulfilled, on_rejected, job_queue_);
+        gc_heap_.Register(result_promise.get());
+        return EvalResult::ok(Value::object(ObjectPtr(result_promise)));
+    });
+    promise_prototype_->set_property("then", Value::object(ObjectPtr(then_fn)));
+
+    // Promise.prototype.catch
+    auto catch_fn = RcPtr<JSFunction>::make();
+    catch_fn->set_name(std::string("catch"));
+    catch_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kPromise) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Promise.prototype.catch called on non-Promise");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* p = static_cast<JSPromise*>(raw);
+        auto promise_rc = RcPtr<JSPromise>(p);
+        Value on_rejected = args.size() > 0 ? args[0] : Value::undefined();
+        auto result_promise = JSPromise::PerformThen(promise_rc, Value::undefined(), on_rejected, job_queue_);
+        gc_heap_.Register(result_promise.get());
+        return EvalResult::ok(Value::object(ObjectPtr(result_promise)));
+    });
+    promise_prototype_->set_property("catch", Value::object(ObjectPtr(catch_fn)));
+
+    // Promise.prototype.finally
+    auto finally_fn = RcPtr<JSFunction>::make();
+    finally_fn->set_name(std::string("finally"));
+    finally_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kPromise) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Promise.prototype.finally called on non-Promise");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* p = static_cast<JSPromise*>(raw);
+        auto promise_rc = RcPtr<JSPromise>(p);
+        Value on_finally = args.size() > 0 ? args[0] : Value::undefined();
+
+        // finally 语义：无论 fulfill/reject 都调用 on_finally，然后传递原始值
+        // 用 then(fulfill_wrapper, reject_wrapper) 实现
+        Value captured_on_finally = on_finally;
+
+        auto fulfill_wrapper = RcPtr<JSFunction>::make();
+        fulfill_wrapper->set_native_fn([this, captured_on_finally](Value /*this_val*/,
+                std::vector<Value> args2, bool) mutable -> EvalResult {
+            Value val = args2.empty() ? Value::undefined() : args2[0];
+            if (captured_on_finally.is_object() &&
+                captured_on_finally.as_object_raw() &&
+                captured_on_finally.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                std::vector<Value> no_args;
+                auto r = call_function_val(captured_on_finally, Value::undefined(),
+                                           std::span<Value>(no_args.data(), no_args.size()));
+                if (!r.is_ok()) return r;
+                // C15: if finally fn returns a rejected Promise, propagate its reason
+                if (r.is_ok() && r.value().is_object() && r.value().as_object_raw() &&
+                    r.value().as_object_raw()->object_kind() == ObjectKind::kPromise) {
+                    auto* rp = static_cast<JSPromise*>(r.value().as_object_raw());
+                    if (rp->state() == PromiseState::kRejected) {
+                        pending_throw_ = rp->result();
+                        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                    }
+                }
+            }
+            return EvalResult::ok(val);
+        });
+        gc_heap_.Register(fulfill_wrapper.get());
+
+        auto reject_wrapper = RcPtr<JSFunction>::make();
+        reject_wrapper->set_native_fn([this, captured_on_finally](Value /*this_val*/,
+                std::vector<Value> args2, bool) mutable -> EvalResult {
+            Value reason = args2.empty() ? Value::undefined() : args2[0];
+            if (captured_on_finally.is_object() &&
+                captured_on_finally.as_object_raw() &&
+                captured_on_finally.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                std::vector<Value> no_args;
+                auto r = call_function_val(captured_on_finally, Value::undefined(),
+                                           std::span<Value>(no_args.data(), no_args.size()));
+                if (!r.is_ok()) return r;
+                // C15: if finally fn returns a rejected Promise, propagate its reason
+                if (r.is_ok() && r.value().is_object() && r.value().as_object_raw() &&
+                    r.value().as_object_raw()->object_kind() == ObjectKind::kPromise) {
+                    auto* rp = static_cast<JSPromise*>(r.value().as_object_raw());
+                    if (rp->state() == PromiseState::kRejected) {
+                        pending_throw_ = rp->result();
+                        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                    }
+                }
+            }
+            // re-throw original rejection reason
+            pending_throw_ = reason;
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        });
+        gc_heap_.Register(reject_wrapper.get());
+
+        auto result_promise = JSPromise::PerformThen(promise_rc,
+            Value::object(ObjectPtr(fulfill_wrapper)),
+            Value::object(ObjectPtr(reject_wrapper)),
+            job_queue_);
+        gc_heap_.Register(result_promise.get());
+        return EvalResult::ok(Value::object(ObjectPtr(result_promise)));
+    });
+    promise_prototype_->set_property("finally", Value::object(ObjectPtr(finally_fn)));
+
+    // Promise constructor
+    auto promise_ctor = RcPtr<JSFunction>::make();
+    promise_ctor->set_name(std::string("Promise"));
+    promise_ctor->set_native_fn([this](Value /*this_val*/, std::vector<Value> args,
+                                        bool /*is_new_call*/) -> EvalResult {
+        if (args.empty() || !args[0].is_object() || !args[0].as_object_raw() ||
+            args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Promise constructor requires a function argument");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto promise = RcPtr<JSPromise>::make();
+        gc_heap_.Register(promise.get());
+        Value promise_val = Value::object(ObjectPtr(promise));
+
+        // Create resolve function (capture promise by RcPtr to keep it alive)
+        auto resolve_fn = RcPtr<JSFunction>::make();
+        resolve_fn->set_native_fn([this, promise](Value /*this_val*/,
+                std::vector<Value> resolve_args, bool) mutable -> EvalResult {
+            Value val = resolve_args.empty() ? Value::undefined() : resolve_args[0];
+            // If val is a Promise, adopt its state via PerformThen
+            if (val.is_object() && val.as_object_raw() &&
+                val.as_object_raw()->object_kind() == ObjectKind::kPromise) {
+                auto* inner = static_cast<JSPromise*>(val.as_object_raw());
+                auto inner_rc = RcPtr<JSPromise>(inner);
+                auto fulfill_outer = RcPtr<JSFunction>::make();
+                fulfill_outer->set_native_fn([this, promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    Value v = a.empty() ? Value::undefined() : a[0];
+                    promise->Fulfill(v, job_queue_);
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(fulfill_outer.get());
+                auto reject_outer = RcPtr<JSFunction>::make();
+                reject_outer->set_native_fn([this, promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    Value r = a.empty() ? Value::undefined() : a[0];
+                    promise->Reject(r, job_queue_);
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(reject_outer.get());
+                JSPromise::PerformThen(inner_rc,
+                    Value::object(ObjectPtr(fulfill_outer)),
+                    Value::object(ObjectPtr(reject_outer)),
+                    job_queue_);
+            } else {
+                promise->Fulfill(std::move(val), job_queue_);
+            }
+            return EvalResult::ok(Value::undefined());
+        });
+        gc_heap_.Register(resolve_fn.get());
+
+        // Create reject function
+        auto reject_fn = RcPtr<JSFunction>::make();
+        reject_fn->set_native_fn([this, promise](Value /*this_val*/,
+                std::vector<Value> reject_args, bool) mutable -> EvalResult {
+            Value reason = reject_args.empty() ? Value::undefined() : reject_args[0];
+            promise->Reject(std::move(reason), job_queue_);
+            return EvalResult::ok(Value::undefined());
+        });
+        gc_heap_.Register(reject_fn.get());
+
+        // Call executor(resolve, reject)
+        std::vector<Value> executor_args = {
+            Value::object(ObjectPtr(resolve_fn)),
+            Value::object(ObjectPtr(reject_fn))
+        };
+        auto exec_result = call_function_val(args[0], Value::undefined(),
+                                              std::span<Value>(executor_args.data(), executor_args.size()));
+        if (!exec_result.is_ok()) {
+            // executor threw: reject the promise
+            Value thrown_val;
+            if (exec_result.error().message() == kPendingThrowSentinel && pending_throw_.has_value()) {
+                thrown_val = std::move(*pending_throw_);
+                pending_throw_ = std::nullopt;
+            } else {
+                thrown_val = Value::string(exec_result.error().message());
+            }
+            promise->Reject(std::move(thrown_val), job_queue_);
+        }
+
+        return EvalResult::ok(promise_val);
+    });
+
+    // Promise.resolve static method
+    auto promise_resolve_fn = RcPtr<JSFunction>::make();
+    promise_resolve_fn->set_name(std::string("resolve"));
+    promise_resolve_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        Value val = args.empty() ? Value::undefined() : args[0];
+        auto p = promise_resolve(val);
+        return EvalResult::ok(Value::object(ObjectPtr(p)));
+    });
+    promise_ctor->set_property("resolve", Value::object(ObjectPtr(promise_resolve_fn)));
+
+    // Promise.reject static method
+    auto promise_reject_fn = RcPtr<JSFunction>::make();
+    promise_reject_fn->set_name(std::string("reject"));
+    promise_reject_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        Value reason = args.empty() ? Value::undefined() : args[0];
+        auto p = RcPtr<JSPromise>::make();
+        gc_heap_.Register(p.get());
+        p->Reject(reason, job_queue_);
+        return EvalResult::ok(Value::object(ObjectPtr(p)));
+    });
+    promise_ctor->set_property("reject", Value::object(ObjectPtr(promise_reject_fn)));
+
+    // P2-B: Promise.prototype must be accessible via Promise.prototype
+    promise_ctor->set_property("prototype", Value::object(ObjectPtr(promise_prototype_)));
+
+    gc_heap_.Register(promise_ctor.get());
+    global_env_->define_initialized("Promise");
+    global_env_->set("Promise", Value::object(ObjectPtr(promise_ctor)));
+
     // Register the global environment with GcHeap so user-created closures reachable
     // from it are treated as roots and not swept.
     gc_heap_.Register(global_env_.get());
@@ -590,6 +825,110 @@ void Interpreter::init_runtime() {
 
 Interpreter::Interpreter() {
     init_runtime();
+}
+
+// ---- Promise helpers ----
+
+RcPtr<JSPromise> Interpreter::promise_resolve(Value value) {
+    // If value is already a Promise, return it directly
+    if (value.is_object() && value.as_object_raw() &&
+        value.as_object_raw()->object_kind() == ObjectKind::kPromise) {
+        return RcPtr<JSPromise>(static_cast<JSPromise*>(value.as_object_raw()));
+    }
+    auto p = RcPtr<JSPromise>::make();
+    gc_heap_.Register(p.get());
+    p->Fulfill(std::move(value), job_queue_);
+    return p;
+}
+
+void Interpreter::execute_reaction_job(ReactionJob job) {
+    // Hold strong references to keep handler/capability/arg alive throughout execution.
+    Value handler = std::move(job.handler);
+    Value capability_val = std::move(job.capability);
+    Value arg = std::move(job.arg);
+    bool is_fulfill = job.is_fulfill;
+
+    // Get capability promise (hold RcPtr to keep it alive)
+    RcPtr<JSPromise> cap_rc;
+    if (capability_val.is_object() && capability_val.as_object_raw() &&
+        capability_val.as_object_raw()->object_kind() == ObjectKind::kPromise) {
+        cap_rc = RcPtr<JSPromise>(static_cast<JSPromise*>(capability_val.as_object_raw()));
+    }
+
+    bool handler_is_fn = handler.is_object() && handler.as_object_raw() &&
+                         handler.as_object_raw()->object_kind() == ObjectKind::kFunction;
+
+    if (!handler_is_fn) {
+        // Identity / thrower reaction
+        if (cap_rc) {
+            if (is_fulfill) {
+                cap_rc->Fulfill(arg, job_queue_);
+            } else {
+                cap_rc->Reject(arg, job_queue_);
+            }
+        }
+        return;
+    }
+
+    // Call handler(arg)
+    std::vector<Value> handler_args = {arg};
+    auto result = call_function_val(handler, Value::undefined(),
+                                    std::span<Value>(handler_args.data(), handler_args.size()));
+
+    if (!cap_rc) return;
+
+    if (result.is_ok()) {
+        Value ret = result.value();
+        if (ret.is_object() && ret.as_object_raw() &&
+            ret.as_object_raw()->object_kind() == ObjectKind::kPromise) {
+            auto* inner = static_cast<JSPromise*>(ret.as_object_raw());
+            // P2-F: self-referential resolution must be rejected with TypeError
+            if (inner == cap_rc.get()) {
+                cap_rc->Reject(make_error_value(NativeErrorType::kTypeError,
+                    "Chaining cycle detected for promise"), job_queue_);
+            } else {
+                // Adopt the returned promise's state via PerformThen
+                auto inner_rc = RcPtr<JSPromise>(inner);
+                // Capture cap_rc by value to keep it alive in the lambdas
+                auto fulfill_cap = RcPtr<JSFunction>::make();
+                fulfill_cap->set_native_fn([this, cap_rc](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    Value v = a.empty() ? Value::undefined() : a[0];
+                    cap_rc->Fulfill(v, job_queue_);
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(fulfill_cap.get());
+                auto reject_cap = RcPtr<JSFunction>::make();
+                reject_cap->set_native_fn([this, cap_rc](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    Value r = a.empty() ? Value::undefined() : a[0];
+                    cap_rc->Reject(r, job_queue_);
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(reject_cap.get());
+                JSPromise::PerformThen(inner_rc,
+                    Value::object(ObjectPtr(fulfill_cap)),
+                    Value::object(ObjectPtr(reject_cap)),
+                    job_queue_);
+            }
+        } else {
+            cap_rc->Fulfill(ret, job_queue_);
+        }
+    } else {
+        // Handler threw: extract throw value and reject cap
+        Value thrown_val;
+        if (result.error().message() == kPendingThrowSentinel && pending_throw_.has_value()) {
+            thrown_val = std::move(*pending_throw_);
+            pending_throw_ = std::nullopt;
+        } else {
+            thrown_val = Value::string(result.error().message());
+        }
+        cap_rc->Reject(std::move(thrown_val), job_queue_);
+    }
+}
+
+void Interpreter::drain_job_queue() {
+    job_queue_.DrainAll([this](ReactionJob job) {
+        execute_reaction_job(std::move(job));
+    });
 }
 
 // ---- Type conversions ----
@@ -696,6 +1035,13 @@ void Interpreter::hoist_vars_stmt(const StmtNode& stmt, Environment& var_target)
     } else if (std::holds_alternative<FunctionDeclaration>(stmt.v)) {
         const auto& fdecl = std::get<FunctionDeclaration>(stmt.v);
         var_target.define_function(fdecl.name);
+    } else if (std::holds_alternative<AsyncFunctionDeclaration>(stmt.v)) {
+        // P2-C: async function declarations are hoisted and immediately assigned,
+        // mirroring the VM's behavior of emitting kMakeFunction+kSetVar at function entry.
+        const auto& afdecl = std::get<AsyncFunctionDeclaration>(stmt.v);
+        var_target.define_function(afdecl.name);
+        Value async_fn_val = make_async_function_value(afdecl.name, afdecl.params, afdecl.body, current_env_);
+        var_target.set(afdecl.name, async_fn_val);
     } else if (std::holds_alternative<ForStatement>(stmt.v)) {
         const auto& for_stmt = std::get<ForStatement>(stmt.v);
         if (for_stmt.init.has_value()) {
@@ -845,6 +1191,25 @@ EvalResult Interpreter::exec(const Program& program) {
     // GC: collect unreachable objects (resolves P3-2 closure circular references).
     // Run GC first (before clear_function_bindings) so that all reachable objects
     // are correctly identified. Roots include all interpreter members and the result value.
+    // Drain microtasks before GC: all synchronous code has completed.
+    drain_job_queue();
+
+    // Re-read the last expression variable after DrainAll to pick up microtask side effects.
+    // Only re-reads if the last statement is a simple identifier expression (e.g., `result;`).
+    if (!has_result && !program.body.empty()) {
+        const auto& last_stmt = program.body.back();
+        if (const auto* es = std::get_if<ExpressionStatement>(&last_stmt.v)) {
+            if (const auto* id = std::get_if<Identifier>(&es->expr.v)) {
+                if (id->name != "undefined") {
+                    auto reeval = eval_identifier(*id);
+                    if (reeval.is_ok()) {
+                        final_result = EvalResult::ok(reeval.value());
+                    }
+                }
+            }
+        }
+    }
+
     {
         std::vector<RcObject*> roots;
         auto add_obj = [&](RcObject* p) { if (p) roots.push_back(p); };
@@ -856,12 +1221,17 @@ EvalResult Interpreter::exec(const Program& program) {
         add_obj(object_prototype_.get());
         add_obj(array_prototype_.get());
         add_obj(function_prototype_.get());
+        add_obj(promise_prototype_.get());
         add_obj(object_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
         if (pending_throw_.has_value()) add_val(*pending_throw_);
         // Include the result value so it is not swept
         if (final_result.is_ok()) add_val(final_result.value());
+        // Include job queue roots
+        std::vector<Value> jq_vals;
+        job_queue_.CollectRoots(jq_vals);
+        for (const auto& v : jq_vals) add_val(v);
 
         gc_heap_.Collect(roots);
     }
@@ -871,6 +1241,7 @@ EvalResult Interpreter::exec(const Program& program) {
     object_prototype_->clear_function_properties();
     if (array_prototype_) array_prototype_->clear_function_properties();
     if (function_prototype_) function_prototype_->clear_function_properties();
+    if (promise_prototype_) promise_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
 
     return final_result;
@@ -888,6 +1259,7 @@ StmtResult Interpreter::eval_stmt(const StmtNode& stmt) {
             [this](const WhileStatement& s) { return eval_while_stmt(s); },
             [this](const ReturnStatement& s) { return eval_return_stmt(s); },
             [this](const FunctionDeclaration& s) { return eval_function_decl(s); },
+            [this](const AsyncFunctionDeclaration& s) { return eval_async_function_decl(s); },
             [this](const ThrowStatement& s) { return eval_throw_stmt(s); },
             [this](const TryStatement& s) { return eval_try_stmt(s); },
             [this](const BreakStatement& s) { return eval_break_stmt(s); },
@@ -1115,6 +1487,8 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const CallExpression& e) { return eval_call_expr(e); },
             [this](const NewExpression& e) { return eval_new_expr(e); },
             [this](const ArrayExpression& e) { return eval_array_expr(e); },
+            [this](const AwaitExpression& e) { return eval_await_expr(e); },
+            [this](const AsyncFunctionExpression& e) { return eval_async_function_expr(e); },
         },
         expr.v);
 }
@@ -1678,14 +2052,21 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
     RcObject* raw_obj = obj_val.as_object_raw();
     if (raw_obj->object_kind() == ObjectKind::kFunction) {
         auto* fn = static_cast<JSFunction*>(raw_obj);
+        // Check own_properties_ first (covers explicitly set "prototype" like Promise.prototype)
+        Value own = fn->get_property(key);
+        if (!own.is_undefined()) return EvalResult::ok(own);
         if (key == "prototype") {
+            // Fall back to the implicit F.prototype object
             const auto& proto = fn->prototype_obj();
             return EvalResult::ok(proto ? Value::object(ObjectPtr(proto)) : Value::undefined());
         }
-        Value own = fn->get_property(key);
-        if (!own.is_undefined()) return EvalResult::ok(own);
         // Fall back to Function.prototype
         if (function_prototype_) return EvalResult::ok(function_prototype_->get_property(key));
+        return EvalResult::ok(Value::undefined());
+    }
+    if (raw_obj->object_kind() == ObjectKind::kPromise) {
+        // Promise property lookup: check promise_prototype_
+        if (promise_prototype_) return EvalResult::ok(promise_prototype_->get_property(key));
         return EvalResult::ok(Value::undefined());
     }
     if (raw_obj->object_kind() != ObjectKind::kOrdinary && raw_obj->object_kind() != ObjectKind::kArray) {
@@ -2065,6 +2446,12 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
                 if (callee_val.is_undefined() && function_prototype_) {
                     callee_val = function_prototype_->get_property(key);
                 }
+            }
+        } else if (obj_ptr->object_kind() == ObjectKind::kPromise) {
+            if (promise_prototype_) {
+                callee_val = promise_prototype_->get_property(key);
+            } else {
+                callee_val = Value::undefined();
             }
         } else {
             callee_val = Value::undefined();
@@ -2509,6 +2896,176 @@ EvalResult Interpreter::exec_module_body(ModuleRecord& mod) {
 
     if (has_error) return final_result;
     return EvalResult::ok(last);
+}
+
+// ---- async/await ----
+
+Value Interpreter::make_async_function_value(std::optional<std::string> name,
+                                              std::vector<std::string> params,
+                                              std::shared_ptr<std::vector<StmtNode>> body,
+                                              RcPtr<Environment> closure_env) {
+    // Create a native JSFunction that wraps the async body execution
+    auto fn = RcPtr<JSFunction>::make();
+    fn->set_name(name);
+    fn->set_params(params);
+    fn->set_body(body);
+    fn->set_closure_env(closure_env);
+
+    auto proto_obj = RcPtr<JSObject>::make();
+    proto_obj->set_proto(object_prototype_);
+    proto_obj->set_constructor_property(fn.get());
+    fn->set_prototype_obj(proto_obj);
+
+    // P2-D: capture fn as raw pointer for the self-reference binding inside the body.
+    // fn_self_raw is GC-safe during native_fn invocation: fn is reachable via the caller's
+    // environment binding (var_env_ or fn_env). No __async_self__ property needed.
+    JSFunction* fn_self_raw = fn.get();
+
+    // The async wrapper: creates outer_promise, executes body, fulfills/rejects
+    fn->set_native_fn([this, body, params, closure_env, name, fn_self_raw](
+            Value this_val_arg, std::vector<Value> call_args, bool) mutable -> EvalResult {
+        // Create outer promise
+        auto outer_promise = RcPtr<JSPromise>::make();
+        gc_heap_.Register(outer_promise.get());
+        Value outer_val = Value::object(ObjectPtr(outer_promise));
+
+        // Set up function environment
+        RcPtr<Environment> outer_env = closure_env ? closure_env : global_env_;
+        auto fn_env = RcPtr<Environment>::make(outer_env);
+        gc_heap_.Register(fn_env.get());
+
+        // P2-D: bind the function name inside the body for named async function expressions.
+        // fn_self_raw is kept alive by __async_self__ property on the function object.
+        if (name.has_value()) {
+            fn_env->define(name.value(), VarKind::Const);
+            fn_env->initialize(name.value(), Value::object(ObjectPtr(RcPtr<JSFunction>(fn_self_raw))));
+        }
+
+        // Bind parameters
+        for (size_t i = 0; i < params.size(); ++i) {
+            Value arg_val = (i < call_args.size()) ? call_args[i] : Value::undefined();
+            fn_env->define(params[i], VarKind::Var);
+            fn_env->initialize(params[i], std::move(arg_val));
+        }
+
+        // Execute body with async context
+        JSPromise* saved_async_promise = current_async_promise_;
+        bool saved_in_async = in_async_body_;
+        current_async_promise_ = outer_promise.get();
+        in_async_body_ = true;
+
+        ScopeGuard guard(*this, fn_env, fn_env, std::move(this_val_arg), /*is_call=*/true);
+        hoist_vars(*body, *fn_env);
+
+        Value result_val = Value::undefined();
+        bool threw = false;
+        Value throw_val;
+
+        for (const auto& stmt : *body) {
+            auto stmt_result = eval_stmt(stmt);
+            if (!stmt_result.is_ok()) {
+                // C++ error (including kPendingThrowSentinel from await/throw)
+                if (stmt_result.error().message() == kPendingThrowSentinel && pending_throw_.has_value()) {
+                    throw_val = std::move(*pending_throw_);
+                    pending_throw_ = std::nullopt;
+                } else {
+                    throw_val = Value::string(stmt_result.error().message());
+                }
+                threw = true;
+                break;
+            }
+            const Completion& c = stmt_result.completion();
+            if (c.is_return()) {
+                result_val = c.value;
+                break;
+            }
+            if (c.is_throw()) {
+                throw_val = c.value;
+                threw = true;
+                break;
+            }
+            result_val = c.value;
+        }
+
+        // Restore async context
+        current_async_promise_ = saved_async_promise;
+        in_async_body_ = saved_in_async;
+
+        if (threw) {
+            outer_promise->Reject(std::move(throw_val), job_queue_);
+        } else {
+            // If result_val is a Promise, adopt its state
+            if (result_val.is_object() && result_val.as_object_raw() &&
+                result_val.as_object_raw()->object_kind() == ObjectKind::kPromise) {
+                auto* inner = static_cast<JSPromise*>(result_val.as_object_raw());
+                auto inner_rc = RcPtr<JSPromise>(inner);
+                auto fulfill_outer = RcPtr<JSFunction>::make();
+                fulfill_outer->set_native_fn([this, outer_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    Value v = a.empty() ? Value::undefined() : a[0];
+                    outer_promise->Fulfill(v, job_queue_);
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(fulfill_outer.get());
+                auto reject_outer = RcPtr<JSFunction>::make();
+                reject_outer->set_native_fn([this, outer_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    Value r = a.empty() ? Value::undefined() : a[0];
+                    outer_promise->Reject(r, job_queue_);
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(reject_outer.get());
+                JSPromise::PerformThen(inner_rc,
+                    Value::object(ObjectPtr(fulfill_outer)),
+                    Value::object(ObjectPtr(reject_outer)),
+                    job_queue_);
+            } else {
+                outer_promise->Fulfill(std::move(result_val), job_queue_);
+            }
+        }
+
+        // Drain microtasks so then-callbacks run before returning
+        drain_job_queue();
+
+        return EvalResult::ok(outer_val);
+    });
+
+    gc_heap_.Register(fn.get());
+    gc_heap_.Register(proto_obj.get());
+    return Value::object(ObjectPtr(fn));
+}
+
+EvalResult Interpreter::eval_async_function_expr(const AsyncFunctionExpression& expr) {
+    return EvalResult::ok(make_async_function_value(
+        expr.name, expr.params, expr.body, current_env_));
+}
+
+StmtResult Interpreter::eval_async_function_decl(const AsyncFunctionDeclaration& /*stmt*/) {
+    // P2-C: async function declarations are hoisted and assigned in hoist_vars_stmt; skip here.
+    return StmtResult::ok(Completion::normal(Value::undefined()));
+}
+
+EvalResult Interpreter::eval_await_expr(const AwaitExpression& expr) {
+    // Evaluate the argument
+    auto arg_result = eval_expr(*expr.argument);
+    if (!arg_result.is_ok()) return arg_result;
+
+    // Wrap in Promise
+    auto inner_promise = promise_resolve(arg_result.value());
+
+    // Drain pending microtasks to settle inner_promise
+    // (For Promise.resolve(x), inner_promise is already settled)
+    drain_job_queue();
+
+    if (inner_promise->state() == PromiseState::kFulfilled) {
+        return EvalResult::ok(inner_promise->result());
+    } else if (inner_promise->state() == PromiseState::kRejected) {
+        pending_throw_ = inner_promise->result();
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    } else {
+        // Still pending: cannot await (no event loop)
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "await: Promise is still pending (no event loop)");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
 }
 
 }  // namespace qppjs

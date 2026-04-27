@@ -4,17 +4,15 @@
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/environment.h"
 #include "qppjs/runtime/gc_heap.h"
+#include "qppjs/runtime/job_queue.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/module_loader.h"
 #include "qppjs/runtime/native_errors.h"
+#include "qppjs/runtime/promise.h"
 #include "qppjs/runtime/rc_object.h"
-#include "qppjs/vm/bytecode.h"
-#include "qppjs/vm/opcode.h"
 
 #include <array>
-#include <cstdint>
-#include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
@@ -73,11 +71,16 @@ private:
     EvalResult eval_call_expr(const CallExpression& expr);
     EvalResult eval_new_expr(const NewExpression& expr);
     EvalResult eval_array_expr(const ArrayExpression& expr);
+    EvalResult eval_async_function_expr(const AsyncFunctionExpression& expr);
+    EvalResult eval_await_expr(const AwaitExpression& expr);
 
     // Type conversions (static)
     static bool to_boolean(const Value& v);
     static EvalResult to_number(const Value& v);
     static std::string to_string_val(const Value& v);
+
+    // Statement execution for async functions
+    StmtResult eval_async_function_decl(const AsyncFunctionDeclaration& stmt);
 
     // Hoist var declarations; var_target is the function-level env to receive var bindings.
     void hoist_vars(const std::vector<StmtNode>& stmts, Environment& var_target);
@@ -91,6 +94,20 @@ private:
                               std::shared_ptr<std::vector<StmtNode>> body,
                               RcPtr<Environment> closure_env,
                               bool is_named_expr = false);
+
+    // Create an async JSFunction value (wraps call in Promise).
+    Value make_async_function_value(std::optional<std::string> name, std::vector<std::string> params,
+                                    std::shared_ptr<std::vector<StmtNode>> body,
+                                    RcPtr<Environment> closure_env);
+
+    // Promise.resolve(value): wraps non-Promise values in a fulfilled Promise.
+    RcPtr<JSPromise> promise_resolve(Value value);
+
+    // Execute a reaction job from the job queue.
+    void execute_reaction_job(ReactionJob job);
+
+    // Drain all pending microtasks.
+    void drain_job_queue();
 
     Value make_error_value(NativeErrorType type, const std::string& message);
 
@@ -124,6 +141,7 @@ private:
 
     GcHeap gc_heap_;
     ModuleLoader module_loader_;
+    JobQueue job_queue_;
 
     RcPtr<Environment> global_env_;
     RcPtr<Environment> current_env_;
@@ -132,6 +150,7 @@ private:
     RcPtr<JSObject> object_prototype_;   // global Object.prototype
     RcPtr<JSObject> array_prototype_;    // Array.prototype
     RcPtr<JSObject> function_prototype_; // Function.prototype (call/apply/bind)
+    RcPtr<JSObject> promise_prototype_;  // Promise.prototype (then/catch/finally)
     RcPtr<JSFunction> object_constructor_;  // global Object function
     int call_depth_ = 0;
     static constexpr int kMaxCallDepth = 500;
@@ -145,6 +164,10 @@ private:
     // eval_try_stmt checks this sentinel before interpreting any EvalResult error.
     std::optional<Value> pending_throw_;
     static constexpr const char* kPendingThrowSentinel = "__qppjs_pending_throw__";
+
+    // Current async function context (non-owning, only valid during async body execution)
+    JSPromise* current_async_promise_ = nullptr;  // outer promise for current async function
+    bool in_async_body_ = false;  // true when executing inside an async function body
 };
 
 }  // namespace qppjs

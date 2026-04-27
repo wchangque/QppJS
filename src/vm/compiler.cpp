@@ -139,6 +139,15 @@ void Compiler::hoist_vars_scan_stmt(const StmtNode& stmt) {
             if (vi == idx) { found = true; break; }
         }
         if (!found) current_->function_decls.push_back(idx);
+    } else if (std::holds_alternative<AsyncFunctionDeclaration>(stmt.v)) {
+        // P2-C: async function declarations are hoisted like regular function declarations
+        const auto& afdecl = std::get<AsyncFunctionDeclaration>(stmt.v);
+        uint16_t idx = add_name(afdecl.name);
+        bool found = false;
+        for (uint16_t vi : current_->function_decls) {
+            if (vi == idx) { found = true; break; }
+        }
+        if (!found) current_->function_decls.push_back(idx);
     } else if (std::holds_alternative<BlockStatement>(stmt.v)) {
         hoist_vars_scan(std::get<BlockStatement>(stmt.v).body);
     } else if (std::holds_alternative<IfStatement>(stmt.v)) {
@@ -204,8 +213,12 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
     // Hoist function declarations: emit MakeFunction + SetVar at entry
     for (const auto& stmt : body) {
         const FunctionDeclaration* fdecl_ptr = nullptr;
+        const AsyncFunctionDeclaration* afdecl_ptr = nullptr;
         if (std::holds_alternative<FunctionDeclaration>(stmt.v)) {
             fdecl_ptr = &std::get<FunctionDeclaration>(stmt.v);
+        } else if (std::holds_alternative<AsyncFunctionDeclaration>(stmt.v)) {
+            // P2-C: async function declarations are hoisted like regular function declarations
+            afdecl_ptr = &std::get<AsyncFunctionDeclaration>(stmt.v);
         } else if (const auto* exp = std::get_if<ExportNamedDeclaration>(&stmt.v)) {
             if (exp->declaration && std::holds_alternative<FunctionDeclaration>(exp->declaration->v)) {
                 fdecl_ptr = &std::get<FunctionDeclaration>(exp->declaration->v);
@@ -221,6 +234,17 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
             emit_u16(name_idx);
             emit(Opcode::kPop);
         }
+        if (afdecl_ptr) {
+            auto child = compile_function(afdecl_ptr->name, afdecl_ptr->params, *afdecl_ptr->body);
+            child->is_async = true;
+            uint16_t fn_idx = add_function(std::move(child));
+            emit(Opcode::kMakeFunction);
+            emit_u16(fn_idx);
+            uint16_t name_idx = add_name(afdecl_ptr->name);
+            emit(Opcode::kSetVar);
+            emit_u16(name_idx);
+            emit(Opcode::kPop);
+        }
     }
 
     // Compile all statements; leave the last value on stack for implicit return.
@@ -232,6 +256,12 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
         }
         compile_stmt_last(body.back());
         emit(Opcode::kReturn);
+        // Record last expression identifier for post-DrainAll re-read
+        if (const auto* es = std::get_if<ExpressionStatement>(&body.back().v)) {
+            if (const auto* id = std::get_if<Identifier>(&es->expr.v)) {
+                fn->last_expr_name = id->name;
+            }
+        }
     }
 
     current_ = saved;
@@ -261,6 +291,7 @@ void Compiler::compile_stmt(const StmtNode& stmt) {
             [this](const WhileStatement& s) { compile_while_stmt(s); },
             [this](const ReturnStatement& s) { compile_return_stmt(s); },
             [this](const FunctionDeclaration& s) { compile_function_decl(s); },
+            [this](const AsyncFunctionDeclaration& s) { compile_async_function_decl(s); },
             [this](const ThrowStatement& s) { compile_throw_stmt(s); },
             [this](const TryStatement& s) { compile_try_stmt(s); },
             [this](const BreakStatement& s) { compile_break_stmt(s); },
@@ -488,6 +519,11 @@ void Compiler::compile_expr(const ExprNode& expr) {
             [this](const CallExpression& e) { compile_call_expr(e); },
             [this](const NewExpression& e) { compile_new_expr(e); },
             [this](const ArrayExpression& e) { compile_array_expr(e); },
+            [this](const AsyncFunctionExpression& e) { compile_async_function_expr(e); },
+            [this](const AwaitExpression& e) {
+                compile_expr(*e.argument);
+                emit(Opcode::kAwait);
+            },
         },
         expr.v);
 }
@@ -651,6 +687,21 @@ void Compiler::compile_function_expr(const FunctionExpression& expr) {
     uint16_t fn_idx = add_function(std::move(child));
     emit(Opcode::kMakeFunction);
     emit_u16(fn_idx);
+}
+
+void Compiler::compile_async_function_expr(const AsyncFunctionExpression& expr) {
+    auto child = compile_function(expr.name, expr.params, *expr.body);
+    child->is_async = true;
+    // P2-D: named async function expressions need self-reference binding inside the body
+    child->is_named_expr = expr.name.has_value();
+    uint16_t fn_idx = add_function(std::move(child));
+    emit(Opcode::kMakeFunction);
+    emit_u16(fn_idx);
+}
+
+void Compiler::compile_async_function_decl(const AsyncFunctionDeclaration& /*stmt*/) {
+    // P2-C: async function declarations are hoisted at function entry; skip here.
+    // (Nothing to emit at the declaration site.)
 }
 
 void Compiler::compile_call_expr(const CallExpression& expr) {

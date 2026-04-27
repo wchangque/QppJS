@@ -79,7 +79,9 @@ namespace qppjs {
     X(Gosub, 4)                         \
     X(Ret, 0)                           \
     /* Module */                        \
-    X(SetExportDefault, 0)
+    X(SetExportDefault, 0)              \
+    /* Async/Await */                   \
+    X(Await, 0)
 
 enum class Opcode : uint8_t {
 #define X(name, _operand_bytes) k##name,

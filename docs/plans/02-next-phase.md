@@ -4,36 +4,31 @@
 
 ## 1. 下一阶段
 
-- 下一阶段：Phase 11（Promise / Async）
-- Phase 10 已全部完成（1458/1458 测试通过，0 LSan 失败）
+- 下一阶段：Phase 12（待定）
+- Phase 11 全部完成（1596/1596 测试通过，0 LSan 失败，Review 验证通过）
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 
-## 2. 阶段目标
+## 2. 候选目标
 
-Phase 11 子任务：
-- 11.1 设计 Job Queue（微任务队列）
-- 11.2 实现 Promise 最小子集（resolve/reject/then/catch/finally）
-- 11.3 实现 async/await 基础语义
-- 11.4 补充异步执行样例与测试
-
-也可先做以下技术债务：
+- **P2-A（遗留）**：async/await 真正异步顺序保证——await 后的代码应在下一个 microtask tick 执行，需要协程挂起/恢复机制（当前 await 是同步 DrainAll）
+- **export async function 解析**（小修复）：parser.cpp `parse_export_decl()` 未处理 `async function` 声明
 - P3-1：JSString 二次堆分配优化（小字符串内联）
 - 更多内建对象（Array.map/filter/reduce、String 方法等）
+- 动态 import()（依赖 Phase 11 Promise）
+- Top-Level Await
 
 ## 3. 进入前提
 
 当前已具备：
-- Phase 1～10 全部完成（1458/1458 测试通过，0 LSan 失败）
+- Phase 1～11 全部完成（1596/1596 测试通过，0 LSan 失败）
+- Promise/async/await 基础实现（P2-A 遗留）
 - GC mark-sweep 已上线，P3-2 已根本修复
-- ESM 静态 import/export 完整实现（Load/Link/Evaluate 三阶段，live binding，循环依赖，re-export）
-- 异常控制流（throw/try/catch/finally）已完整实现
+- ESM 静态 import/export 完整实现
 
 ## 4. 暂不纳入范围
 
 - 完整宿主事件循环
-- 动态 import()（依赖 Promise，Phase 11 后再做）
-- Top-Level Await（依赖 async/await）
 - QuickJS 风格引用计数 + cycle collect 复刻
 - 写屏障优化
 - 分代 GC
