@@ -6,8 +6,8 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | Phase 11 完成（Promise/Async/Await，Review 验证通过） |
-| 测试计数 | 1596/1596 通过（coverage），1594/1594 通过（run_ut ASAN），0 LSan 泄漏 |
+| 当前阶段 | P2-A 完成（async/await 真正异步顺序保证，协程挂起/恢复机制）+ Testing Agent 边界补测完成 |
+| 测试计数 | 1652/1652 通过（coverage），1650/1650 通过（run_ut ASAN），0 LSan 泄漏 |
 | 最近更新 | 2026-04-27 |
 | 下一步 | Phase 12（待定：P3-1 JSString 优化、更多内建对象、dynamic import()）|
 
@@ -17,10 +17,11 @@
 - ~~**P2-2**：已在 8.7 修复~~
 - **P3-1**：`JSString` 二次堆分配（`std::string` 成员），已知技术债务，Phase 10 优化
 - ~~**P3-2**：已在 Phase 9.1-9.5 通过 mark-sweep GC 修复~~
-- **P2-A**：`await` 异步顺序保证（await 后的代码应在下一个 microtask tick 执行，而非同步执行）——需要协程挂起/恢复机制，暂未实现
+- ~~**P2-A**：已完成（2026-04-27）——协程挂起/恢复机制，Interp+VM 两侧对称实现~~
 
 ## 最近完成
 
+- [x] P2-A：async/await 真正异步顺序保证（协程挂起/恢复机制）。Interpreter 侧：新增 `kAsyncSuspendSentinel`、`pending_await_result_`、`pending_inner_promise_` 成员；`eval_await_expr` 改为 suspend 路径（设置 pending_inner_promise_，返回 kAsyncSuspendSentinel）+ resume 路径（检查 pending_await_result_）；`run_async_body` 新成员函数替代原 inline 执行，suspended 分支构造 resume_fn/reject_fn 并调用 PerformThen；`eval_try_stmt`/`eval_throw_stmt`/`eval_for_stmt` 添加 kAsyncSuspendSentinel 透传检查；移除 `eval_await_expr` 和 `make_async_function_value` 末尾的 DrainAll 调用。VM 侧：新增 `vm_async_suspended_`、`vm_pending_inner_promise_`、`vm_suspended_frame_` 成员；`kAwait` 指令改为移出当前 CallFrame，设置挂起状态，goto suspend_exit；async wrapper 调用 `vm_handle_async_result` 统一处理正常/挂起/错误三路径；`vm_handle_async_result` 新函数处理嵌套挂起（多 await 串行）。新增 22 个测试（11 组 Interp+VM 对称，覆盖 T1-T10 + T1b）。1618/1618 通过（coverage），1616/1616 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] Phase 11 Review 修复（P2-B/C/D/E/F）：P2-B：Promise.prototype 挂载到构造函数（Interp+VM 两侧 set_property("prototype")，修复 kFunction 属性读取优先查 own_properties_）；P2-C：async 函数声明提升（Interpreter hoist_vars_stmt 立即赋值，eval_async_function_decl 改为 no-op；VM compiler hoist 循环增加 AsyncFunctionDeclaration 处理，compile_async_function_decl 改为 no-op）；P2-D：命名 async 函数表达式内部自引用绑定（Interp native_fn 里通过 fn_self_raw 在 fn_env 绑定名字；VM compile_async_function_expr 设置 is_named_expr，push_call_frame 已处理）；P2-E：await 解析限制在 async 函数体内（Parser 添加 in_async_function_ 标志，async 函数体设 true，非 async 函数体设 false，nud 里 await 仅在 in_async_function_ 时解析为 AwaitExpression）；P2-F：Promise 自循环 resolve 拒绝（execute_reaction_job/vm_execute_reaction_job 里检测 inner == cap_rc，reject with TypeError）。新增 16 个测试（8 组 Interp+VM 对称，覆盖 P2-B/C/D/E/F）。1596/1596 通过（coverage），1594/1594 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] Phase 11 Testing Agent 边界补测：追加 80 个测试（40 组 Interp+VM 对称）。新增覆盖：C5/C6 settled 幂等（resolve/reject 多次调用静默忽略，resolve-after-reject）、C7 自解析（通过 resolve(fulfilled_promise) 验证 thenable 路径）、C10 then 返回新 Promise、C11 handler 非函数透传（null/undefined onFulfilled 透传值，null/undefined onRejected 透传 rejection）、C14 finally 不改变值/rejection、E9/C15 finally fn throw 替代原值、C15 finally fn 返回 rejected Promise 替代原值（同时修复 Interpreter 和 VM 侧 finally 实现 bug）、C16 Promise.resolve identity、C17 Promise.reject 始终新建、C2 同步代码先于微任务、C3 嵌套微任务在同一 DrainAll 轮处理、FIFO 并发顺序、C19 async 同步返回 Promise 类型检查、C22 async throw 不向外同步传播、C23 try/catch 捕获 await rejected、E12 await rejected 未捕获 reject 外层、async 表达式赋值、三层 await 串行、Promise.resolve(undefined/null)、catch recovery then chain、then onRejected 参数、executor 同步调用、async 无 await 路径、async 隐式 return undefined、await 原始值（string/null）、Promise constructor 非函数 TypeError、混合链 catch→then→catch、async await 继续执行步骤、finally after then throw、executor resolve-before-reject 幂等。修复 VM 侧 finally reject_wrapper 使用 `native_pending_throw_` 机制（原实现用字符串前缀编码导致 rejection reason 被包装为字符串）。1580/1580 通过（coverage），1580/1580 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] Phase 11：Promise/Async/Await 实现。新增 `JobQueue`（微任务队列，ReactionJob 结构）、`JSPromise`（继承 RcObject，kPromise，Fulfill/Reject/PerformThen/EnqueueReactions）；扩展 AST（`AwaitExpression`、`AsyncFunctionExpression`、`AsyncFunctionDeclaration`）；Parser 支持 `async function` 声明/表达式、`await expr`（contextual keyword）；`obj.catch`/`obj.finally` 等关键字属性名修复（Dot 访问接受任意 keyword）；Interpreter 侧：`promise_prototype_`（then/catch/finally）、Promise 全局构造函数（Promise.resolve/reject）、`execute_reaction_job`/`drain_job_queue`、`make_async_function_value`（NativeFn 包装，DrainAll 同步化）、`eval_await_expr`（同步 DrainAll 方案）；VM 侧：对称实现，`kMakeFunction` 识别 `is_async` 标志创建 async wrapper，`kAwait` 指令同步 DrainAll；`exec()` 末尾 DrainAll + 重读最后标识符表达式；RcPtr 修复（lambda 捕获 promise 用 RcPtr 而非 raw pointer，消除 UAF）；GC 安全（async wrapper `own_properties_["__async_inner__"]` 使 inner_fn 可达）。新增 42 个测试（21 组 Interp+VM 对称），1500/1500 通过（coverage），1498/1498 通过（run_ut ASAN），0 LSan 泄漏。

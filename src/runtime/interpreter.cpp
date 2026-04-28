@@ -2221,6 +2221,9 @@ static Value extract_throw_value(std::optional<Value>& pending, const std::strin
 StmtResult Interpreter::eval_throw_stmt(const ThrowStatement& stmt) {
     auto r = eval_expr(stmt.argument);
     if (!r.is_ok()) {
+        if (r.error().message() == kAsyncSuspendSentinel) {
+            return StmtResult::err(r.error());
+        }
         Value thrown = extract_throw_value(pending_throw_, r.error().message(), kPendingThrowSentinel);
         return StmtResult::ok(Completion::throw_(std::move(thrown)));
     }
@@ -2247,7 +2250,11 @@ StmtResult Interpreter::eval_try_stmt(const TryStatement& stmt) {
     StmtResult try_result = eval_block_stmt(stmt.block);
 
     // Internal C++ error from try block → convert to ThrowCompletion
+    // Exception: kAsyncSuspendSentinel must be propagated as-is (async suspension).
     if (!try_result.is_ok()) {
+        if (try_result.error().message() == kAsyncSuspendSentinel) {
+            return try_result;
+        }
         Value thrown = extract_throw_value(pending_throw_, try_result.error().message(),
                                            kPendingThrowSentinel);
         try_result = StmtResult::ok(Completion::throw_(std::move(thrown)));
@@ -2259,7 +2266,11 @@ StmtResult Interpreter::eval_try_stmt(const TryStatement& stmt) {
             Value thrown_val = try_result.completion().value;
             try_result = exec_catch(*stmt.handler, std::move(thrown_val));
             // Internal error from catch → convert to ThrowCompletion
+            // Exception: kAsyncSuspendSentinel must be propagated as-is.
             if (!try_result.is_ok()) {
+                if (try_result.error().message() == kAsyncSuspendSentinel) {
+                    return try_result;
+                }
                 Value thrown = extract_throw_value(pending_throw_, try_result.error().message(),
                                                    kPendingThrowSentinel);
                 try_result = StmtResult::ok(Completion::throw_(std::move(thrown)));
@@ -2344,9 +2355,12 @@ StmtResult Interpreter::eval_for_stmt(const ForStatement& stmt,
         if (stmt.test.has_value()) {
             auto test_r = eval_expr(*stmt.test);
             if (!test_r.is_ok()) {
+                current_env_ = old_env;
+                if (test_r.error().message() == kAsyncSuspendSentinel) {
+                    return StmtResult::err(test_r.error());
+                }
                 Value thrown = extract_throw_value(pending_throw_, test_r.error().message(),
                                                    kPendingThrowSentinel);
-                current_env_ = old_env;
                 return StmtResult::ok(Completion::throw_(std::move(thrown)));
             }
             if (!to_boolean(test_r.value())) {
@@ -2385,9 +2399,12 @@ StmtResult Interpreter::eval_for_stmt(const ForStatement& stmt,
         if (stmt.update.has_value()) {
             auto update_r = eval_expr(*stmt.update);
             if (!update_r.is_ok()) {
+                current_env_ = old_env;
+                if (update_r.error().message() == kAsyncSuspendSentinel) {
+                    return StmtResult::err(update_r.error());
+                }
                 Value thrown = extract_throw_value(pending_throw_, update_r.error().message(),
                                                    kPendingThrowSentinel);
-                current_env_ = old_env;
                 return StmtResult::ok(Completion::throw_(std::move(thrown)));
             }
         }
@@ -2917,8 +2934,6 @@ Value Interpreter::make_async_function_value(std::optional<std::string> name,
     fn->set_prototype_obj(proto_obj);
 
     // P2-D: capture fn as raw pointer for the self-reference binding inside the body.
-    // fn_self_raw is GC-safe during native_fn invocation: fn is reachable via the caller's
-    // environment binding (var_env_ or fn_env). No __async_self__ property needed.
     JSFunction* fn_self_raw = fn.get();
 
     // The async wrapper: creates outer_promise, executes body, fulfills/rejects
@@ -2935,7 +2950,6 @@ Value Interpreter::make_async_function_value(std::optional<std::string> name,
         gc_heap_.Register(fn_env.get());
 
         // P2-D: bind the function name inside the body for named async function expressions.
-        // fn_self_raw is kept alive by __async_self__ property on the function object.
         if (name.has_value()) {
             fn_env->define(name.value(), VarKind::Const);
             fn_env->initialize(name.value(), Value::object(ObjectPtr(RcPtr<JSFunction>(fn_self_raw))));
@@ -2948,89 +2962,155 @@ Value Interpreter::make_async_function_value(std::optional<std::string> name,
             fn_env->initialize(params[i], std::move(arg_val));
         }
 
-        // Execute body with async context
-        JSPromise* saved_async_promise = current_async_promise_;
-        bool saved_in_async = in_async_body_;
-        current_async_promise_ = outer_promise.get();
-        in_async_body_ = true;
-
-        ScopeGuard guard(*this, fn_env, fn_env, std::move(this_val_arg), /*is_call=*/true);
         hoist_vars(*body, *fn_env);
-
-        Value result_val = Value::undefined();
-        bool threw = false;
-        Value throw_val;
-
-        for (const auto& stmt : *body) {
-            auto stmt_result = eval_stmt(stmt);
-            if (!stmt_result.is_ok()) {
-                // C++ error (including kPendingThrowSentinel from await/throw)
-                if (stmt_result.error().message() == kPendingThrowSentinel && pending_throw_.has_value()) {
-                    throw_val = std::move(*pending_throw_);
-                    pending_throw_ = std::nullopt;
-                } else {
-                    throw_val = Value::string(stmt_result.error().message());
-                }
-                threw = true;
-                break;
-            }
-            const Completion& c = stmt_result.completion();
-            if (c.is_return()) {
-                result_val = c.value;
-                break;
-            }
-            if (c.is_throw()) {
-                throw_val = c.value;
-                threw = true;
-                break;
-            }
-            result_val = c.value;
-        }
-
-        // Restore async context
-        current_async_promise_ = saved_async_promise;
-        in_async_body_ = saved_in_async;
-
-        if (threw) {
-            outer_promise->Reject(std::move(throw_val), job_queue_);
-        } else {
-            // If result_val is a Promise, adopt its state
-            if (result_val.is_object() && result_val.as_object_raw() &&
-                result_val.as_object_raw()->object_kind() == ObjectKind::kPromise) {
-                auto* inner = static_cast<JSPromise*>(result_val.as_object_raw());
-                auto inner_rc = RcPtr<JSPromise>(inner);
-                auto fulfill_outer = RcPtr<JSFunction>::make();
-                fulfill_outer->set_native_fn([this, outer_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
-                    Value v = a.empty() ? Value::undefined() : a[0];
-                    outer_promise->Fulfill(v, job_queue_);
-                    return EvalResult::ok(Value::undefined());
-                });
-                gc_heap_.Register(fulfill_outer.get());
-                auto reject_outer = RcPtr<JSFunction>::make();
-                reject_outer->set_native_fn([this, outer_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
-                    Value r = a.empty() ? Value::undefined() : a[0];
-                    outer_promise->Reject(r, job_queue_);
-                    return EvalResult::ok(Value::undefined());
-                });
-                gc_heap_.Register(reject_outer.get());
-                JSPromise::PerformThen(inner_rc,
-                    Value::object(ObjectPtr(fulfill_outer)),
-                    Value::object(ObjectPtr(reject_outer)),
-                    job_queue_);
-            } else {
-                outer_promise->Fulfill(std::move(result_val), job_queue_);
-            }
-        }
-
-        // Drain microtasks so then-callbacks run before returning
-        drain_job_queue();
-
+        run_async_body(body, 0, fn_env, std::move(this_val_arg), outer_promise);
         return EvalResult::ok(outer_val);
     });
 
     gc_heap_.Register(fn.get());
     gc_heap_.Register(proto_obj.get());
     return Value::object(ObjectPtr(fn));
+}
+
+void Interpreter::run_async_body(std::shared_ptr<std::vector<StmtNode>> body, size_t stmt_index,
+                                 RcPtr<Environment> fn_env, Value this_val,
+                                 RcPtr<JSPromise> outer_promise) {
+    JSPromise* saved_async_promise = current_async_promise_;
+    bool saved_in_async = in_async_body_;
+    current_async_promise_ = outer_promise.get();
+    in_async_body_ = true;
+
+    ScopeGuard guard(*this, fn_env, fn_env, this_val, /*is_call=*/true);
+
+    Value result_val = Value::undefined();
+    bool threw = false;
+    bool suspended = false;
+    Value throw_val;
+    size_t suspend_stmt_index = 0;
+
+    for (size_t i = stmt_index; i < body->size(); ++i) {
+        auto stmt_result = eval_stmt((*body)[i]);
+        if (!stmt_result.is_ok()) {
+            const std::string& msg = stmt_result.error().message();
+            if (msg == kAsyncSuspendSentinel) {
+                suspended = true;
+                suspend_stmt_index = i;
+                break;
+            }
+            if (msg == kPendingThrowSentinel && pending_throw_.has_value()) {
+                throw_val = std::move(*pending_throw_);
+                pending_throw_ = std::nullopt;
+            } else {
+                throw_val = Value::string(msg);
+            }
+            threw = true;
+            break;
+        }
+        const Completion& c = stmt_result.completion();
+        if (c.is_return()) {
+            result_val = c.value;
+            break;
+        }
+        if (c.is_throw()) {
+            throw_val = c.value;
+            threw = true;
+            break;
+        }
+        result_val = c.value;
+    }
+
+    current_async_promise_ = saved_async_promise;
+    in_async_body_ = saved_in_async;
+
+    if (suspended) {
+        // eval_await_expr set pending_inner_promise_ before returning kAsyncSuspendSentinel.
+        // We pick it up here and set up resume/reject callbacks.
+        if (!pending_inner_promise_.has_value()) {
+            // Should not happen, but defensively reject
+            outer_promise->Reject(
+                make_error_value(NativeErrorType::kTypeError, "internal: missing inner promise"),
+                job_queue_);
+            return;
+        }
+        auto inner_promise = std::move(*pending_inner_promise_);
+        pending_inner_promise_ = std::nullopt;
+
+        // resume_stmt_index is the statement that contained the await expression.
+        // When resuming, pending_await_result_ will be set, so eval_await_expr
+        // will return the fulfilled value without re-suspending.
+        size_t resume_index = suspend_stmt_index;
+
+        // Build resume_fn: called with fulfilled value
+        auto resume_fn = RcPtr<JSFunction>::make();
+        // Store fn_env and outer_promise in own_properties for GC safety
+        resume_fn->set_property("__resume_env__", Value::object(ObjectPtr(fn_env)));
+        resume_fn->set_property("__resume_promise__", Value::object(ObjectPtr(outer_promise)));
+        resume_fn->set_native_fn([this, body, resume_index, fn_env, this_val,
+                                  outer_promise](
+                Value, std::vector<Value> args, bool) mutable -> EvalResult {
+            Value fulfilled_val = args.empty() ? Value::undefined() : args[0];
+            pending_await_result_ = std::move(fulfilled_val);
+            run_async_body(body, resume_index, fn_env, this_val, outer_promise);
+            return EvalResult::ok(Value::undefined());
+        });
+        gc_heap_.Register(resume_fn.get());
+
+        // Build reject_fn: called with rejection reason
+        auto reject_fn = RcPtr<JSFunction>::make();
+        reject_fn->set_property("__resume_env__", Value::object(ObjectPtr(fn_env)));
+        reject_fn->set_property("__resume_promise__", Value::object(ObjectPtr(outer_promise)));
+        reject_fn->set_native_fn([this, body, resume_index, fn_env, this_val,
+                                  outer_promise](
+                Value, std::vector<Value> args, bool) mutable -> EvalResult {
+            Value reason = args.empty() ? Value::undefined() : args[0];
+            // Inject rejection as a pending throw so try/catch can intercept it
+            pending_throw_ = std::move(reason);
+            // Set pending_await_result_ to a dummy value so eval_await_expr
+            // sees has_value() and checks pending_throw_ first
+            pending_await_result_ = Value::undefined();
+            run_async_body(body, resume_index, fn_env, this_val, outer_promise);
+            return EvalResult::ok(Value::undefined());
+        });
+        gc_heap_.Register(reject_fn.get());
+
+        JSPromise::PerformThen(inner_promise,
+            Value::object(ObjectPtr(resume_fn)),
+            Value::object(ObjectPtr(reject_fn)),
+            job_queue_);
+        return;
+    }
+
+    if (threw) {
+        outer_promise->Reject(std::move(throw_val), job_queue_);
+        return;
+    }
+
+    // If result_val is a Promise, adopt its state
+    if (result_val.is_object() && result_val.as_object_raw() &&
+        result_val.as_object_raw()->object_kind() == ObjectKind::kPromise) {
+        auto* inner = static_cast<JSPromise*>(result_val.as_object_raw());
+        auto inner_rc = RcPtr<JSPromise>(inner);
+        auto fulfill_outer = RcPtr<JSFunction>::make();
+        fulfill_outer->set_native_fn([this, outer_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+            Value v = a.empty() ? Value::undefined() : a[0];
+            outer_promise->Fulfill(v, job_queue_);
+            return EvalResult::ok(Value::undefined());
+        });
+        gc_heap_.Register(fulfill_outer.get());
+        auto reject_outer = RcPtr<JSFunction>::make();
+        reject_outer->set_native_fn([this, outer_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+            Value r = a.empty() ? Value::undefined() : a[0];
+            outer_promise->Reject(r, job_queue_);
+            return EvalResult::ok(Value::undefined());
+        });
+        gc_heap_.Register(reject_outer.get());
+        JSPromise::PerformThen(inner_rc,
+            Value::object(ObjectPtr(fulfill_outer)),
+            Value::object(ObjectPtr(reject_outer)),
+            job_queue_);
+    } else {
+        outer_promise->Fulfill(std::move(result_val), job_queue_);
+    }
 }
 
 EvalResult Interpreter::eval_async_function_expr(const AsyncFunctionExpression& expr) {
@@ -3044,28 +3124,29 @@ StmtResult Interpreter::eval_async_function_decl(const AsyncFunctionDeclaration&
 }
 
 EvalResult Interpreter::eval_await_expr(const AwaitExpression& expr) {
-    // Evaluate the argument
+    // Resume path: pending_await_result_ is set by resume_fn callback.
+    // Check pending_throw_ first (reject_fn path).
+    if (pending_await_result_.has_value()) {
+        if (pending_throw_.has_value()) {
+            // reject_fn path: propagate the rejection
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        Value result = std::move(*pending_await_result_);
+        pending_await_result_ = std::nullopt;
+        return EvalResult::ok(std::move(result));
+    }
+
+    // Suspend path: evaluate argument, wrap in inner_promise, signal suspension.
     auto arg_result = eval_expr(*expr.argument);
     if (!arg_result.is_ok()) return arg_result;
 
-    // Wrap in Promise
     auto inner_promise = promise_resolve(arg_result.value());
 
-    // Drain pending microtasks to settle inner_promise
-    // (For Promise.resolve(x), inner_promise is already settled)
-    drain_job_queue();
+    // Store inner_promise for run_async_body to pick up and set up PerformThen.
+    pending_inner_promise_ = inner_promise;
 
-    if (inner_promise->state() == PromiseState::kFulfilled) {
-        return EvalResult::ok(inner_promise->result());
-    } else if (inner_promise->state() == PromiseState::kRejected) {
-        pending_throw_ = inner_promise->result();
-        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
-    } else {
-        // Still pending: cannot await (no event loop)
-        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
-            "await: Promise is still pending (no event loop)");
-        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
-    }
+    // Signal suspension — run_async_body will detect this sentinel and set up callbacks.
+    return EvalResult::err(Error(ErrorKind::Runtime, kAsyncSuspendSentinel));
 }
 
 }  // namespace qppjs

@@ -27,6 +27,7 @@ add_executable(qppjs_unit_tests
     unit/parser_module_test.cpp
     unit/module_test.cpp
     unit/promise_test.cpp
+    unit/async_order_test.cpp
 )
 
 target_link_libraries(qppjs_unit_tests PRIVATE qppjs_core GTest::gtest_main)

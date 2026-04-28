@@ -925,6 +925,114 @@ void VM::vm_drain_job_queue() {
     });
 }
 
+void VM::vm_handle_async_result(EvalResult body_result, RcPtr<JSPromise> outer_promise) {
+    // Handle nested suspension (multiple awaits in sequence)
+    while (!body_result.is_ok() &&
+           body_result.error().message() == kAsyncSuspendSentinel) {
+        vm_async_suspended_ = false;
+        if (!vm_pending_inner_promise_.has_value() || !vm_suspended_frame_.has_value()) {
+            outer_promise->Reject(
+                make_error_value(NativeErrorType::kTypeError,
+                    "internal: missing suspend state"),
+                job_queue_);
+            return;
+        }
+        auto inner_promise = std::move(*vm_pending_inner_promise_);
+        vm_pending_inner_promise_ = std::nullopt;
+
+        auto shared_frame = std::make_shared<CallFrame>(std::move(*vm_suspended_frame_));
+        vm_suspended_frame_ = std::nullopt;
+
+        // Build resume_fn
+        auto resume_fn = RcPtr<JSFunction>::make();
+        resume_fn->set_property("__resume_env__",
+            Value::object(ObjectPtr(shared_frame->env)));
+        resume_fn->set_property("__resume_promise__",
+            Value::object(ObjectPtr(outer_promise)));
+        resume_fn->set_native_fn([this, outer_promise, shared_frame](
+                Value, std::vector<Value> args, bool) mutable -> EvalResult {
+            Value fulfilled_val = args.empty() ? Value::undefined() : args[0];
+            shared_frame->stack.push_back(std::move(fulfilled_val));
+            call_stack_.push_back(std::move(*shared_frame));
+            call_depth_++;
+            size_t ed = call_stack_.size() - 1;
+            EvalResult res = run(ed);
+            vm_handle_async_result(res, outer_promise);
+            return EvalResult::ok(Value::undefined());
+        });
+        gc_heap_.Register(resume_fn.get());
+
+        // Build reject_fn
+        auto reject_fn = RcPtr<JSFunction>::make();
+        reject_fn->set_property("__resume_env__",
+            Value::object(ObjectPtr(shared_frame->env)));
+        reject_fn->set_property("__resume_promise__",
+            Value::object(ObjectPtr(outer_promise)));
+        reject_fn->set_native_fn([this, outer_promise, shared_frame](
+                Value, std::vector<Value> args, bool) mutable -> EvalResult {
+            Value reason = args.empty() ? Value::undefined() : args[0];
+            shared_frame->pending_throw = std::move(reason);
+            shared_frame->stack.push_back(Value::undefined());
+            call_stack_.push_back(std::move(*shared_frame));
+            call_depth_++;
+            size_t ed = call_stack_.size() - 1;
+            EvalResult res = run(ed);
+            vm_handle_async_result(res, outer_promise);
+            return EvalResult::ok(Value::undefined());
+        });
+        gc_heap_.Register(reject_fn.get());
+
+        JSPromise::PerformThen(inner_promise,
+            Value::object(ObjectPtr(resume_fn)),
+            Value::object(ObjectPtr(reject_fn)),
+            job_queue_);
+        return;
+    }
+
+    // Normal completion or error
+    if (body_result.is_ok()) {
+        Value ret = body_result.value();
+        if (ret.is_object() && ret.as_object_raw() &&
+            ret.as_object_raw()->object_kind() == ObjectKind::kPromise) {
+            auto* inner_p = static_cast<JSPromise*>(ret.as_object_raw());
+            auto inner_rc = RcPtr<JSPromise>(inner_p);
+            auto fulfill_outer = RcPtr<JSFunction>::make();
+            fulfill_outer->set_native_fn([this, outer_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                Value v = a.empty() ? Value::undefined() : a[0];
+                outer_promise->Fulfill(v, job_queue_);
+                return EvalResult::ok(Value::undefined());
+            });
+            gc_heap_.Register(fulfill_outer.get());
+            auto reject_outer = RcPtr<JSFunction>::make();
+            reject_outer->set_native_fn([this, outer_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                Value r = a.empty() ? Value::undefined() : a[0];
+                outer_promise->Reject(r, job_queue_);
+                return EvalResult::ok(Value::undefined());
+            });
+            gc_heap_.Register(reject_outer.get());
+            JSPromise::PerformThen(inner_rc,
+                Value::object(ObjectPtr(fulfill_outer)),
+                Value::object(ObjectPtr(reject_outer)),
+                job_queue_);
+        } else {
+            outer_promise->Fulfill(std::move(ret), job_queue_);
+        }
+    } else {
+        // Error from the body: extract throw value
+        Value thrown_val;
+        if (native_pending_throw_.has_value()) {
+            thrown_val = std::move(*native_pending_throw_);
+            native_pending_throw_ = std::nullopt;
+        } else if (!call_stack_.empty() && call_stack_.back().pending_throw.has_value()) {
+            thrown_val = std::move(*call_stack_.back().pending_throw);
+            call_stack_.back().pending_throw = std::nullopt;
+        } else {
+            thrown_val = Value::string(body_result.error().message());
+        }
+        outer_promise->Reject(std::move(thrown_val), job_queue_);
+    }
+}
+
 // ============================================================
 // exec (public entry)
 // ============================================================
@@ -1583,53 +1691,13 @@ EvalResult VM::run(size_t exit_depth) {
                         std::span<Value>(call_args.data(), call_args.size()));
                     if (!push_res.is_ok()) {
                         outer_promise->Reject(Value::string(push_res.error().message()), job_queue_);
-                        vm_drain_job_queue();
                         return EvalResult::ok(outer_val);
                     }
-                    // Run until the async frame returns or throws
+                    // Run until the async frame returns, throws, or suspends
                     size_t exit_depth = call_stack_.size() - 1;
                     EvalResult body_result = run(exit_depth);
-                    if (body_result.is_ok()) {
-                        Value ret = body_result.value();
-                        // If return value is a Promise, adopt its state
-                        if (ret.is_object() && ret.as_object_raw() &&
-                            ret.as_object_raw()->object_kind() == ObjectKind::kPromise) {
-                            auto* inner_p = static_cast<JSPromise*>(ret.as_object_raw());
-                            auto inner_rc = RcPtr<JSPromise>(inner_p);
-                            auto fulfill_outer = RcPtr<JSFunction>::make();
-                            fulfill_outer->set_native_fn([this, outer_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
-                                Value v = a.empty() ? Value::undefined() : a[0];
-                                outer_promise->Fulfill(v, job_queue_);
-                                return EvalResult::ok(Value::undefined());
-                            });
-                            gc_heap_.Register(fulfill_outer.get());
-                            auto reject_outer = RcPtr<JSFunction>::make();
-                            reject_outer->set_native_fn([this, outer_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
-                                Value r = a.empty() ? Value::undefined() : a[0];
-                                outer_promise->Reject(r, job_queue_);
-                                return EvalResult::ok(Value::undefined());
-                            });
-                            gc_heap_.Register(reject_outer.get());
-                            JSPromise::PerformThen(inner_rc,
-                                Value::object(ObjectPtr(fulfill_outer)),
-                                Value::object(ObjectPtr(reject_outer)),
-                                job_queue_);
-                        } else {
-                            outer_promise->Fulfill(std::move(ret), job_queue_);
-                        }
-                    } else {
-                        // Error from the body: extract throw value
-                        Value thrown_val;
-                        // Check if there's a pending throw in the last frame
-                        if (!call_stack_.empty() && call_stack_.back().pending_throw.has_value()) {
-                            thrown_val = std::move(*call_stack_.back().pending_throw);
-                            call_stack_.back().pending_throw = std::nullopt;
-                        } else {
-                            thrown_val = Value::string(body_result.error().message());
-                        }
-                        outer_promise->Reject(std::move(thrown_val), job_queue_);
-                    }
-                    vm_drain_job_queue();
+
+                    vm_handle_async_result(body_result, outer_promise);
                     return EvalResult::ok(outer_val);
                 });
                 auto async_proto = RcPtr<JSObject>::make();
@@ -2249,21 +2317,23 @@ EvalResult VM::run(size_t exit_depth) {
         }
 
         case Opcode::kAwait: {
-            // Pop argument, wrap in Promise, drain job queue, push resolved value
+            // Suspend the async function: move the current frame out, store inner_promise,
+            // and signal suspension to the async wrapper via vm_async_suspended_.
             Value arg_val = std::move(stack.back());
             stack.pop_back();
             auto inner_promise = vm_promise_resolve(std::move(arg_val));
-            // Drain pending microtasks to settle inner_promise
-            vm_drain_job_queue();
-            if (inner_promise->state() == PromiseState::kFulfilled) {
-                stack.push_back(inner_promise->result());
-            } else if (inner_promise->state() == PromiseState::kRejected) {
-                frame.pending_throw = inner_promise->result();
-            } else {
-                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
-                    "await: Promise is still pending (no event loop)");
-            }
-            break;
+
+            // Move current frame out of call_stack_
+            vm_suspended_frame_ = std::move(call_stack_.back());
+            call_stack_.pop_back();
+            call_depth_--;
+
+            // Store inner_promise for the async wrapper to pick up
+            vm_pending_inner_promise_ = inner_promise;
+            vm_async_suspended_ = true;
+
+            // Signal suspension — run() will detect this and return kAsyncSuspendSentinel
+            goto suspend_exit;
         }
 
         default:
@@ -2272,6 +2342,9 @@ EvalResult VM::run(size_t exit_depth) {
     }
 
     return EvalResult::ok(Value::undefined());
+
+suspend_exit:
+    return EvalResult::err(Error(ErrorKind::Runtime, kAsyncSuspendSentinel));
 }
 
 // ============================================================

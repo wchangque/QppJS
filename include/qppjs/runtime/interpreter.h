@@ -100,6 +100,12 @@ private:
                                     std::shared_ptr<std::vector<StmtNode>> body,
                                     RcPtr<Environment> closure_env);
 
+    // Execute async body from stmt_index. On suspend, enqueues resume/reject via PerformThen.
+    // On completion, fulfills/rejects outer_promise.
+    void run_async_body(std::shared_ptr<std::vector<StmtNode>> body, size_t stmt_index,
+                        RcPtr<Environment> fn_env, Value this_val,
+                        RcPtr<JSPromise> outer_promise);
+
     // Promise.resolve(value): wraps non-Promise values in a fulfilled Promise.
     RcPtr<JSPromise> promise_resolve(Value value);
 
@@ -164,6 +170,18 @@ private:
     // eval_try_stmt checks this sentinel before interpreting any EvalResult error.
     std::optional<Value> pending_throw_;
     static constexpr const char* kPendingThrowSentinel = "__qppjs_pending_throw__";
+
+    // Sentinel returned by eval_await_expr when the async function suspends.
+    // All intermediate eval_* layers propagate this upward without extra processing.
+    static constexpr const char* kAsyncSuspendSentinel = "__qppjs_async_suspend__";
+
+    // When an async function resumes after an await, the fulfilled value is stored here
+    // so that eval_await_expr can return it without re-suspending.
+    std::optional<Value> pending_await_result_;
+
+    // Set by eval_await_expr when suspending: the inner promise to await on.
+    // Read by the async body runner to set up resume/reject callbacks.
+    std::optional<RcPtr<JSPromise>> pending_inner_promise_;
 
     // Current async function context (non-owning, only valid during async body execution)
     JSPromise* current_async_promise_ = nullptr;  // outer promise for current async function

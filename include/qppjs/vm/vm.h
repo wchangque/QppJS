@@ -94,6 +94,10 @@ private:
     void vm_execute_reaction_job(ReactionJob job);
     void vm_drain_job_queue();
 
+    // Async body result handler: fulfill/reject outer_promise based on body_result.
+    // Also handles nested suspension (multiple awaits).
+    void vm_handle_async_result(EvalResult body_result, RcPtr<JSPromise> outer_promise);
+
     GcHeap gc_heap_;
     ModuleLoader module_loader_;
     JobQueue job_queue_;
@@ -101,6 +105,13 @@ private:
     // Pending throw value for native functions that need to re-throw
     // (used when call_stack_ may be empty, e.g., during job queue drain).
     std::optional<Value> native_pending_throw_;
+
+    // Async suspension state: set by kAwait when suspending a frame.
+    // kAsyncSuspendSentinel is the string value used as the error message.
+    static constexpr const char* kAsyncSuspendSentinel = "__qppjs_async_suspend__";
+    bool vm_async_suspended_ = false;
+    std::optional<RcPtr<JSPromise>> vm_pending_inner_promise_;
+    std::optional<CallFrame> vm_suspended_frame_;
 
     // deque: push_back does not invalidate references to existing elements
     std::deque<CallFrame> call_stack_;
