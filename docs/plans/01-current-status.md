@@ -6,8 +6,8 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | Array map/filter/reduce/reduceRight Review 修复（M-1/M-2/P1-1/P1-2） |
-| 测试计数 | 1726/1726 通过（coverage），1724/1724 通过（run_ut ASAN），0 LSan 泄漏 |
+| 当前阶段 | Array.prototype.find/findIndex/some/every/indexOf/includes 修复（M-1/M-2/P1） |
+| 测试计数 | 1842/1842 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-04-28 |
 | 下一步 | Phase 12（待定：P3-1 JSString 优化、更多内建对象、dynamic import()）|
 
@@ -21,6 +21,9 @@
 
 ## 最近完成
 
+- [x] Array.prototype.find/findIndex/some/every/indexOf/includes Review 修复（M-1/M-2/P1）：M-1：`resolve_from_index` 和 `resolve_from_index_vm` 中的 `std::floor` 改为 `std::trunc`，修复负小数 fromIndex 的 ToIntegerOrInfinity 语义（interpreter.cpp + vm.cpp 两处）；M-2：`to_number_double` 和 `to_number_double_vm` 字符串分支添加 trim（去除前导和尾部空白），修复 `" 1 "` 等带空格字符串 fromIndex 被解析为 NaN→0 的问题（两处）；P1：find/findIndex 循环中消除 `Value elem` 中间变量，直接在 `call_args[0]` 构造（interpreter.cpp + vm.cpp 各 2 处，共 4 处）。新增 4 个回归测试（A-170/A-171 Interp+VM 对称）。1842/1842 通过（coverage），0 LSan 泄漏。
+- [x] Array.prototype.find/findIndex/some/every/indexOf/includes Testing Agent 边界补测：新增 40 个测试（20 Interp + 20 VM，A-150～A-169b）。覆盖：find 返回对象/字符串元素值本身（非 boolean）、findIndex 返回索引而非元素值、some/every 短路后 callback 调用计数验证、indexOf fromIndex=0 等同无参数、fromIndex=1 跳过索引 0 的匹配、严格相等字符串 vs 数字、null!==undefined、includes +0/-0 SameValueZero 互找、includes null!==undefined、indexOf fromIndex 超出 length 返回 -1、includes fromIndex 负数绝对值超过 len 从 0 开始、indexOf fromIndex=-1 解析为 len-1、find/some/every 非函数 callback TypeError、filter→some 链式调用、every&&some 组合。1838/1838 通过（coverage），0 LSan 泄漏。
+- [x] Array.prototype.find/findIndex/some/every/indexOf/includes：在 `interpreter.cpp` 和 `vm.cpp` 的 array_prototype_ 注册区域各新增 6 个 NativeFn（Interp+VM 对称）。辅助函数：`to_number_double`（独立 double 转换，无 EvalResult 包装）、`strict_eq_values`（NaN!=NaN，+0===-0）、`same_value_zero`（NaN==NaN）、`resolve_from_index`（fromIndex 语义，nullopt 表示立即无结果）；vm.cpp 同名函数加 `_vm` 后缀避免冲突，复用已有 `strict_eq`。find/findIndex：不跳过 hole（hole→undefined 传给 callback）；some/every：跳过 hole；indexOf：跳过 hole，严格相等；includes：不跳过 hole，SameValueZero。新增 72 个测试（36 Interp + 36 VM，A-78～A-149）。1798/1798 通过（coverage），1796/1796 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] Array map/filter/reduce/reduceRight Review 修复（M-1/M-2/P1-1/P1-2）：M-1：filter 在 callback 执行后快照 `elem` 防止迭代器失效（interpreter.cpp + vm.cpp 两侧）；M-2：map 的 `reserve` 改为按实际元素数 `arr->elements_.size()` 预分配（两侧）；P1-1：reduce/reduceRight 的 `acc = res.value()` 改为 `acc = std::move(res.value())`（两侧各 2 处）；P1-2：map 结果写入改为 `std::move`（两侧各 1 处）。共 8 处最小改动。1726/1726 通过（coverage），1724/1724 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] Array map/filter/reduce/reduceRight Testing Agent 边界补测 + 稀疏数组 hole 语义修复：新增 36 个测试（18 Interp + 18 VM，A-60～A-77）。覆盖：稀疏数组 hole 保留（map 结果 length=3 index 1 为 hole）、filter 结果无 hole（length=2）、reduce/reduceRight 跳过 hole（[1,,3] → 4）、全 hole 数组无初值 TypeError（[,,].reduce）、reduce index 正确性（有/无 initialValue 时起始 index）、reduceRight index 从右向左（[2,1,0]）、callback 抛异常传播（map/filter/reduce/reduceRight 四个方法）、map 结果 length 正确性（含空数组）、reduce 单元素无初值 callback 不调用、链式 filter→map。同步修复了 Parser/AST/Interpreter/VM/Compiler 五处实现 bug：elision 原先被解析为 `Identifier{"undefined"}` 占位，改为 `nullopt` 真正 hole；AST `ArrayExpression.elements` 类型改为 `vector<optional<unique_ptr<ExprNode>>>`；Interpreter `eval_array_expr` 对 nullopt 跳过写入 elements_（仅递增 array_length_）；新增 `kArrayHole` opcode，Compiler 对 hole 位置 emit kDup+kArrayHole，VM 处理时只递增 array_length_；ast_dump 对 hole 输出 `<hole>`。1726/1726 通过（coverage），1724/1724 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] Array.prototype.map/filter/reduce/reduceRight：在 `interpreter.cpp` 和 `vm.cpp` 的 array_prototype_ 注册区域各新增 4 个 NativeFn（Interp+VM 对称）。map：创建等长结果数组（elements_.reserve），跳过 hole；filter：收集通过 to_boolean 的元素，结果 length=to；reduce/reduceRight：两段式初始化（有/无 initialValue），空数组无 initialValue 抛 TypeError，循环变量 int64_t 防止 uint32_t 下溢。Interpreter 侧使用 pending_throw_+kPendingThrowSentinel 机制，VM 侧使用 native_pending_throw_+"__qppjs_pending_throw__" 机制。新增 38 个测试（19 Interp + 19 VM，A-41～A-59）。1690/1690 通过（coverage），1688/1688 通过（run_ut ASAN），0 LSan 泄漏。

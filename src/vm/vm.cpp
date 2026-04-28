@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -127,6 +128,48 @@ static bool strict_eq(const Value& a, const Value& b) {
     case ValueKind::Object: return a.as_object_raw() == b.as_object_raw();
     }
     return false;
+}
+
+static bool same_value_zero(const Value& a, const Value& b) {
+    if (a.is_number() && b.is_number() && std::isnan(a.as_number()) && std::isnan(b.as_number())) {
+        return true;
+    }
+    return strict_eq(a, b);
+}
+
+static double to_number_double_vm(const Value& v) {
+    switch (v.kind()) {
+    case ValueKind::Undefined: return std::numeric_limits<double>::quiet_NaN();
+    case ValueKind::Null:      return 0.0;
+    case ValueKind::Bool:      return v.as_bool() ? 1.0 : 0.0;
+    case ValueKind::Number:    return v.as_number();
+    case ValueKind::String: {
+        const std::string& s = v.as_string();
+        if (s.empty()) return 0.0;
+        size_t first = s.find_first_not_of(" \t\n\r\f\v");
+        if (first == std::string::npos) return 0.0;
+        size_t last = s.find_last_not_of(" \t\n\r\f\v");
+        std::string trimmed = s.substr(first, last - first + 1);
+        char* end = nullptr;
+        double r = std::strtod(trimmed.c_str(), &end);
+        if (end == trimmed.c_str() || *end != '\0') return std::numeric_limits<double>::quiet_NaN();
+        return r;
+    }
+    case ValueKind::Object: return std::numeric_limits<double>::quiet_NaN();
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+static std::optional<uint32_t> resolve_from_index_vm(uint32_t len, const std::vector<Value>& args,
+                                                      size_t arg_idx) {
+    if (args.size() <= arg_idx || args[arg_idx].is_undefined()) return 0u;
+    double n = to_number_double_vm(args[arg_idx]);
+    if (std::isnan(n)) n = 0.0;
+    n = std::trunc(n);
+    if (n >= static_cast<double>(len)) return std::nullopt;
+    if (n >= 0.0) return static_cast<uint32_t>(n);
+    double k = static_cast<double>(len) + n;
+    return static_cast<uint32_t>(k < 0.0 ? 0.0 : k);
 }
 
 bool VM::abstract_eq(const Value& a, const Value& b) {
@@ -520,6 +563,194 @@ void VM::init_global_env() {
         return EvalResult::ok(acc);
     });
     array_prototype_->set_property("reduceRight", Value::object(ObjectPtr(reduce_right_fn)));
+
+    // Array.prototype.find
+    auto find_fn = RcPtr<JSFunction>::make();
+    find_fn->set_name(std::string("find"));
+    find_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "find called on non-array");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        if (args.empty() || !args[0].is_object() ||
+            args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "callback is not a function");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        Value callback = args[0];
+        Value this_arg = args.size() >= 2 ? args[1] : Value::undefined();
+        uint32_t len = arr->array_length_;
+        for (uint32_t i = 0; i < len; i++) {
+            auto it = arr->elements_.find(i);
+            Value call_args[3] = {
+                it != arr->elements_.end() ? it->second : Value::undefined(),
+                Value::number(static_cast<double>(i)),
+                this_val
+            };
+            std::span<Value> arg_span(call_args, 3);
+            auto res = call_function_val(callback, this_arg, arg_span);
+            if (!res.is_ok()) return res;
+            if (to_boolean(res.value())) return EvalResult::ok(call_args[0]);
+        }
+        return EvalResult::ok(Value::undefined());
+    });
+    array_prototype_->set_property("find", Value::object(ObjectPtr(find_fn)));
+
+    // Array.prototype.findIndex
+    auto find_index_fn = RcPtr<JSFunction>::make();
+    find_index_fn->set_name(std::string("findIndex"));
+    find_index_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "findIndex called on non-array");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        if (args.empty() || !args[0].is_object() ||
+            args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "callback is not a function");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        Value callback = args[0];
+        Value this_arg = args.size() >= 2 ? args[1] : Value::undefined();
+        uint32_t len = arr->array_length_;
+        for (uint32_t i = 0; i < len; i++) {
+            auto it = arr->elements_.find(i);
+            Value call_args[3] = {
+                it != arr->elements_.end() ? it->second : Value::undefined(),
+                Value::number(static_cast<double>(i)),
+                this_val
+            };
+            std::span<Value> arg_span(call_args, 3);
+            auto res = call_function_val(callback, this_arg, arg_span);
+            if (!res.is_ok()) return res;
+            if (to_boolean(res.value())) {
+                return EvalResult::ok(Value::number(static_cast<double>(i)));
+            }
+        }
+        return EvalResult::ok(Value::number(-1.0));
+    });
+    array_prototype_->set_property("findIndex", Value::object(ObjectPtr(find_index_fn)));
+
+    // Array.prototype.some
+    auto some_fn = RcPtr<JSFunction>::make();
+    some_fn->set_name(std::string("some"));
+    some_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "some called on non-array");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        if (args.empty() || !args[0].is_object() ||
+            args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "callback is not a function");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        Value callback = args[0];
+        Value this_arg = args.size() >= 2 ? args[1] : Value::undefined();
+        uint32_t len = arr->array_length_;
+        for (uint32_t i = 0; i < len; i++) {
+            auto it = arr->elements_.find(i);
+            if (it == arr->elements_.end()) continue;
+            Value elem = it->second;
+            Value call_args[3] = {elem, Value::number(static_cast<double>(i)), this_val};
+            std::span<Value> arg_span(call_args, 3);
+            auto res = call_function_val(callback, this_arg, arg_span);
+            if (!res.is_ok()) return res;
+            if (to_boolean(res.value())) return EvalResult::ok(Value::boolean(true));
+        }
+        return EvalResult::ok(Value::boolean(false));
+    });
+    array_prototype_->set_property("some", Value::object(ObjectPtr(some_fn)));
+
+    // Array.prototype.every
+    auto every_fn = RcPtr<JSFunction>::make();
+    every_fn->set_name(std::string("every"));
+    every_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "every called on non-array");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        if (args.empty() || !args[0].is_object() ||
+            args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "callback is not a function");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        Value callback = args[0];
+        Value this_arg = args.size() >= 2 ? args[1] : Value::undefined();
+        uint32_t len = arr->array_length_;
+        for (uint32_t i = 0; i < len; i++) {
+            auto it = arr->elements_.find(i);
+            if (it == arr->elements_.end()) continue;
+            Value elem = it->second;
+            Value call_args[3] = {elem, Value::number(static_cast<double>(i)), this_val};
+            std::span<Value> arg_span(call_args, 3);
+            auto res = call_function_val(callback, this_arg, arg_span);
+            if (!res.is_ok()) return res;
+            if (!to_boolean(res.value())) return EvalResult::ok(Value::boolean(false));
+        }
+        return EvalResult::ok(Value::boolean(true));
+    });
+    array_prototype_->set_property("every", Value::object(ObjectPtr(every_fn)));
+
+    // Array.prototype.indexOf
+    auto index_of_fn = RcPtr<JSFunction>::make();
+    index_of_fn->set_name(std::string("indexOf"));
+    index_of_fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: indexOf called on non-array"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        uint32_t len = arr->array_length_;
+        auto k_opt = resolve_from_index_vm(len, args, 1);
+        if (!k_opt.has_value()) return EvalResult::ok(Value::number(-1.0));
+        Value search_val = args.size() >= 1 ? args[0] : Value::undefined();
+        for (uint32_t i = *k_opt; i < len; i++) {
+            auto it = arr->elements_.find(i);
+            if (it == arr->elements_.end()) continue;
+            if (strict_eq(it->second, search_val)) {
+                return EvalResult::ok(Value::number(static_cast<double>(i)));
+            }
+        }
+        return EvalResult::ok(Value::number(-1.0));
+    });
+    array_prototype_->set_property("indexOf", Value::object(ObjectPtr(index_of_fn)));
+
+    // Array.prototype.includes
+    auto includes_fn = RcPtr<JSFunction>::make();
+    includes_fn->set_name(std::string("includes"));
+    includes_fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: includes called on non-array"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        uint32_t len = arr->array_length_;
+        auto k_opt = resolve_from_index_vm(len, args, 1);
+        if (!k_opt.has_value()) return EvalResult::ok(Value::boolean(false));
+        Value search_val = args.size() >= 1 ? args[0] : Value::undefined();
+        for (uint32_t i = *k_opt; i < len; i++) {
+            auto it = arr->elements_.find(i);
+            Value elem = it != arr->elements_.end() ? it->second : Value::undefined();
+            if (same_value_zero(elem, search_val)) return EvalResult::ok(Value::boolean(true));
+        }
+        return EvalResult::ok(Value::boolean(false));
+    });
+    array_prototype_->set_property("includes", Value::object(ObjectPtr(includes_fn)));
 
     // Build Object.keys
     auto keys_fn = RcPtr<JSFunction>::make();

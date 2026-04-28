@@ -1577,4 +1577,999 @@ TEST(VMArray, ReduceRightCallbackThrowPropagates) {
     )"));
 }
 
+// ============================================================
+// Interpreter: find
+// ============================================================
+
+// A-78 Interp: find returns first matching element
+TEST(InterpArray, FindReturnsFirstMatch) {
+    auto v = interp_ok("[1,2,3].find(function(x){ return x > 1; })");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-79 Interp: find returns undefined when not found
+TEST(InterpArray, FindReturnsUndefinedNotFound) {
+    auto v = interp_ok("[1,2,3].find(function(x){ return x > 10; })");
+    EXPECT_TRUE(v.is_undefined());
+}
+
+// A-80 Interp: find passes undefined for hole position
+TEST(InterpArray, FindHolePassedAsUndefined) {
+    auto v = interp_ok(R"(
+        var a = [1,,3];
+        a.find(function(x){ return x === undefined; })
+    )");
+    EXPECT_TRUE(v.is_undefined());
+}
+
+// A-81 Interp: find callback throw propagates
+TEST(InterpArray, FindCallbackThrowPropagates) {
+    EXPECT_TRUE(interp_err("[1,2,3].find(function(){ throw 'boom'; })"));
+}
+
+// A-82 Interp: find thisArg binding
+TEST(InterpArray, FindThisArgBinding) {
+    auto v = interp_ok(R"(
+        var obj = { threshold: 2 };
+        [1,2,3].find(function(x){ return x > this.threshold; }, obj)
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-83 Interp: find on empty array returns undefined
+TEST(InterpArray, FindEmptyArrayReturnsUndefined) {
+    auto v = interp_ok("[].find(function(x){ return true; })");
+    EXPECT_TRUE(v.is_undefined());
+}
+
+// ============================================================
+// Interpreter: findIndex
+// ============================================================
+
+// A-84 Interp: findIndex returns correct index
+TEST(InterpArray, FindIndexReturnsIndex) {
+    auto v = interp_ok("[10,20,30].findIndex(function(x){ return x === 20; })");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-85 Interp: findIndex returns -1 when not found
+TEST(InterpArray, FindIndexReturnsMinusOne) {
+    auto v = interp_ok("[1,2,3].findIndex(function(x){ return x > 10; })");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// A-86 Interp: findIndex returns hole index when callback truthy for undefined
+TEST(InterpArray, FindIndexHoleIndex) {
+    auto v = interp_ok(R"(
+        var a = [1,,3];
+        a.findIndex(function(x){ return x === undefined; })
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-87 Interp: findIndex callback throw propagates
+TEST(InterpArray, FindIndexCallbackThrowPropagates) {
+    EXPECT_TRUE(interp_err("[1,2,3].findIndex(function(){ throw 'boom'; })"));
+}
+
+// A-88 Interp: findIndex return value is number type
+TEST(InterpArray, FindIndexReturnIsNumber) {
+    auto v = interp_ok("[5].findIndex(function(x){ return x === 5; })");
+    EXPECT_TRUE(v.is_number());
+}
+
+// A-89 Interp: findIndex on empty array returns -1
+TEST(InterpArray, FindIndexEmptyArrayReturnsMinusOne) {
+    auto v = interp_ok("[].findIndex(function(x){ return true; })");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// ============================================================
+// Interpreter: some
+// ============================================================
+
+// A-90 Interp: some returns true on first truthy, short-circuits
+TEST(InterpArray, SomeTrueShortCircuit) {
+    auto v = interp_ok(R"(
+        var count = 0;
+        var r = [1,2,3].some(function(x){ count = count + 1; return x === 1; });
+        r === true && count === 1
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-91 Interp: some returns false when all falsy
+TEST(InterpArray, SomeAllFalsyReturnsFalse) {
+    auto v = interp_ok("[1,2,3].some(function(x){ return x > 10; })");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_FALSE(v.as_bool());
+}
+
+// A-92 Interp: some on empty array returns false
+TEST(InterpArray, SomeEmptyReturnsFalse) {
+    auto v = interp_ok("[].some(function(x){ return true; })");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_FALSE(v.as_bool());
+}
+
+// A-93 Interp: some skips holes
+TEST(InterpArray, SomeSkipsHoles) {
+    auto v = interp_ok(R"(
+        var count = 0;
+        var a = [1,,3];
+        a.some(function(x){ count = count + 1; return false; });
+        count === 2
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-94 Interp: some callback throw propagates
+TEST(InterpArray, SomeCallbackThrowPropagates) {
+    EXPECT_TRUE(interp_err("[1,2,3].some(function(){ throw 'boom'; })"));
+}
+
+// A-95 Interp: some thisArg binding
+TEST(InterpArray, SomeThisArgBinding) {
+    auto v = interp_ok(R"(
+        var obj = { limit: 5 };
+        [1,2,3].some(function(x){ return x > this.limit; }, obj)
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_FALSE(v.as_bool());
+}
+
+// ============================================================
+// Interpreter: every
+// ============================================================
+
+// A-96 Interp: every returns true when all truthy
+TEST(InterpArray, EveryAllTruthyReturnsTrue) {
+    auto v = interp_ok("[2,4,6].every(function(x){ return x % 2 === 0; })");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-97 Interp: every returns false on first falsy, short-circuits
+TEST(InterpArray, EveryFalsyShortCircuit) {
+    auto v = interp_ok(R"(
+        var count = 0;
+        var r = [1,2,3].every(function(x){ count = count + 1; return x < 2; });
+        r === false && count === 2
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-98 Interp: every on empty array returns true (vacuous truth)
+TEST(InterpArray, EveryEmptyReturnsTrue) {
+    auto v = interp_ok("[].every(function(x){ return false; })");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-99 Interp: every skips holes
+TEST(InterpArray, EverySkipsHoles) {
+    auto v = interp_ok(R"(
+        var count = 0;
+        var a = [1,,3];
+        a.every(function(x){ count = count + 1; return true; });
+        count === 2
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-100 Interp: every callback throw propagates
+TEST(InterpArray, EveryCallbackThrowPropagates) {
+    EXPECT_TRUE(interp_err("[1,2,3].every(function(){ throw 'boom'; })"));
+}
+
+// A-101 Interp: every thisArg binding
+TEST(InterpArray, EveryThisArgBinding) {
+    auto v = interp_ok(R"(
+        var obj = { limit: 10 };
+        [1,2,3].every(function(x){ return x < this.limit; }, obj)
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// ============================================================
+// Interpreter: indexOf
+// ============================================================
+
+// A-102 Interp: indexOf finds element
+TEST(InterpArray, IndexOfFindsElement) {
+    auto v = interp_ok("[10,20,30].indexOf(20)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-103 Interp: indexOf returns -1 when not found
+TEST(InterpArray, IndexOfNotFound) {
+    auto v = interp_ok("[1,2,3].indexOf(99)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// A-104 Interp: indexOf NaN search returns -1 (strict equality)
+TEST(InterpArray, IndexOfNaNReturnsMinusOne) {
+    auto v = interp_ok("var nan = 0/0; [nan].indexOf(nan)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// A-105 Interp: indexOf skips holes
+TEST(InterpArray, IndexOfSkipsHoles) {
+    auto v = interp_ok(R"(
+        var a = [1,,3];
+        a.indexOf(undefined)
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// A-106 Interp: indexOf fromIndex positive
+TEST(InterpArray, IndexOfFromIndexPositive) {
+    auto v = interp_ok("[1,2,1,2].indexOf(1, 1)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-107 Interp: indexOf fromIndex negative
+TEST(InterpArray, IndexOfFromIndexNegative) {
+    auto v = interp_ok("[1,2,3].indexOf(1, -3)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// ============================================================
+// Interpreter: includes
+// ============================================================
+
+// A-108 Interp: includes finds element
+TEST(InterpArray, IncludesFindsElement) {
+    auto v = interp_ok("[1,2,3].includes(2)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-109 Interp: includes returns false when not found
+TEST(InterpArray, IncludesNotFound) {
+    auto v = interp_ok("[1,2,3].includes(99)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_FALSE(v.as_bool());
+}
+
+// A-110 Interp: includes NaN search returns true (SameValueZero)
+TEST(InterpArray, IncludesNaNReturnsTrue) {
+    auto v = interp_ok("var nan = 0/0; [nan].includes(nan)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-111 Interp: includes hole reads as undefined
+TEST(InterpArray, IncludesHoleAsUndefined) {
+    auto v = interp_ok(R"(
+        var a = [1,,3];
+        a.includes(undefined)
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-112 Interp: includes fromIndex positive
+TEST(InterpArray, IncludesFromIndexPositive) {
+    auto v = interp_ok("[1,2,3].includes(1, 1)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_FALSE(v.as_bool());
+}
+
+// A-113 Interp: includes fromIndex negative
+TEST(InterpArray, IncludesFromIndexNegative) {
+    auto v = interp_ok("[1,2,3].includes(1, -3)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// ============================================================
+// VM: find
+// ============================================================
+
+// A-114 VM: find returns first matching element
+TEST(VMArray, FindReturnsFirstMatch) {
+    auto v = vm_ok("[1,2,3].find(function(x){ return x > 1; })");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-115 VM: find returns undefined when not found
+TEST(VMArray, FindReturnsUndefinedNotFound) {
+    auto v = vm_ok("[1,2,3].find(function(x){ return x > 10; })");
+    EXPECT_TRUE(v.is_undefined());
+}
+
+// A-116 VM: find passes undefined for hole position
+TEST(VMArray, FindHolePassedAsUndefined) {
+    auto v = vm_ok(R"(
+        var a = [1,,3];
+        a.find(function(x){ return x === undefined; })
+    )");
+    EXPECT_TRUE(v.is_undefined());
+}
+
+// A-117 VM: find callback throw propagates
+TEST(VMArray, FindCallbackThrowPropagates) {
+    EXPECT_TRUE(vm_err("[1,2,3].find(function(){ throw 'boom'; })"));
+}
+
+// A-118 VM: find thisArg binding
+TEST(VMArray, FindThisArgBinding) {
+    auto v = vm_ok(R"(
+        var obj = { threshold: 2 };
+        [1,2,3].find(function(x){ return x > this.threshold; }, obj)
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-119 VM: find on empty array returns undefined
+TEST(VMArray, FindEmptyArrayReturnsUndefined) {
+    auto v = vm_ok("[].find(function(x){ return true; })");
+    EXPECT_TRUE(v.is_undefined());
+}
+
+// ============================================================
+// VM: findIndex
+// ============================================================
+
+// A-120 VM: findIndex returns correct index
+TEST(VMArray, FindIndexReturnsIndex) {
+    auto v = vm_ok("[10,20,30].findIndex(function(x){ return x === 20; })");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-121 VM: findIndex returns -1 when not found
+TEST(VMArray, FindIndexReturnsMinusOne) {
+    auto v = vm_ok("[1,2,3].findIndex(function(x){ return x > 10; })");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// A-122 VM: findIndex returns hole index when callback truthy for undefined
+TEST(VMArray, FindIndexHoleIndex) {
+    auto v = vm_ok(R"(
+        var a = [1,,3];
+        a.findIndex(function(x){ return x === undefined; })
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-123 VM: findIndex callback throw propagates
+TEST(VMArray, FindIndexCallbackThrowPropagates) {
+    EXPECT_TRUE(vm_err("[1,2,3].findIndex(function(){ throw 'boom'; })"));
+}
+
+// A-124 VM: findIndex return value is number type
+TEST(VMArray, FindIndexReturnIsNumber) {
+    auto v = vm_ok("[5].findIndex(function(x){ return x === 5; })");
+    EXPECT_TRUE(v.is_number());
+}
+
+// A-125 VM: findIndex on empty array returns -1
+TEST(VMArray, FindIndexEmptyArrayReturnsMinusOne) {
+    auto v = vm_ok("[].findIndex(function(x){ return true; })");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// ============================================================
+// VM: some
+// ============================================================
+
+// A-126 VM: some returns true on first truthy, short-circuits
+TEST(VMArray, SomeTrueShortCircuit) {
+    auto v = vm_ok(R"(
+        var count = 0;
+        var r = [1,2,3].some(function(x){ count = count + 1; return x === 1; });
+        r === true && count === 1
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-127 VM: some returns false when all falsy
+TEST(VMArray, SomeAllFalsyReturnsFalse) {
+    auto v = vm_ok("[1,2,3].some(function(x){ return x > 10; })");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_FALSE(v.as_bool());
+}
+
+// A-128 VM: some on empty array returns false
+TEST(VMArray, SomeEmptyReturnsFalse) {
+    auto v = vm_ok("[].some(function(x){ return true; })");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_FALSE(v.as_bool());
+}
+
+// A-129 VM: some skips holes
+TEST(VMArray, SomeSkipsHoles) {
+    auto v = vm_ok(R"(
+        var count = 0;
+        var a = [1,,3];
+        a.some(function(x){ count = count + 1; return false; });
+        count === 2
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-130 VM: some callback throw propagates
+TEST(VMArray, SomeCallbackThrowPropagates) {
+    EXPECT_TRUE(vm_err("[1,2,3].some(function(){ throw 'boom'; })"));
+}
+
+// A-131 VM: some thisArg binding
+TEST(VMArray, SomeThisArgBinding) {
+    auto v = vm_ok(R"(
+        var obj = { limit: 5 };
+        [1,2,3].some(function(x){ return x > this.limit; }, obj)
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_FALSE(v.as_bool());
+}
+
+// ============================================================
+// VM: every
+// ============================================================
+
+// A-132 VM: every returns true when all truthy
+TEST(VMArray, EveryAllTruthyReturnsTrue) {
+    auto v = vm_ok("[2,4,6].every(function(x){ return x % 2 === 0; })");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-133 VM: every returns false on first falsy, short-circuits
+TEST(VMArray, EveryFalsyShortCircuit) {
+    auto v = vm_ok(R"(
+        var count = 0;
+        var r = [1,2,3].every(function(x){ count = count + 1; return x < 2; });
+        r === false && count === 2
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-134 VM: every on empty array returns true (vacuous truth)
+TEST(VMArray, EveryEmptyReturnsTrue) {
+    auto v = vm_ok("[].every(function(x){ return false; })");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-135 VM: every skips holes
+TEST(VMArray, EverySkipsHoles) {
+    auto v = vm_ok(R"(
+        var count = 0;
+        var a = [1,,3];
+        a.every(function(x){ count = count + 1; return true; });
+        count === 2
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-136 VM: every callback throw propagates
+TEST(VMArray, EveryCallbackThrowPropagates) {
+    EXPECT_TRUE(vm_err("[1,2,3].every(function(){ throw 'boom'; })"));
+}
+
+// A-137 VM: every thisArg binding
+TEST(VMArray, EveryThisArgBinding) {
+    auto v = vm_ok(R"(
+        var obj = { limit: 10 };
+        [1,2,3].every(function(x){ return x < this.limit; }, obj)
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// ============================================================
+// VM: indexOf
+// ============================================================
+
+// A-138 VM: indexOf finds element
+TEST(VMArray, IndexOfFindsElement) {
+    auto v = vm_ok("[10,20,30].indexOf(20)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-139 VM: indexOf returns -1 when not found
+TEST(VMArray, IndexOfNotFound) {
+    auto v = vm_ok("[1,2,3].indexOf(99)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// A-140 VM: indexOf NaN search returns -1 (strict equality)
+TEST(VMArray, IndexOfNaNReturnsMinusOne) {
+    auto v = vm_ok("var nan = 0/0; [nan].indexOf(nan)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// A-141 VM: indexOf skips holes
+TEST(VMArray, IndexOfSkipsHoles) {
+    auto v = vm_ok(R"(
+        var a = [1,,3];
+        a.indexOf(undefined)
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// A-142 VM: indexOf fromIndex positive
+TEST(VMArray, IndexOfFromIndexPositive) {
+    auto v = vm_ok("[1,2,1,2].indexOf(1, 1)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-143 VM: indexOf fromIndex negative
+TEST(VMArray, IndexOfFromIndexNegative) {
+    auto v = vm_ok("[1,2,3].indexOf(1, -3)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// ============================================================
+// VM: includes
+// ============================================================
+
+// A-144 VM: includes finds element
+TEST(VMArray, IncludesFindsElement) {
+    auto v = vm_ok("[1,2,3].includes(2)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-145 VM: includes returns false when not found
+TEST(VMArray, IncludesNotFound) {
+    auto v = vm_ok("[1,2,3].includes(99)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_FALSE(v.as_bool());
+}
+
+// A-146 VM: includes NaN search returns true (SameValueZero)
+TEST(VMArray, IncludesNaNReturnsTrue) {
+    auto v = vm_ok("var nan = 0/0; [nan].includes(nan)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-147 VM: includes hole reads as undefined
+TEST(VMArray, IncludesHoleAsUndefined) {
+    auto v = vm_ok(R"(
+        var a = [1,,3];
+        a.includes(undefined)
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-148 VM: includes fromIndex positive
+TEST(VMArray, IncludesFromIndexPositive) {
+    auto v = vm_ok("[1,2,3].includes(1, 1)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_FALSE(v.as_bool());
+}
+
+// A-149 VM: includes fromIndex negative
+TEST(VMArray, IncludesFromIndexNegative) {
+    auto v = vm_ok("[1,2,3].includes(1, -3)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// ============================================================
+// Interp: find/findIndex return value type
+// ============================================================
+
+// A-150 Interp: find returns the element value itself (object)
+TEST(InterpArray, FindReturnsObjectValue) {
+    auto v = interp_ok(R"(
+        var obj = { x: 42 };
+        var result = [obj].find(function(e){ return e.x === 42; });
+        result.x
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 42.0);
+}
+
+// A-151 Interp: find returns the element value itself (string)
+TEST(InterpArray, FindReturnsStringValue) {
+    auto v = interp_ok(R"(
+        var result = ['hello','world'].find(function(e){ return e === 'world'; });
+        result === 'world'
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-152 Interp: findIndex returns index not element value
+TEST(InterpArray, FindIndexReturnsIndexNotValue) {
+    auto v = interp_ok("[10,20,30].findIndex(function(x){ return x === 30; })");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// ============================================================
+// Interp: some/every short-circuit callback count
+// ============================================================
+
+// A-153 Interp: some stops calling callback after first truthy
+TEST(InterpArray, SomeShortCircuitCallbackCount) {
+    auto v = interp_ok(R"(
+        var count = 0;
+        [1,2,3].some(function(x){ count = count + 1; return x === 2; });
+        count
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-154 Interp: every stops calling callback after first falsy
+TEST(InterpArray, EveryShortCircuitCallbackCount) {
+    auto v = interp_ok(R"(
+        var count = 0;
+        [1,2,3].every(function(x){ count = count + 1; return x < 2; });
+        count
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// ============================================================
+// Interp: indexOf strict equality edge cases
+// ============================================================
+
+// A-155 Interp: indexOf fromIndex=0 same as no fromIndex
+TEST(InterpArray, IndexOfFromIndexZero) {
+    auto v = interp_ok("[1,2,3].indexOf(1, 0)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-156 Interp: indexOf fromIndex=1 skips index 0 match
+TEST(InterpArray, IndexOfFromIndexSkipsEarlierMatch) {
+    auto v = interp_ok("[1,2,1].indexOf(1, 1)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-157 Interp: indexOf strict equality string vs number
+TEST(InterpArray, IndexOfStrictEqualityStringVsNumber) {
+    auto v = interp_ok("['1', 1].indexOf(1)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-158 Interp: indexOf null !== undefined
+TEST(InterpArray, IndexOfNullNotEqualUndefined) {
+    auto v = interp_ok("[null].indexOf(undefined)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// ============================================================
+// Interp: includes SameValueZero edge cases
+// ============================================================
+
+// A-159 Interp: includes +0 finds -0 (SameValueZero)
+TEST(InterpArray, IncludesPlusZeroFindMinusZero) {
+    auto v = interp_ok("var a = [+0]; a.includes(-0)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-160 Interp: includes -0 finds +0 (SameValueZero)
+TEST(InterpArray, IncludesMinusZeroFindPlusZero) {
+    auto v = interp_ok("var a = [-0]; a.includes(+0)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-161 Interp: includes null !== undefined
+TEST(InterpArray, IncludesNullNotEqualUndefined) {
+    auto v = interp_ok("[null].includes(undefined)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_FALSE(v.as_bool());
+}
+
+// ============================================================
+// Interp: fromIndex boundary cases
+// ============================================================
+
+// A-162 Interp: indexOf fromIndex beyond length returns -1
+TEST(InterpArray, IndexOfFromIndexBeyondLength) {
+    auto v = interp_ok("[1,2,3].indexOf(1, 10)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// A-163 Interp: includes fromIndex negative abs > len starts from 0
+TEST(InterpArray, IncludesFromIndexNegativeAbsExceedsLen) {
+    auto v = interp_ok("[1,2,3].includes(1, -100)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-164 Interp: indexOf fromIndex=-1 resolves to len-1=2
+TEST(InterpArray, IndexOfFromIndexMinusOne) {
+    auto v = interp_ok("[1,2,3].indexOf(3, -1)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// ============================================================
+// Interp: callback non-function TypeError
+// ============================================================
+
+// A-165 Interp: find with non-function callback throws TypeError
+TEST(InterpArray, FindNonFunctionCallbackTypeError) {
+    EXPECT_TRUE(interp_err("[1].find(42)"));
+}
+
+// A-166 Interp: some with null callback throws TypeError
+TEST(InterpArray, SomeNullCallbackTypeError) {
+    EXPECT_TRUE(interp_err("[1].some(null)"));
+}
+
+// A-167 Interp: every with string callback throws TypeError
+TEST(InterpArray, EveryStringCallbackTypeError) {
+    EXPECT_TRUE(interp_err("[1].every('str')"));
+}
+
+// ============================================================
+// Interp: chain calls
+// ============================================================
+
+// A-168 Interp: filter then some chain
+TEST(InterpArray, FilterThenSomeChain) {
+    auto v = interp_ok("[1,2,3,4].filter(function(x){ return x > 2; }).some(function(x){ return x > 3; })");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-169 Interp: every and some combined with &&
+TEST(InterpArray, EveryAndSomeCombined) {
+    auto v = interp_ok("[1,2,3].every(function(x){ return x > 0; }) && [1,2,3].some(function(x){ return x > 2; })");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// ============================================================
+// VM: find/findIndex return value type
+// ============================================================
+
+// A-150b VM: find returns the element value itself (object)
+TEST(VMArray, FindReturnsObjectValue) {
+    auto v = vm_ok(R"(
+        var obj = { x: 42 };
+        var result = [obj].find(function(e){ return e.x === 42; });
+        result.x
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 42.0);
+}
+
+// A-151b VM: find returns the element value itself (string)
+TEST(VMArray, FindReturnsStringValue) {
+    auto v = vm_ok(R"(
+        var result = ['hello','world'].find(function(e){ return e === 'world'; });
+        result === 'world'
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-152b VM: findIndex returns index not element value
+TEST(VMArray, FindIndexReturnsIndexNotValue) {
+    auto v = vm_ok("[10,20,30].findIndex(function(x){ return x === 30; })");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// ============================================================
+// VM: some/every short-circuit callback count
+// ============================================================
+
+// A-153b VM: some stops calling callback after first truthy
+TEST(VMArray, SomeShortCircuitCallbackCount) {
+    auto v = vm_ok(R"(
+        var count = 0;
+        [1,2,3].some(function(x){ count = count + 1; return x === 2; });
+        count
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-154b VM: every stops calling callback after first falsy
+TEST(VMArray, EveryShortCircuitCallbackCount) {
+    auto v = vm_ok(R"(
+        var count = 0;
+        [1,2,3].every(function(x){ count = count + 1; return x < 2; });
+        count
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// ============================================================
+// VM: indexOf strict equality edge cases
+// ============================================================
+
+// A-155b VM: indexOf fromIndex=0 same as no fromIndex
+TEST(VMArray, IndexOfFromIndexZero) {
+    auto v = vm_ok("[1,2,3].indexOf(1, 0)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-156b VM: indexOf fromIndex=1 skips index 0 match
+TEST(VMArray, IndexOfFromIndexSkipsEarlierMatch) {
+    auto v = vm_ok("[1,2,1].indexOf(1, 1)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-157b VM: indexOf strict equality string vs number
+TEST(VMArray, IndexOfStrictEqualityStringVsNumber) {
+    auto v = vm_ok("['1', 1].indexOf(1)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-158b VM: indexOf null !== undefined
+TEST(VMArray, IndexOfNullNotEqualUndefined) {
+    auto v = vm_ok("[null].indexOf(undefined)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// ============================================================
+// VM: includes SameValueZero edge cases
+// ============================================================
+
+// A-159b VM: includes +0 finds -0 (SameValueZero)
+TEST(VMArray, IncludesPlusZeroFindMinusZero) {
+    auto v = vm_ok("var a = [+0]; a.includes(-0)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-160b VM: includes -0 finds +0 (SameValueZero)
+TEST(VMArray, IncludesMinusZeroFindPlusZero) {
+    auto v = vm_ok("var a = [-0]; a.includes(+0)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-161b VM: includes null !== undefined
+TEST(VMArray, IncludesNullNotEqualUndefined) {
+    auto v = vm_ok("[null].includes(undefined)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_FALSE(v.as_bool());
+}
+
+// ============================================================
+// VM: fromIndex boundary cases
+// ============================================================
+
+// A-162b VM: indexOf fromIndex beyond length returns -1
+TEST(VMArray, IndexOfFromIndexBeyondLength) {
+    auto v = vm_ok("[1,2,3].indexOf(1, 10)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), -1.0);
+}
+
+// A-163b VM: includes fromIndex negative abs > len starts from 0
+TEST(VMArray, IncludesFromIndexNegativeAbsExceedsLen) {
+    auto v = vm_ok("[1,2,3].includes(1, -100)");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-164b VM: indexOf fromIndex=-1 resolves to len-1=2
+TEST(VMArray, IndexOfFromIndexMinusOne) {
+    auto v = vm_ok("[1,2,3].indexOf(3, -1)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// ============================================================
+// VM: callback non-function TypeError
+// ============================================================
+
+// A-165b VM: find with non-function callback throws TypeError
+TEST(VMArray, FindNonFunctionCallbackTypeError) {
+    EXPECT_TRUE(vm_err("[1].find(42)"));
+}
+
+// A-166b VM: some with null callback throws TypeError
+TEST(VMArray, SomeNullCallbackTypeError) {
+    EXPECT_TRUE(vm_err("[1].some(null)"));
+}
+
+// A-167b VM: every with string callback throws TypeError
+TEST(VMArray, EveryStringCallbackTypeError) {
+    EXPECT_TRUE(vm_err("[1].every('str')"));
+}
+
+// ============================================================
+// VM: chain calls
+// ============================================================
+
+// A-168b VM: filter then some chain
+TEST(VMArray, FilterThenSomeChain) {
+    auto v = vm_ok("[1,2,3,4].filter(function(x){ return x > 2; }).some(function(x){ return x > 3; })");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-169b VM: every and some combined with &&
+TEST(VMArray, EveryAndSomeCombined) {
+    auto v = vm_ok("[1,2,3].every(function(x){ return x > 0; }) && [1,2,3].some(function(x){ return x > 2; })");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// ============================================================
+// M-1 / M-2 regression: trunc and trim for fromIndex
+// ============================================================
+
+// A-170 Interp: indexOf fromIndex=-1.2 uses trunc(-1.2)=-1, resolves to len-1=4, finds 1 at index 3 -> -1
+TEST(InterpArray, IndexOfFromIndexNegFracTrunc) {
+    // trunc(-1.2) = -1, len=5, k = 5 + (-1) = 4, search from index 4
+    // arr[4]=0, not 1, so returns -1
+    auto v = interp_ok("[0,0,0,1,0].indexOf(1, -1.2)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_DOUBLE_EQ(v.as_number(), -1.0);
+}
+
+// A-171 Interp: indexOf fromIndex=" 1 " trim -> 1, search from index 1
+TEST(InterpArray, IndexOfFromIndexSpacedString) {
+    // ToNumber(" 1 ") = 1 after trim, search from index 1, finds 2 at index 1
+    auto v = interp_ok("[1,2,3].indexOf(2, ' 1 ')");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_DOUBLE_EQ(v.as_number(), 1.0);
+}
+
+// A-170b VM: indexOf fromIndex=-1.2 uses trunc(-1.2)=-1, resolves to len-1=4, finds 1 at index 3 -> -1
+TEST(VMArray, IndexOfFromIndexNegFracTrunc) {
+    auto v = vm_ok("[0,0,0,1,0].indexOf(1, -1.2)");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_DOUBLE_EQ(v.as_number(), -1.0);
+}
+
+// A-171b VM: indexOf fromIndex=" 1 " trim -> 1, search from index 1
+TEST(VMArray, IndexOfFromIndexSpacedString) {
+    auto v = vm_ok("[1,2,3].indexOf(2, ' 1 ')");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_DOUBLE_EQ(v.as_number(), 1.0);
+}
+
 }  // namespace
