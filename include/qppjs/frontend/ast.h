@@ -125,7 +125,8 @@ struct FunctionExpression {
 
 // 数组字面量 [elem0, elem1, ...]
 struct ArrayExpression {
-    std::vector<std::unique_ptr<ExprNode>> elements;
+    // nullopt entries represent elision holes (e.g. [1,,3] has nullopt at index 1)
+    std::vector<std::optional<std::unique_ptr<ExprNode>>> elements;
     SourceRange range;
 };
 

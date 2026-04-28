@@ -332,6 +332,195 @@ void VM::init_global_env() {
     });
     array_prototype_->set_property("forEach", Value::object(ObjectPtr(foreach_fn)));
 
+    // Array.prototype.map
+    auto map_fn = RcPtr<JSFunction>::make();
+    map_fn->set_name(std::string("map"));
+    map_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "map called on non-array");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        if (args.empty() || !args[0].is_object() ||
+            args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "callback is not a function");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        Value callback = args[0];
+        Value this_arg = args.size() >= 2 ? args[1] : Value::undefined();
+        uint32_t len = arr->array_length_;
+        auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(result.get());
+        result->set_proto(array_prototype_);
+        result->array_length_ = len;
+        result->elements_.reserve(arr->elements_.size());
+        for (uint32_t i = 0; i < len; i++) {
+            auto it = arr->elements_.find(i);
+            if (it == arr->elements_.end()) continue;
+            Value elem = it->second;
+            Value call_args[3] = {elem, Value::number(static_cast<double>(i)), this_val};
+            std::span<Value> arg_span(call_args, 3);
+            auto res = call_function_val(callback, this_arg, arg_span);
+            if (!res.is_ok()) return res;
+            result->elements_[i] = std::move(res.value());
+        }
+        return EvalResult::ok(Value::object(ObjectPtr(result)));
+    });
+    array_prototype_->set_property("map", Value::object(ObjectPtr(map_fn)));
+
+    // Array.prototype.filter
+    auto filter_fn = RcPtr<JSFunction>::make();
+    filter_fn->set_name(std::string("filter"));
+    filter_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "filter called on non-array");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        if (args.empty() || !args[0].is_object() ||
+            args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "callback is not a function");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        Value callback = args[0];
+        Value this_arg = args.size() >= 2 ? args[1] : Value::undefined();
+        uint32_t len = arr->array_length_;
+        auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(result.get());
+        result->set_proto(array_prototype_);
+        uint32_t to = 0;
+        for (uint32_t i = 0; i < len; i++) {
+            auto it = arr->elements_.find(i);
+            if (it == arr->elements_.end()) continue;
+            Value elem = it->second;
+            Value call_args[3] = {elem, Value::number(static_cast<double>(i)), this_val};
+            std::span<Value> arg_span(call_args, 3);
+            auto res = call_function_val(callback, this_arg, arg_span);
+            if (!res.is_ok()) return res;
+            if (to_boolean(res.value())) {
+                result->elements_[to++] = elem;
+            }
+        }
+        result->array_length_ = to;
+        return EvalResult::ok(Value::object(ObjectPtr(result)));
+    });
+    array_prototype_->set_property("filter", Value::object(ObjectPtr(filter_fn)));
+
+    // Array.prototype.reduce
+    auto reduce_fn = RcPtr<JSFunction>::make();
+    reduce_fn->set_name(std::string("reduce"));
+    reduce_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "reduce called on non-array");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        if (args.empty() || !args[0].is_object() ||
+            args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "callback is not a function");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        Value callback = args[0];
+        bool has_initial = args.size() >= 2;
+        uint32_t len = arr->array_length_;
+        Value acc;
+        uint32_t k = 0;
+        if (has_initial) {
+            acc = args[1];
+        } else {
+            bool found = false;
+            for (; k < len; k++) {
+                auto it = arr->elements_.find(k);
+                if (it != arr->elements_.end()) {
+                    acc = it->second;
+                    k++;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                         "Reduce of empty array with no initial value");
+                return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+            }
+        }
+        for (uint32_t i = k; i < len; i++) {
+            auto it = arr->elements_.find(i);
+            if (it == arr->elements_.end()) continue;
+            Value call_args[4] = {acc, it->second, Value::number(static_cast<double>(i)), this_val};
+            std::span<Value> arg_span(call_args, 4);
+            auto res = call_function_val(callback, Value::undefined(), arg_span);
+            if (!res.is_ok()) return res;
+            acc = std::move(res.value());
+        }
+        return EvalResult::ok(acc);
+    });
+    array_prototype_->set_property("reduce", Value::object(ObjectPtr(reduce_fn)));
+
+    // Array.prototype.reduceRight
+    auto reduce_right_fn = RcPtr<JSFunction>::make();
+    reduce_right_fn->set_name(std::string("reduceRight"));
+    reduce_right_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "reduceRight called on non-array");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        if (args.empty() || !args[0].is_object() ||
+            args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "callback is not a function");
+            return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        Value callback = args[0];
+        bool has_initial = args.size() >= 2;
+        int64_t len = static_cast<int64_t>(arr->array_length_);
+        Value acc;
+        int64_t k = 0;
+        if (has_initial) {
+            acc = args[1];
+            k = len - 1;
+        } else {
+            bool found = false;
+            for (k = len - 1; k >= 0; k--) {
+                auto it = arr->elements_.find(static_cast<uint32_t>(k));
+                if (it != arr->elements_.end()) {
+                    acc = it->second;
+                    k--;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                         "Reduce of empty array with no initial value");
+                return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+            }
+        }
+        for (; k >= 0; k--) {
+            auto it = arr->elements_.find(static_cast<uint32_t>(k));
+            if (it == arr->elements_.end()) continue;
+            Value call_args[4] = {acc, it->second, Value::number(static_cast<double>(k)), this_val};
+            std::span<Value> arg_span(call_args, 4);
+            auto res = call_function_val(callback, Value::undefined(), arg_span);
+            if (!res.is_ok()) return res;
+            acc = std::move(res.value());
+        }
+        return EvalResult::ok(acc);
+    });
+    array_prototype_->set_property("reduceRight", Value::object(ObjectPtr(reduce_right_fn)));
+
     // Build Object.keys
     auto keys_fn = RcPtr<JSFunction>::make();
     keys_fn->set_name(std::string("keys"));
@@ -1475,6 +1664,21 @@ EvalResult VM::run(size_t exit_depth) {
             gc_heap_.Register(arr.get());
             arr->set_proto(array_prototype_);
             stack.push_back(Value::object(ObjectPtr(arr)));
+            break;
+        }
+
+        case Opcode::kArrayHole: {
+            // Elision hole: increment array_length_ without writing an element.
+            // Stack top must be the array object (placed there by kDup before this opcode).
+            Value arr_val = std::move(stack.back());
+            stack.pop_back();
+            if (arr_val.is_object()) {
+                RcObject* raw_hole = arr_val.as_object_raw();
+                if (raw_hole && raw_hole->object_kind() == ObjectKind::kArray) {
+                    auto* arr = static_cast<JSObject*>(raw_hole);
+                    arr->array_length_++;
+                }
+            }
             break;
         }
 

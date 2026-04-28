@@ -213,7 +213,11 @@ std::string dump_expr(const ExprNode& node, int indent) {
                        [&](const ArrayExpression& ae) {
                            result = prefix + "ArrayExpression\n";
                            for (const auto& elem : ae.elements) {
-                               result += dump_expr(*elem, indent + 1);
+                               if (elem.has_value()) {
+                                   result += dump_expr(**elem, indent + 1);
+                               } else {
+                                   result += ind(indent + 1) + "<hole>\n";
+                               }
                            }
                        },
                        [&](const AwaitExpression& aw) {

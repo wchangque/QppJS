@@ -832,4 +832,749 @@ TEST(VMArray, StringKeyLength) {
     EXPECT_EQ(v.as_number(), 3.0);
 }
 
+// ============================================================
+// Interpreter: map / filter / reduce / reduceRight
+// ============================================================
+
+// A-41 Interp: map basic
+TEST(InterpArray, MapBasic) {
+    auto v = interp_ok(R"(
+        var r = [1,2,3].map(function(x){ return x*2; });
+        r[0] + r[1] * 10 + r[2] * 100
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0 + 40.0 + 600.0);
+}
+
+// A-42 Interp: map index argument
+TEST(InterpArray, MapIndexArg) {
+    auto v = interp_ok(R"(
+        var r = [10,20,30].map(function(val, i){ return i; });
+        r[0] + r[1] * 10 + r[2] * 100
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0 + 10.0 + 200.0);
+}
+
+// A-43 Interp: map thisArg
+TEST(InterpArray, MapThisArg) {
+    auto v = interp_ok(R"(
+        var r = [1,2].map(function(v){ return v * this.x; }, {x:10});
+        r[0] + r[1] * 10
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 10.0 + 200.0);
+}
+
+// A-44 Interp: map empty array
+TEST(InterpArray, MapEmpty) {
+    auto v = interp_ok(R"(
+        var r = [].map(function(x){ return x; });
+        r.length
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-45 Interp: map callback non-function TypeError
+TEST(InterpArray, MapCallbackNotFunction) {
+    EXPECT_TRUE(interp_err("[1,2].map(42)"));
+}
+
+// A-46 Interp: filter basic
+TEST(InterpArray, FilterBasic) {
+    auto v = interp_ok(R"(
+        var r = [1,2,3,4].filter(function(x){ return x%2===0; });
+        r.length === 2 && r[0] === 2 && r[1] === 4
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-47 Interp: filter all rejected
+TEST(InterpArray, FilterAllRejected) {
+    auto v = interp_ok(R"(
+        var r = [1,2,3].filter(function(){ return false; });
+        r.length
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-48 Interp: filter thisArg
+TEST(InterpArray, FilterThisArg) {
+    auto v = interp_ok(R"(
+        var r = [1,2,3,4,5].filter(function(x){ return x > this.min; }, {min:3});
+        r.length === 2 && r[0] === 4 && r[1] === 5
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-49 Interp: filter callback non-function TypeError
+TEST(InterpArray, FilterCallbackNotFunction) {
+    EXPECT_TRUE(interp_err("[1,2].filter('bad')"));
+}
+
+// A-50 Interp: reduce with initialValue
+TEST(InterpArray, ReduceWithInitial) {
+    auto v = interp_ok(R"(
+        [1,2,3].reduce(function(a,b){ return a+b; }, 0)
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 6.0);
+}
+
+// A-51 Interp: reduce without initialValue
+TEST(InterpArray, ReduceNoInitial) {
+    auto v = interp_ok(R"(
+        [1,2,3].reduce(function(a,b){ return a+b; })
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 6.0);
+}
+
+// A-52 Interp: reduce single element no initialValue — callback not called
+TEST(InterpArray, ReduceSingleNoInitial) {
+    auto v = interp_ok(R"(
+        [5].reduce(function(a,b){ return a+b; })
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 5.0);
+}
+
+// A-53 Interp: reduce empty array with initialValue
+TEST(InterpArray, ReduceEmptyWithInitial) {
+    auto v = interp_ok(R"(
+        [].reduce(function(a,b){ return a+b; }, 42)
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 42.0);
+}
+
+// A-54 Interp: reduce empty array no initialValue → TypeError
+TEST(InterpArray, ReduceEmptyNoInitial) {
+    EXPECT_TRUE(interp_err("[].reduce(function(a,b){ return a+b; })"));
+}
+
+// A-55 Interp: reduce callback argument order (acc, val, idx, arr)
+TEST(InterpArray, ReduceCallbackArgOrder) {
+    auto v = interp_ok(R"(
+        var indices = [];
+        [10,20,30].reduce(function(acc, val, idx){ indices.push(idx); return acc+val; }, 0);
+        indices[0] + indices[1] + indices[2]
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0 + 1.0 + 2.0);
+}
+
+// A-56 Interp: reduce callback non-function TypeError
+TEST(InterpArray, ReduceCallbackNotFunction) {
+    EXPECT_TRUE(interp_err("[1,2].reduce(null)"));
+}
+
+// A-57 Interp: reduceRight basic direction
+TEST(InterpArray, ReduceRightBasic) {
+    // [1,2,3].reduceRight((a,b) => a-b) = (3-2)-1 = 0
+    auto v = interp_ok(R"(
+        [1,2,3].reduceRight(function(a,b){ return a-b; })
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-58 Interp: reduceRight empty no initialValue → TypeError
+TEST(InterpArray, ReduceRightEmptyNoInitial) {
+    EXPECT_TRUE(interp_err("[].reduceRight(function(a,b){ return a+b; })"));
+}
+
+// A-59 Interp: reduceRight callback non-function TypeError
+TEST(InterpArray, ReduceRightCallbackNotFunction) {
+    EXPECT_TRUE(interp_err("[1,2].reduceRight(42)"));
+}
+
+// ============================================================
+// VM: map / filter / reduce / reduceRight
+// ============================================================
+
+// A-41 VM: map basic
+TEST(VMArray, MapBasic) {
+    auto v = vm_ok(R"(
+        var r = [1,2,3].map(function(x){ return x*2; });
+        r[0] + r[1] * 10 + r[2] * 100
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0 + 40.0 + 600.0);
+}
+
+// A-42 VM: map index argument
+TEST(VMArray, MapIndexArg) {
+    auto v = vm_ok(R"(
+        var r = [10,20,30].map(function(val, i){ return i; });
+        r[0] + r[1] * 10 + r[2] * 100
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0 + 10.0 + 200.0);
+}
+
+// A-43 VM: map thisArg
+TEST(VMArray, MapThisArg) {
+    auto v = vm_ok(R"(
+        var r = [1,2].map(function(v){ return v * this.x; }, {x:10});
+        r[0] + r[1] * 10
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 10.0 + 200.0);
+}
+
+// A-44 VM: map empty array
+TEST(VMArray, MapEmpty) {
+    auto v = vm_ok(R"(
+        var r = [].map(function(x){ return x; });
+        r.length
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-45 VM: map callback non-function TypeError
+TEST(VMArray, MapCallbackNotFunction) {
+    EXPECT_TRUE(vm_err("[1,2].map(42)"));
+}
+
+// A-46 VM: filter basic
+TEST(VMArray, FilterBasic) {
+    auto v = vm_ok(R"(
+        var r = [1,2,3,4].filter(function(x){ return x%2===0; });
+        r.length === 2 && r[0] === 2 && r[1] === 4
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-47 VM: filter all rejected
+TEST(VMArray, FilterAllRejected) {
+    auto v = vm_ok(R"(
+        var r = [1,2,3].filter(function(){ return false; });
+        r.length
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-48 VM: filter thisArg
+TEST(VMArray, FilterThisArg) {
+    auto v = vm_ok(R"(
+        var r = [1,2,3,4,5].filter(function(x){ return x > this.min; }, {min:3});
+        r.length === 2 && r[0] === 4 && r[1] === 5
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-49 VM: filter callback non-function TypeError
+TEST(VMArray, FilterCallbackNotFunction) {
+    EXPECT_TRUE(vm_err("[1,2].filter('bad')"));
+}
+
+// A-50 VM: reduce with initialValue
+TEST(VMArray, ReduceWithInitial) {
+    auto v = vm_ok(R"(
+        [1,2,3].reduce(function(a,b){ return a+b; }, 0)
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 6.0);
+}
+
+// A-51 VM: reduce without initialValue
+TEST(VMArray, ReduceNoInitial) {
+    auto v = vm_ok(R"(
+        [1,2,3].reduce(function(a,b){ return a+b; })
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 6.0);
+}
+
+// A-52 VM: reduce single element no initialValue
+TEST(VMArray, ReduceSingleNoInitial) {
+    auto v = vm_ok(R"(
+        [5].reduce(function(a,b){ return a+b; })
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 5.0);
+}
+
+// A-53 VM: reduce empty array with initialValue
+TEST(VMArray, ReduceEmptyWithInitial) {
+    auto v = vm_ok(R"(
+        [].reduce(function(a,b){ return a+b; }, 42)
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 42.0);
+}
+
+// A-54 VM: reduce empty array no initialValue → TypeError
+TEST(VMArray, ReduceEmptyNoInitial) {
+    EXPECT_TRUE(vm_err("[].reduce(function(a,b){ return a+b; })"));
+}
+
+// A-55 VM: reduce callback argument order (acc, val, idx, arr)
+TEST(VMArray, ReduceCallbackArgOrder) {
+    auto v = vm_ok(R"(
+        var indices = [];
+        [10,20,30].reduce(function(acc, val, idx){ indices.push(idx); return acc+val; }, 0);
+        indices[0] + indices[1] + indices[2]
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0 + 1.0 + 2.0);
+}
+
+// A-56 VM: reduce callback non-function TypeError
+TEST(VMArray, ReduceCallbackNotFunction) {
+    EXPECT_TRUE(vm_err("[1,2].reduce(null)"));
+}
+
+// A-57 VM: reduceRight basic direction
+TEST(VMArray, ReduceRightBasic) {
+    auto v = vm_ok(R"(
+        [1,2,3].reduceRight(function(a,b){ return a-b; })
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-58 VM: reduceRight empty no initialValue → TypeError
+TEST(VMArray, ReduceRightEmptyNoInitial) {
+    EXPECT_TRUE(vm_err("[].reduceRight(function(a,b){ return a+b; })"));
+}
+
+// A-59 VM: reduceRight callback non-function TypeError
+TEST(VMArray, ReduceRightCallbackNotFunction) {
+    EXPECT_TRUE(vm_err("[1,2].reduceRight(42)"));
+}
+
+// ============================================================
+// Interpreter: sparse array (hole) semantics — A-60 to A-69
+// ============================================================
+
+// A-60 Interp: map on sparse array preserves holes — result length === 3, index 1 is hole
+TEST(InterpArray, MapSparsePreservesHole) {
+    // [1,,3].map(x => x*2): length must be 3, index 1 must be undefined (hole)
+    auto vlen = interp_ok(R"(
+        var r = [1,,3].map(function(x){ return x*2; });
+        r.length
+    )");
+    EXPECT_TRUE(vlen.is_number());
+    EXPECT_EQ(vlen.as_number(), 3.0);
+
+    auto vhole = interp_ok(R"(
+        var r = [1,,3].map(function(x){ return x*2; });
+        r[1]
+    )");
+    EXPECT_TRUE(vhole.is_undefined());
+
+    // Filled positions are mapped correctly
+    auto vfill = interp_ok(R"(
+        var r = [1,,3].map(function(x){ return x*2; });
+        r[0] + r[2]
+    )");
+    EXPECT_TRUE(vfill.is_number());
+    EXPECT_EQ(vfill.as_number(), 2.0 + 6.0);
+}
+
+// A-61 Interp: filter on sparse array — holes skipped, result has no holes
+TEST(InterpArray, FilterSparseNoHoles) {
+    // [1,,3].filter(x => true) → [1,3], length 2 (not 3)
+    auto v = interp_ok(R"(
+        var r = [1,,3].filter(function(){ return true; });
+        r.length === 2 && r[0] === 1 && r[1] === 3
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-62 Interp: reduce on sparse array skips holes — [1,,3].reduce(+) === 4
+TEST(InterpArray, ReduceSparseSkipsHoles) {
+    auto v = interp_ok(R"(
+        [1,,3].reduce(function(a,b){ return a+b; })
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
+// A-63 Interp: reduceRight on sparse array skips holes — [1,,3].reduceRight(+) === 4
+TEST(InterpArray, ReduceRightSparseSkipsHoles) {
+    auto v = interp_ok(R"(
+        [1,,3].reduceRight(function(a,b){ return a+b; })
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
+// A-64 Interp: all-hole array without initialValue → TypeError for reduce
+TEST(InterpArray, ReduceAllHoleNoInitial) {
+    // [,,] has length 2 but no present elements
+    EXPECT_TRUE(interp_err("[,,].reduce(function(a,b){ return a+b; })"));
+}
+
+// A-65 Interp: all-hole array without initialValue → TypeError for reduceRight
+TEST(InterpArray, ReduceRightAllHoleNoInitial) {
+    EXPECT_TRUE(interp_err("[,,].reduceRight(function(a,b){ return a+b; })"));
+}
+
+// ============================================================
+// Interpreter: reduce/reduceRight index correctness — A-66 to A-67
+// ============================================================
+
+// A-66 Interp: reduce index starts at 0 when initialValue given, 1 when not
+TEST(InterpArray, ReduceIndexCorrectness) {
+    // With initialValue: callback receives indices 0,1,2
+    auto v1 = interp_ok(R"(
+        var indices = [];
+        [10,20,30].reduce(function(acc,val,idx){ indices.push(idx); return acc+val; }, 0);
+        indices[0] === 0 && indices[1] === 1 && indices[2] === 2
+    )");
+    EXPECT_TRUE(v1.is_bool());
+    EXPECT_TRUE(v1.as_bool());
+
+    // Without initialValue: first element is acc, callback receives indices 1,2
+    auto v2 = interp_ok(R"(
+        var indices = [];
+        [10,20,30].reduce(function(acc,val,idx){ indices.push(idx); return acc+val; });
+        indices[0] === 1 && indices[1] === 2
+    )");
+    EXPECT_TRUE(v2.is_bool());
+    EXPECT_TRUE(v2.as_bool());
+}
+
+// A-67 Interp: reduceRight index decrements from len-1 (or len-2 without initialValue)
+TEST(InterpArray, ReduceRightIndexCorrectness) {
+    // With initialValue: indices visited are 2,1,0
+    auto v1 = interp_ok(R"(
+        var steps = [];
+        [1,2,3].reduceRight(function(acc,v,i){ steps.push(i); return acc; }, 0);
+        steps[0] === 2 && steps[1] === 1 && steps[2] === 0
+    )");
+    EXPECT_TRUE(v1.is_bool());
+    EXPECT_TRUE(v1.as_bool());
+
+    // Without initialValue: rightmost is acc, indices visited are 1,0
+    auto v2 = interp_ok(R"(
+        var steps = [];
+        [1,2,3].reduceRight(function(acc,v,i){ steps.push(i); return acc; });
+        steps[0] === 1 && steps[1] === 0
+    )");
+    EXPECT_TRUE(v2.is_bool());
+    EXPECT_TRUE(v2.as_bool());
+}
+
+// ============================================================
+// Interpreter: callback exception propagation — A-68 to A-69
+// ============================================================
+
+// A-68 Interp: map propagates callback exception
+TEST(InterpArray, MapCallbackThrowPropagates) {
+    EXPECT_TRUE(interp_err(R"(
+        [1,2,3].map(function(){ throw "boom"; });
+    )"));
+}
+
+// A-69 Interp: reduce propagates callback exception
+TEST(InterpArray, ReduceCallbackThrowPropagates) {
+    EXPECT_TRUE(interp_err(R"(
+        [1,2,3].reduce(function(a,b){ throw "boom"; }, 0);
+    )"));
+}
+
+// ============================================================
+// Interpreter: map result length correctness — A-70 to A-71
+// ============================================================
+
+// A-70 Interp: map result length equals source length
+TEST(InterpArray, MapResultLength) {
+    auto v = interp_ok(R"(
+        [1,2,3].map(function(x){ return x; }).length
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-71 Interp: map on empty array — result length is 0
+TEST(InterpArray, MapEmptyResultLength) {
+    auto v = interp_ok(R"(
+        [].map(function(x){ return x; }).length
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// ============================================================
+// Interpreter: reduce single element — callback never called — A-72
+// ============================================================
+
+// A-72 Interp: [7].reduce without initialValue returns 7, callback not called
+TEST(InterpArray, ReduceSingleNoInitialCallbackNotCalled) {
+    auto v = interp_ok(R"(
+        var called = false;
+        var result = [7].reduce(function(a,b){ called = true; return a+b; });
+        called === false && result === 7
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// ============================================================
+// Interpreter: filter result has no holes — A-73
+// ============================================================
+
+// A-73 Interp: [1,,3].filter(always true) length is 2, not 3
+TEST(InterpArray, FilterSparseResultLength) {
+    auto v = interp_ok(R"(
+        [1,,3].filter(function(){ return true; }).length
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// ============================================================
+// Interpreter: chained map/filter — A-74
+// ============================================================
+
+// A-74 Interp: [1,2,3,4].filter(even).map(*10) === [20,40]
+TEST(InterpArray, FilterThenMapChain) {
+    auto v = interp_ok(R"(
+        var r = [1,2,3,4].filter(function(x){ return x%2===0; }).map(function(x){ return x*10; });
+        r.length === 2 && r[0] === 20 && r[1] === 40
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// ============================================================
+// Interpreter: filter propagates callback exception — A-75
+// ============================================================
+
+// A-75 Interp: filter propagates callback exception
+TEST(InterpArray, FilterCallbackThrowPropagates) {
+    EXPECT_TRUE(interp_err(R"(
+        [1,2,3].filter(function(){ throw "boom"; });
+    )"));
+}
+
+// ============================================================
+// Interpreter: reduceRight with initialValue starts from rightmost — A-76
+// ============================================================
+
+// A-76 Interp: reduceRight with initialValue visits indices 2,1,0 in that order
+TEST(InterpArray, ReduceRightWithInitialOrder) {
+    auto v = interp_ok(R"(
+        var steps = [];
+        [1,2,3].reduceRight(function(acc,v,i){ steps.push(i); return acc; }, 0);
+        steps[0] === 2 && steps[1] === 1 && steps[2] === 0
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// ============================================================
+// Interpreter: reduceRight propagates callback exception — A-77
+// ============================================================
+
+// A-77 Interp: reduceRight propagates callback exception
+TEST(InterpArray, ReduceRightCallbackThrowPropagates) {
+    EXPECT_TRUE(interp_err(R"(
+        [1,2,3].reduceRight(function(a,b){ throw "boom"; }, 0);
+    )"));
+}
+
+// ============================================================
+// VM: sparse array (hole) semantics — A-60 to A-69 mirror
+// ============================================================
+
+// A-60 VM
+TEST(VMArray, MapSparsePreservesHole) {
+    auto vlen = vm_ok(R"(
+        var r = [1,,3].map(function(x){ return x*2; });
+        r.length
+    )");
+    EXPECT_TRUE(vlen.is_number());
+    EXPECT_EQ(vlen.as_number(), 3.0);
+
+    auto vhole = vm_ok(R"(
+        var r = [1,,3].map(function(x){ return x*2; });
+        r[1]
+    )");
+    EXPECT_TRUE(vhole.is_undefined());
+
+    auto vfill = vm_ok(R"(
+        var r = [1,,3].map(function(x){ return x*2; });
+        r[0] + r[2]
+    )");
+    EXPECT_TRUE(vfill.is_number());
+    EXPECT_EQ(vfill.as_number(), 2.0 + 6.0);
+}
+
+// A-61 VM
+TEST(VMArray, FilterSparseNoHoles) {
+    auto v = vm_ok(R"(
+        var r = [1,,3].filter(function(){ return true; });
+        r.length === 2 && r[0] === 1 && r[1] === 3
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-62 VM
+TEST(VMArray, ReduceSparseSkipsHoles) {
+    auto v = vm_ok(R"(
+        [1,,3].reduce(function(a,b){ return a+b; })
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
+// A-63 VM
+TEST(VMArray, ReduceRightSparseSkipsHoles) {
+    auto v = vm_ok(R"(
+        [1,,3].reduceRight(function(a,b){ return a+b; })
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
+// A-64 VM
+TEST(VMArray, ReduceAllHoleNoInitial) {
+    EXPECT_TRUE(vm_err("[,,].reduce(function(a,b){ return a+b; })"));
+}
+
+// A-65 VM
+TEST(VMArray, ReduceRightAllHoleNoInitial) {
+    EXPECT_TRUE(vm_err("[,,].reduceRight(function(a,b){ return a+b; })"));
+}
+
+// A-66 VM
+TEST(VMArray, ReduceIndexCorrectness) {
+    auto v1 = vm_ok(R"(
+        var indices = [];
+        [10,20,30].reduce(function(acc,val,idx){ indices.push(idx); return acc+val; }, 0);
+        indices[0] === 0 && indices[1] === 1 && indices[2] === 2
+    )");
+    EXPECT_TRUE(v1.is_bool());
+    EXPECT_TRUE(v1.as_bool());
+
+    auto v2 = vm_ok(R"(
+        var indices = [];
+        [10,20,30].reduce(function(acc,val,idx){ indices.push(idx); return acc+val; });
+        indices[0] === 1 && indices[1] === 2
+    )");
+    EXPECT_TRUE(v2.is_bool());
+    EXPECT_TRUE(v2.as_bool());
+}
+
+// A-67 VM
+TEST(VMArray, ReduceRightIndexCorrectness) {
+    auto v1 = vm_ok(R"(
+        var steps = [];
+        [1,2,3].reduceRight(function(acc,v,i){ steps.push(i); return acc; }, 0);
+        steps[0] === 2 && steps[1] === 1 && steps[2] === 0
+    )");
+    EXPECT_TRUE(v1.is_bool());
+    EXPECT_TRUE(v1.as_bool());
+
+    auto v2 = vm_ok(R"(
+        var steps = [];
+        [1,2,3].reduceRight(function(acc,v,i){ steps.push(i); return acc; });
+        steps[0] === 1 && steps[1] === 0
+    )");
+    EXPECT_TRUE(v2.is_bool());
+    EXPECT_TRUE(v2.as_bool());
+}
+
+// A-68 VM
+TEST(VMArray, MapCallbackThrowPropagates) {
+    EXPECT_TRUE(vm_err(R"(
+        [1,2,3].map(function(){ throw "boom"; });
+    )"));
+}
+
+// A-69 VM
+TEST(VMArray, ReduceCallbackThrowPropagates) {
+    EXPECT_TRUE(vm_err(R"(
+        [1,2,3].reduce(function(a,b){ throw "boom"; }, 0);
+    )"));
+}
+
+// A-70 VM
+TEST(VMArray, MapResultLength) {
+    auto v = vm_ok(R"(
+        [1,2,3].map(function(x){ return x; }).length
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-71 VM
+TEST(VMArray, MapEmptyResultLength) {
+    auto v = vm_ok(R"(
+        [].map(function(x){ return x; }).length
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-72 VM
+TEST(VMArray, ReduceSingleNoInitialCallbackNotCalled) {
+    auto v = vm_ok(R"(
+        var called = false;
+        var result = [7].reduce(function(a,b){ called = true; return a+b; });
+        called === false && result === 7
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-73 VM
+TEST(VMArray, FilterSparseResultLength) {
+    auto v = vm_ok(R"(
+        [1,,3].filter(function(){ return true; }).length
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-74 VM
+TEST(VMArray, FilterThenMapChain) {
+    auto v = vm_ok(R"(
+        var r = [1,2,3,4].filter(function(x){ return x%2===0; }).map(function(x){ return x*10; });
+        r.length === 2 && r[0] === 20 && r[1] === 40
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-75 VM
+TEST(VMArray, FilterCallbackThrowPropagates) {
+    EXPECT_TRUE(vm_err(R"(
+        [1,2,3].filter(function(){ throw "boom"; });
+    )"));
+}
+
+// A-76 VM
+TEST(VMArray, ReduceRightWithInitialOrder) {
+    auto v = vm_ok(R"(
+        var steps = [];
+        [1,2,3].reduceRight(function(acc,v,i){ steps.push(i); return acc; }, 0);
+        steps[0] === 2 && steps[1] === 1 && steps[2] === 0
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-77 VM
+TEST(VMArray, ReduceRightCallbackThrowPropagates) {
+    EXPECT_TRUE(vm_err(R"(
+        [1,2,3].reduceRight(function(a,b){ throw "boom"; }, 0);
+    )"));
+}
+
 }  // namespace

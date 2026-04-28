@@ -522,12 +522,11 @@ struct Parser {
             case TokenKind::LBracket: {
                 // 数组字面量 [elem0, elem1, ...]
                 uint32_t start = tok.range.offset;
-                std::vector<std::unique_ptr<ExprNode>> elements;
+                std::vector<std::optional<std::unique_ptr<ExprNode>>> elements;
                 while (cur.kind != TokenKind::RBracket && cur.kind != TokenKind::Eof) {
                     if (cur.kind == TokenKind::Comma) {
-                        // elision: 插入 undefined 占位
-                        elements.push_back(std::make_unique<ExprNode>(
-                            ExprNode{Identifier{"undefined", cur.range}}));
+                        // elision: hole — nullopt 表示真正的稀疏 hole
+                        elements.push_back(std::nullopt);
                         advance();  // 消费 ,
                     } else {
                         auto elem = parse_expr(1);

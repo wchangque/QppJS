@@ -81,7 +81,9 @@ namespace qppjs {
     /* Module */                        \
     X(SetExportDefault, 0)              \
     /* Async/Await */                   \
-    X(Await, 0)
+    X(Await, 0)                         \
+    /* Array hole (elision) */          \
+    X(ArrayHole, 0)
 
 enum class Opcode : uint8_t {
 #define X(name, _operand_bytes) k##name,
