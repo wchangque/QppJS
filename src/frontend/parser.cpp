@@ -1402,6 +1402,55 @@ struct Parser {
                 return ParseResult<StmtNode>::Ok(StmtNode{ExportDefaultDeclaration{
                         std::move(expr_node), std::move(saved_fn_name), span(kw.range.offset, decl_end)}});
             }
+            // export default async function [name]() {}
+            if (is_contextual_keyword("async")) {
+                Token async_tok = cur;
+                advance();  // 消费 async
+                if (cur.kind == TokenKind::KwFunction && !got_lf) {
+                    advance();  // 消费 function
+                    std::optional<std::string> fn_name;
+                    if (cur.kind == TokenKind::Ident) {
+                        fn_name = std::string(token_text(cur));
+                        advance();
+                    }
+                    auto params_result = parse_function_params();
+                    if (!params_result.ok()) return ParseResult<StmtNode>::Err(params_result.error());
+                    bool saved_in_async = in_async_function_;
+                    in_async_function_ = true;
+                    auto body_result = parse_function_body();
+                    in_async_function_ = saved_in_async;
+                    if (!body_result.ok()) return ParseResult<StmtNode>::Err(body_result.error());
+                    uint32_t fn_end = range_end(body_result.value().second);
+                    auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
+                    std::optional<std::string> saved_fn_name = fn_name;
+                    auto afe = AsyncFunctionExpression{std::move(fn_name), std::move(params_result.value()),
+                                                      std::move(body_ptr), span(async_tok.range.offset, fn_end)};
+                    auto expr_node = std::make_unique<ExprNode>(std::move(afe));
+                    return ParseResult<StmtNode>::Ok(StmtNode{ExportDefaultDeclaration{
+                            std::move(expr_node), std::move(saved_fn_name), span(kw.range.offset, fn_end)}});
+                }
+                // async 后不是 function（或有换行）：把 async 当作表达式继续
+                // 已经消费了 async，需要把它作为 Identifier nud 处理，然后继续 parse_expr
+                Token ident_tok = async_tok;
+                auto left = nud(ident_tok);
+                if (!left.ok()) return ParseResult<StmtNode>::Err(left.error());
+                while (true) {
+                    int bp = lbp(cur.kind);
+                    if (bp <= 0) break;
+                    Token op_tok = cur;
+                    advance();
+                    auto res = led(op_tok, std::move(left.value()));
+                    if (!res.ok()) return ParseResult<StmtNode>::Err(res.error());
+                    left = std::move(res);
+                }
+                auto semi2 = consume_semicolon();
+                if (!semi2.ok()) return ParseResult<StmtNode>::Err(semi2.error());
+                uint32_t end2 = range_end(semi2.value().range);
+                if (end2 == semi2.value().range.offset) end2 = range_end(expr_range(left.value()));
+                auto expr_node2 = std::make_unique<ExprNode>(std::move(left.value()));
+                return ParseResult<StmtNode>::Ok(StmtNode{ExportDefaultDeclaration{
+                        std::move(expr_node2), std::nullopt, span(kw.range.offset, end2)}});
+            }
             // export default expr
             auto expr = parse_expr(0);
             if (!expr.ok()) return ParseResult<StmtNode>::Err(expr.error());
@@ -1465,13 +1514,39 @@ struct Parser {
                     nullptr, std::move(specifiers), std::move(re_source), span(kw.range.offset, end)}});
         }
 
-        // export const/let/var/function ...
+        // export const/let/var/function/async function ...
         ParseResult<StmtNode> inner_result = ParseResult<StmtNode>::Err(
                 make_parse_error(source, cur, "unexpected token after export"));
         if (cur.kind == TokenKind::KwConst || cur.kind == TokenKind::KwLet || cur.kind == TokenKind::KwVar) {
             inner_result = parse_var_decl();
         } else if (cur.kind == TokenKind::KwFunction) {
             inner_result = parse_function_decl_stmt();
+        } else if (is_contextual_keyword("async")) {
+            Token async_tok = cur;
+            advance();  // 消费 async
+            if (cur.kind != TokenKind::KwFunction || got_lf) {
+                return ParseResult<StmtNode>::Err(
+                    make_parse_error(source, cur, "expected 'function' after 'async' in export declaration"));
+            }
+            advance();  // 消费 function
+            if (cur.kind != TokenKind::Ident) {
+                return ParseResult<StmtNode>::Err(
+                    make_parse_error(source, cur, "expected function name after 'export async function'"));
+            }
+            std::string fn_name{token_text(cur)};
+            advance();
+            auto params_result = parse_function_params();
+            if (!params_result.ok()) return ParseResult<StmtNode>::Err(params_result.error());
+            bool saved_in_async = in_async_function_;
+            in_async_function_ = true;
+            auto body_result = parse_function_body();
+            in_async_function_ = saved_in_async;
+            if (!body_result.ok()) return ParseResult<StmtNode>::Err(body_result.error());
+            uint32_t fn_end = range_end(body_result.value().second);
+            auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
+            inner_result = ParseResult<StmtNode>::Ok(StmtNode{AsyncFunctionDeclaration{
+                std::move(fn_name), std::move(params_result.value()),
+                std::move(body_ptr), span(async_tok.range.offset, fn_end)}});
         } else {
             return inner_result;
         }
@@ -1631,6 +1706,8 @@ struct Parser {
                         decl_name = vd->name;
                     } else if (const auto* fd = std::get_if<FunctionDeclaration>(&e->declaration->v)) {
                         decl_name = fd->name;
+                    } else if (const auto* afd = std::get_if<AsyncFunctionDeclaration>(&e->declaration->v)) {
+                        decl_name = afd->name;
                     }
                     if (!decl_name.empty()) {
                         if (!export_names.insert(decl_name).second) {

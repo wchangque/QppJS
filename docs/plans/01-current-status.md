@@ -6,8 +6,8 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | Array.prototype.find/findIndex/some/every/indexOf/includes 修复（M-1/M-2/P1） |
-| 测试计数 | 1842/1842 通过（coverage），0 LSan 泄漏 |
+| 当前阶段 | `export async function` 解析修复 Review 修复轮次（M-1/M-2） |
+| 测试计数 | 1891/1891 通过（coverage），1885/1885 通过（run_ut ASAN），0 LSan 泄漏 |
 | 最近更新 | 2026-04-28 |
 | 下一步 | Phase 12（待定：P3-1 JSString 优化、更多内建对象、dynamic import()）|
 
@@ -21,6 +21,9 @@
 
 ## 最近完成
 
+- [x] `export async function` 解析修复 Review 修复轮次（M-1/M-2）：M-1：`export default async function foo(){}` 的 `local_name` 修复——在 `parse_export_decl()` async default export 分支中，`fn_name` move 到 `AsyncFunctionExpression` 之前保存为 `saved_fn_name`，并写入 `ExportDefaultDeclaration.local_name`（与同步版本对称）；M-2：`exec_module()` drain 后刷新返回值——在 `drain_job_queue()`/`vm_drain_job_queue()` 之后，访问 `entry_mod->ast.body` 最后一条语句，若为简单标识符表达式则从 `entry_mod->module_env->get()` 重新读取值（Interpreter + VM 两侧对称）；新增 4 个测试（2 Parser + 2 Interp+VM 集成）。1891/1891 通过（coverage），1885/1885 通过（run_ut ASAN），0 LSan 泄漏。
+- [x] `export async function` Testing Agent 边界补测：新增 27 个测试（11 Parser + 16 Interp+VM 对称，M-45～M-52）。覆盖：多个 export async function 独立可调用（M-45）、async+sync 混用（M-46）、跨模块 await（M-47）、多个 await 串行（M-48）、提升语义（M-49）、default async function 可调用性（M-50）、多次调用产生新 Promise（M-51）、async throw 不向外同步传播（M-52）；Parser 错误路径：export async 后无 function/EOF/无函数名/缺 body/缺括号、export default async 换行报错、重复 async function 导出名；发现并修复 Parser 重复导出检查 bug（`AsyncFunctionDeclaration` 未加入重复名检查集合）；记录已知技术债务：`JSFunction.name_` 字段未暴露到 `own_properties_`，`fn.name` 返回 undefined。1887/1887 通过（coverage），0 LSan 泄漏。
+- [x] `export async function` 解析修复 + exec_module GC 安全修复：Parser `parse_export_decl()` 添加 `async function` 处理（`export async function foo(){}` 和 `export default async function`）；module_loader.cpp Load 阶段添加 `AsyncFunctionDeclaration` 导出 Cell 分配；Interpreter/VM Link 阶段添加 `AsyncFunctionDeclaration` Binding 建立；Interpreter `hoist_module_vars` 和 `exec_module_body` 提升循环添加 `AsyncFunctionDeclaration` 提升赋值；Compiler 函数提升循环添加 `ExportNamedDeclaration` 含 `AsyncFunctionDeclaration` 的处理；修复 `exec_module` GC 安全问题（添加 `drain_job_queue`/`vm_drain_job_queue` 调用、`promise_prototype_` 加入 GC roots、job_queue CollectRoots 加入 GC roots、`eval_result` 对象 Unregister + gc_heap_ 置 null 防止析构崩溃）。新增 18 个测试（6 Parser + 12 Interp+VM 对称，M-39～M-44）。1860/1860 通过（coverage），1796/1796 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] Array.prototype.find/findIndex/some/every/indexOf/includes Review 修复（M-1/M-2/P1）：M-1：`resolve_from_index` 和 `resolve_from_index_vm` 中的 `std::floor` 改为 `std::trunc`，修复负小数 fromIndex 的 ToIntegerOrInfinity 语义（interpreter.cpp + vm.cpp 两处）；M-2：`to_number_double` 和 `to_number_double_vm` 字符串分支添加 trim（去除前导和尾部空白），修复 `" 1 "` 等带空格字符串 fromIndex 被解析为 NaN→0 的问题（两处）；P1：find/findIndex 循环中消除 `Value elem` 中间变量，直接在 `call_args[0]` 构造（interpreter.cpp + vm.cpp 各 2 处，共 4 处）。新增 4 个回归测试（A-170/A-171 Interp+VM 对称）。1842/1842 通过（coverage），0 LSan 泄漏。
 - [x] Array.prototype.find/findIndex/some/every/indexOf/includes Testing Agent 边界补测：新增 40 个测试（20 Interp + 20 VM，A-150～A-169b）。覆盖：find 返回对象/字符串元素值本身（非 boolean）、findIndex 返回索引而非元素值、some/every 短路后 callback 调用计数验证、indexOf fromIndex=0 等同无参数、fromIndex=1 跳过索引 0 的匹配、严格相等字符串 vs 数字、null!==undefined、includes +0/-0 SameValueZero 互找、includes null!==undefined、indexOf fromIndex 超出 length 返回 -1、includes fromIndex 负数绝对值超过 len 从 0 开始、indexOf fromIndex=-1 解析为 len-1、find/some/every 非函数 callback TypeError、filter→some 链式调用、every&&some 组合。1838/1838 通过（coverage），0 LSan 泄漏。
 - [x] Array.prototype.find/findIndex/some/every/indexOf/includes：在 `interpreter.cpp` 和 `vm.cpp` 的 array_prototype_ 注册区域各新增 6 个 NativeFn（Interp+VM 对称）。辅助函数：`to_number_double`（独立 double 转换，无 EvalResult 包装）、`strict_eq_values`（NaN!=NaN，+0===-0）、`same_value_zero`（NaN==NaN）、`resolve_from_index`（fromIndex 语义，nullopt 表示立即无结果）；vm.cpp 同名函数加 `_vm` 后缀避免冲突，复用已有 `strict_eq`。find/findIndex：不跳过 hole（hole→undefined 传给 callback）；some/every：跳过 hole；indexOf：跳过 hole，严格相等；includes：不跳过 hole，SameValueZero。新增 72 个测试（36 Interp + 36 VM，A-78～A-149）。1798/1798 通过（coverage），1796/1796 通过（run_ut ASAN），0 LSan 泄漏。

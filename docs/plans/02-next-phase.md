@@ -12,7 +12,7 @@
 ## 2. 候选目标
 
 - ~~**P2-A（遗留）**：已完成（2026-04-27）~~
-- **export async function 解析**（小修复）：parser.cpp `parse_export_decl()` 未处理 `async function` 声明
+- ~~**export async function 解析**：已完成（2026-04-28）~~
 - P3-1：JSString 二次堆分配优化（小字符串内联）
 - ~~**Array.map/filter/reduce/reduceRight**：已完成（2026-04-28）~~
 - ~~**Array.find/findIndex/some/every/indexOf/includes**：已完成（2026-04-28）~~
@@ -23,9 +23,10 @@
 ## 3. 进入前提
 
 当前已具备：
-- Phase 1～11 + P2-A 全部完成（1842/1842 测试通过，0 LSan 失败）
+- Phase 1～11 + P2-A 全部完成（1891/1891 测试通过，0 LSan 失败）
 - Array.map/filter/reduce/reduceRight 已完成（2026-04-28）
 - Array.find/findIndex/some/every/indexOf/includes 已完成（2026-04-28）
+- export async function 解析修复已完成（2026-04-28）
 - Promise/async/await 完整实现（含真正异步顺序保证）
 - GC mark-sweep 已上线，P3-2 已根本修复
 - ESM 静态 import/export 完整实现

@@ -222,6 +222,9 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
         } else if (const auto* exp = std::get_if<ExportNamedDeclaration>(&stmt.v)) {
             if (exp->declaration && std::holds_alternative<FunctionDeclaration>(exp->declaration->v)) {
                 fdecl_ptr = &std::get<FunctionDeclaration>(exp->declaration->v);
+            } else if (exp->declaration &&
+                       std::holds_alternative<AsyncFunctionDeclaration>(exp->declaration->v)) {
+                afdecl_ptr = &std::get<AsyncFunctionDeclaration>(exp->declaration->v);
             }
         }
         if (fdecl_ptr) {

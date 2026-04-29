@@ -1496,4 +1496,532 @@ x;
     EXPECT_EQ(result.value().as_number(), 99.0);
 }
 
+// ============================================================
+// M-39: export async function — 基础解析和执行
+// ============================================================
+
+TEST(InterpModule, M39_ExportAsyncFunctionBasic) {
+    TempDir tmp;
+    tmp.write("m.js", "export async function foo() { return 42; }");
+    tmp.write("entry.js", R"(
+import { foo } from './m.js';
+foo();
+)");
+    auto result = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    // async function 返回 Promise，不是数字
+    EXPECT_TRUE(result.value().is_object());
+}
+
+TEST(VmModule, M39_ExportAsyncFunctionBasic) {
+    TempDir tmp;
+    tmp.write("m.js", "export async function foo() { return 42; }");
+    tmp.write("entry.js", R"(
+import { foo } from './m.js';
+foo();
+)");
+    auto result = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_TRUE(result.value().is_object());
+}
+
+// ============================================================
+// M-40: export async function — 含 await
+// ============================================================
+
+TEST(InterpModule, M40_ExportAsyncFunctionWithAwait) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function foo() {
+    const v = await Promise.resolve(1);
+    return v;
+}
+)");
+    tmp.write("entry.js", R"(
+import { foo } from './m.js';
+foo();
+)");
+    auto result = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_TRUE(result.value().is_object());
+}
+
+TEST(VmModule, M40_ExportAsyncFunctionWithAwait) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function foo() {
+    const v = await Promise.resolve(1);
+    return v;
+}
+)");
+    tmp.write("entry.js", R"(
+import { foo } from './m.js';
+foo();
+)");
+    auto result = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_TRUE(result.value().is_object());
+}
+
+// ============================================================
+// M-41: export default async function（匿名）
+// ============================================================
+
+TEST(InterpModule, M41_ExportDefaultAnonAsyncFunction) {
+    TempDir tmp;
+    tmp.write("m.js", "export default async function() { return 1; }");
+    tmp.write("entry.js", R"(
+import fn from './m.js';
+fn();
+)");
+    auto result = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_TRUE(result.value().is_object());
+}
+
+TEST(VmModule, M41_ExportDefaultAnonAsyncFunction) {
+    TempDir tmp;
+    tmp.write("m.js", "export default async function() { return 1; }");
+    tmp.write("entry.js", R"(
+import fn from './m.js';
+fn();
+)");
+    auto result = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_TRUE(result.value().is_object());
+}
+
+// ============================================================
+// M-42: export default async function named（具名）
+// ============================================================
+
+TEST(InterpModule, M42_ExportDefaultNamedAsyncFunction) {
+    TempDir tmp;
+    tmp.write("m.js", "export default async function named() { return 1; }");
+    tmp.write("entry.js", R"(
+import fn from './m.js';
+fn();
+)");
+    auto result = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_TRUE(result.value().is_object());
+}
+
+TEST(VmModule, M42_ExportDefaultNamedAsyncFunction) {
+    TempDir tmp;
+    tmp.write("m.js", "export default async function named() { return 1; }");
+    tmp.write("entry.js", R"(
+import fn from './m.js';
+fn();
+)");
+    auto result = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_TRUE(result.value().is_object());
+}
+
+// ============================================================
+// M-43: 回归 — export function 仍然正常工作
+// ============================================================
+
+TEST(InterpModule, M43_ExportFunctionRegression) {
+    TempDir tmp;
+    tmp.write("m.js", "export function add(a, b) { return a + b; }");
+    tmp.write("entry.js", R"(
+import { add } from './m.js';
+add(2, 3);
+)");
+    auto result = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_EQ(result.value().as_number(), 5.0);
+}
+
+TEST(VmModule, M43_ExportFunctionRegression) {
+    TempDir tmp;
+    tmp.write("m.js", "export function add(a, b) { return a + b; }");
+    tmp.write("entry.js", R"(
+import { add } from './m.js';
+add(2, 3);
+)");
+    auto result = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_EQ(result.value().as_number(), 5.0);
+}
+
+// ============================================================
+// M-44: 回归 — 模块顶层 async function 声明仍然正常工作
+// ============================================================
+
+TEST(InterpModule, M44_TopLevelAsyncFunctionRegression) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+async function helper() { return 7; }
+export const result = helper;
+)");
+    tmp.write("entry.js", R"(
+import { result } from './m.js';
+result();
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());
+}
+
+TEST(VmModule, M44_TopLevelAsyncFunctionRegression) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+async function helper() { return 7; }
+export const result = helper;
+)");
+    tmp.write("entry.js", R"(
+import { result } from './m.js';
+result();
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());
+}
+
+// ============================================================
+// M-45: 同一模块导出多个 async function，各自独立可调用
+// 验证：两个 async function 都能被 import，调用后均返回 Promise 对象
+// ============================================================
+
+TEST(InterpModule, M45_MultipleExportAsyncFunctions) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function foo() { return 1; }
+export async function bar() { return 2; }
+)");
+    // 调用两个函数，验证两者都返回 Promise（is_object），且不报错
+    // 用数组收集两个 Promise，最后一行是数组长度（同步可验证）
+    tmp.write("entry.js", R"(
+import { foo, bar } from './m.js';
+var p1 = foo();
+var p2 = bar();
+(p1 !== undefined && p2 !== undefined);
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_bool());
+    EXPECT_TRUE(res.value().as_bool());
+}
+
+TEST(VmModule, M45_MultipleExportAsyncFunctions) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function foo() { return 1; }
+export async function bar() { return 2; }
+)");
+    tmp.write("entry.js", R"(
+import { foo, bar } from './m.js';
+var p1 = foo();
+var p2 = bar();
+(p1 !== undefined && p2 !== undefined);
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_bool());
+    EXPECT_TRUE(res.value().as_bool());
+}
+
+// ============================================================
+// M-46: export async function 与 export function 混用，两者均可 import 和调用
+// 验证：syncFoo() 返回正确同步值，asyncFoo() 返回 Promise 对象
+// ============================================================
+
+TEST(InterpModule, M46_AsyncAndSyncExportMixed) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function asyncFoo() { return 10; }
+export function syncFoo() { return 20; }
+)");
+    // 验证同步函数返回正确值，async 函数返回 Promise 对象（不报错）
+    tmp.write("entry.js", R"(
+import { asyncFoo, syncFoo } from './m.js';
+var syncResult = syncFoo();
+var asyncResult = asyncFoo();
+syncResult;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 20.0);
+}
+
+TEST(VmModule, M46_AsyncAndSyncExportMixed) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function asyncFoo() { return 10; }
+export function syncFoo() { return 20; }
+)");
+    tmp.write("entry.js", R"(
+import { asyncFoo, syncFoo } from './m.js';
+var syncResult = syncFoo();
+var asyncResult = asyncFoo();
+syncResult;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 20.0);
+}
+
+// ============================================================
+// M-47: import 并调用含 await 的 export async function（跨模块 await）
+// 验证：含 await 的 async function 可被 import，调用后返回 Promise 对象
+// 注意：exec_module 无 re-read 机制，.then 回调修改的变量无法作为返回值，
+//       因此验证 Promise 对象本身而非 resolved 值
+// ============================================================
+
+TEST(InterpModule, M47_ImportAndAwaitResult) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function compute() {
+    const v = await Promise.resolve(99);
+    return v;
+}
+)");
+    tmp.write("entry.js", R"(
+import { compute } from './m.js';
+compute();
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());
+}
+
+TEST(VmModule, M47_ImportAndAwaitResult) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function compute() {
+    const v = await Promise.resolve(99);
+    return v;
+}
+)");
+    tmp.write("entry.js", R"(
+import { compute } from './m.js';
+compute();
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());
+}
+
+// ============================================================
+// M-48: export async function 内部有多个 await（串行 await）
+// 验证：含多个 await 的 async function 可被 import，调用后返回 Promise 对象
+// ============================================================
+
+TEST(InterpModule, M48_ExportAsyncFunctionMultipleAwait) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function sum() {
+    const a = await Promise.resolve(3);
+    const b = await Promise.resolve(7);
+    return a + b;
+}
+)");
+    tmp.write("entry.js", R"(
+import { sum } from './m.js';
+sum();
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());
+}
+
+TEST(VmModule, M48_ExportAsyncFunctionMultipleAwait) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function sum() {
+    const a = await Promise.resolve(3);
+    const b = await Promise.resolve(7);
+    return a + b;
+}
+)");
+    tmp.write("entry.js", R"(
+import { sum } from './m.js';
+sum();
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());
+}
+
+// ============================================================
+// M-49: export async function 提升语义
+// 模块内调用位置在声明之前，验证提升行为（调用不报 ReferenceError）
+// ============================================================
+
+TEST(InterpModule, M49_ExportAsyncFunctionHoisting) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+var p = foo();
+export async function foo() { return 55; }
+export { p };
+)");
+    // p 是 foo() 的返回值（Promise 对象），验证提升后 foo 可在声明前被调用
+    tmp.write("entry.js", R"(
+import { p } from './m.js';
+p;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    // p 应为 Promise 对象（foo 已提升，调用成功）
+    EXPECT_TRUE(res.value().is_object());
+}
+
+TEST(VmModule, M49_ExportAsyncFunctionHoisting) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+var p = foo();
+export async function foo() { return 55; }
+export { p };
+)");
+    tmp.write("entry.js", R"(
+import { p } from './m.js';
+p;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());
+}
+
+// ============================================================
+// M-50: export default async function named() {} 的可调用性
+// import 后验证函数可被调用，返回 Promise 对象
+// 注意：fn.name 属性当前返回 undefined（JSFunction.name_ 字段未暴露到
+//       own_properties_，属于已知技术债务），此处不验证 name 属性
+// ============================================================
+
+TEST(InterpModule, M50_ExportDefaultAsyncFunctionCallable) {
+    TempDir tmp;
+    tmp.write("m.js", "export default async function myFunc() { return 1; }");
+    tmp.write("entry.js", R"(
+import fn from './m.js';
+fn();
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());
+}
+
+TEST(VmModule, M50_ExportDefaultAsyncFunctionCallable) {
+    TempDir tmp;
+    tmp.write("m.js", "export default async function myFunc() { return 1; }");
+    tmp.write("entry.js", R"(
+import fn from './m.js';
+fn();
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());
+}
+
+// ============================================================
+// M-51: export async function 可被多次调用（每次返回新 Promise）
+// ============================================================
+
+TEST(InterpModule, M51_ExportAsyncFunctionMultipleCalls) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function compute() { return 7; }
+)");
+    // 两次调用，两个 Promise 对象应不同（每次调用产生新 Promise）
+    tmp.write("entry.js", R"(
+import { compute } from './m.js';
+var p1 = compute();
+var p2 = compute();
+(p1 !== p2);
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_bool());
+    EXPECT_TRUE(res.value().as_bool());
+}
+
+TEST(VmModule, M51_ExportAsyncFunctionMultipleCalls) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function compute() { return 7; }
+)");
+    tmp.write("entry.js", R"(
+import { compute } from './m.js';
+var p1 = compute();
+var p2 = compute();
+(p1 !== p2);
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_bool());
+    EXPECT_TRUE(res.value().as_bool());
+}
+
+// ============================================================
+// M-52: export async function 抛出异常 → 返回 rejected Promise（不向外同步抛）
+// 验证：async function 内 throw 不向模块外同步传播，exec_module 仍返回 ok
+// ============================================================
+
+TEST(InterpModule, M52_ExportAsyncFunctionReject) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function failing() {
+    throw 'async error';
+}
+)");
+    // async function 内 throw 不向外同步传播，exec_module 应成功
+    // 返回值是 rejected Promise 对象
+    tmp.write("entry.js", R"(
+import { failing } from './m.js';
+failing();
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());
+}
+
+TEST(VmModule, M52_ExportAsyncFunctionReject) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export async function failing() {
+    throw 'async error';
+}
+)");
+    tmp.write("entry.js", R"(
+import { failing } from './m.js';
+failing();
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());
+}
+
+// ============================================================
+// M-1 修复回归：export default async function foo() {} 的 local_name
+// 模块内部可通过 foo 调用该函数（不再 ReferenceError）
+// ============================================================
+
+TEST(InterpModule, M1Fix_ExportDefaultAsyncFunctionLocalNameCallable) {
+    TempDir tmp;
+    // m.js 内部通过 foo 调用自身，验证 local_name 绑定正确
+    tmp.write("m.js", R"(
+export default async function foo() { return 42; }
+foo();
+)");
+    tmp.write("entry.js", "import fn from './m.js'; fn();");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());
+}
+
+TEST(VmModule, M1Fix_ExportDefaultAsyncFunctionLocalNameCallable) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export default async function foo() { return 42; }
+foo();
+)");
+    tmp.write("entry.js", "import fn from './m.js'; fn();");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());
+}
+
 }  // namespace

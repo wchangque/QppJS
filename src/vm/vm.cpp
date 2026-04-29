@@ -2809,6 +2809,24 @@ EvalResult VM::exec_module(const std::string& entry_path) {
     // Evaluate 阶段
     auto eval_result = evaluate_module(*entry_mod);
 
+    // 执行剩余微任务（async function 调用可能产生 pending microtasks）
+    vm_drain_job_queue();
+
+    // 微任务执行后刷新最后一条简单标识符表达式的值（与 exec() 的 drain 后刷新逻辑对称）
+    if (eval_result.is_ok() && entry_mod->module_env && !entry_mod->ast.body.empty()) {
+        const auto& last_stmt = entry_mod->ast.body.back();
+        if (const auto* es = std::get_if<ExpressionStatement>(&last_stmt.v)) {
+            if (const auto* id = std::get_if<Identifier>(&es->expr.v)) {
+                if (id->name != "undefined") {
+                    auto reeval = entry_mod->module_env->get(id->name);
+                    if (reeval.is_ok()) {
+                        eval_result = EvalResult::ok(reeval.value());
+                    }
+                }
+            }
+        }
+    }
+
     // GC
     {
         std::vector<RcObject*> roots;
@@ -2819,6 +2837,7 @@ EvalResult VM::exec_module(const std::string& entry_path) {
         add_obj(object_prototype_.get());
         add_obj(array_prototype_.get());
         add_obj(function_prototype_.get());
+        add_obj(promise_prototype_.get());
         add_obj(object_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         for (auto& cf : call_stack_) {
@@ -2830,6 +2849,10 @@ EvalResult VM::exec_module(const std::string& entry_path) {
             if (cf.caught_exception.has_value()) add_val(*cf.caught_exception);
         }
         if (eval_result.is_ok()) add_val(eval_result.value());
+        // 将 job_queue_ 里的对象也加入 roots，避免 GC 误回收未执行的微任务引用的对象
+        std::vector<Value> jq_vals;
+        job_queue_.CollectRoots(jq_vals);
+        for (const auto& v : jq_vals) add_val(v);
         module_loader_.TraceRoots(gc_heap_);
 
         gc_heap_.Collect(roots);
@@ -2839,10 +2862,21 @@ EvalResult VM::exec_module(const std::string& entry_path) {
     object_prototype_->clear_function_properties();
     if (array_prototype_) array_prototype_->clear_function_properties();
     if (function_prototype_) function_prototype_->clear_function_properties();
+    if (promise_prototype_) promise_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     // 清理所有模块环境中的函数引用（打破 module_env ↔ JSFunction 循环引用）
     module_loader_.ClearModuleEnvs();
     module_loader_.Clear();
+
+    // 将 eval_result 中的对象从 GcHeap 摘除，避免 VM 析构后 gc_heap_ 失效
+    // 导致调用者持有的 EvalResult 析构时触发 Unregister 崩溃。
+    if (eval_result.is_ok() && eval_result.value().is_object()) {
+        RcObject* raw = eval_result.value().as_object_raw();
+        if (raw && raw->gc_heap_) {
+            gc_heap_.Unregister(raw);
+            raw->gc_heap_ = nullptr;  // 防止析构时再次调用 Unregister
+        }
+    }
 
     return eval_result;
 }
@@ -2893,6 +2927,10 @@ EvalResult VM::link_module(ModuleRecord& mod) {
                     name = fd->name;
                     is_mutable = true;
                     initialized = true;  // function 声明提升，无 TDZ
+                } else if (const auto* afd = std::get_if<AsyncFunctionDeclaration>(&exp->declaration->v)) {
+                    name = afd->name;
+                    is_mutable = true;
+                    initialized = true;  // async function 声明提升，无 TDZ
                 }
                 if (!name.empty()) {
                     Cell* cell = mod.find_export(name);

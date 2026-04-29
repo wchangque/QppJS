@@ -96,12 +96,14 @@ ModuleLoader::LoadResult ModuleLoader::Load(const std::string& specifier,
                 continue;
             }
             if (exp->declaration) {
-                // export let/const/var x = ...  或  export function f() {}
+                // export let/const/var x = ...  或  export function/async function f() {}
                 std::string name;
                 if (const auto* vd = std::get_if<VariableDeclaration>(&exp->declaration->v)) {
                     name = vd->name;
                 } else if (const auto* fd = std::get_if<FunctionDeclaration>(&exp->declaration->v)) {
                     name = fd->name;
+                } else if (const auto* afd = std::get_if<AsyncFunctionDeclaration>(&exp->declaration->v)) {
+                    name = afd->name;
                 }
                 if (!name.empty() && mod->find_export(name) == nullptr) {
                     mod->exports.push_back(ModuleRecord::ExportEntry{

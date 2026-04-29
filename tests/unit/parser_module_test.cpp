@@ -486,3 +486,148 @@ TEST(ParserModule, ImportExportAsIdentifierInFunctionBody) {
     auto r = parse_program("function f() { var import = 1; var export = 2; return import + export; }");
     EXPECT_TRUE(r.ok()) << r.error().message();
 }
+
+// ---- export async function ----
+
+TEST(ParserModule, ExportAsyncFunction) {
+    ASSERT_PARSE_OK("export async function foo() {}", prog);
+    const auto& decl = std::get<ExportNamedDeclaration>(prog.body[0].v);
+    ASSERT_NE(decl.declaration, nullptr);
+    ASSERT_TRUE(std::holds_alternative<AsyncFunctionDeclaration>(decl.declaration->v));
+    const auto& afd = std::get<AsyncFunctionDeclaration>(decl.declaration->v);
+    EXPECT_EQ(afd.name, "foo");
+}
+
+TEST(ParserModule, ExportDefaultAnonAsyncFunction) {
+    ASSERT_PARSE_OK("export default async function() {}", prog);
+    const auto& decl = std::get<ExportDefaultDeclaration>(prog.body[0].v);
+    ASSERT_NE(decl.expression, nullptr);
+    ASSERT_TRUE(std::holds_alternative<AsyncFunctionExpression>(decl.expression->v));
+    const auto& afe = std::get<AsyncFunctionExpression>(decl.expression->v);
+    EXPECT_FALSE(afe.name.has_value());
+}
+
+TEST(ParserModule, ExportDefaultNamedAsyncFunction) {
+    ASSERT_PARSE_OK("export default async function named() {}", prog);
+    const auto& decl = std::get<ExportDefaultDeclaration>(prog.body[0].v);
+    ASSERT_NE(decl.expression, nullptr);
+    ASSERT_TRUE(std::holds_alternative<AsyncFunctionExpression>(decl.expression->v));
+    const auto& afe = std::get<AsyncFunctionExpression>(decl.expression->v);
+    ASSERT_TRUE(afe.name.has_value());
+    EXPECT_EQ(*afe.name, "named");
+}
+
+// M-1 修复回归：export default async function foo() {} 的 local_name 应为 "foo"
+TEST(ParserModule, ExportDefaultNamedAsyncFunctionLocalName) {
+    ASSERT_PARSE_OK("export default async function foo() {}", prog);
+    const auto& decl = std::get<ExportDefaultDeclaration>(prog.body[0].v);
+    ASSERT_TRUE(decl.local_name.has_value());
+    EXPECT_EQ(*decl.local_name, "foo");
+}
+
+// 匿名 export default async function 的 local_name 应为 nullopt
+TEST(ParserModule, ExportDefaultAnonAsyncFunctionNoLocalName) {
+    ASSERT_PARSE_OK("export default async function() {}", prog);
+    const auto& decl = std::get<ExportDefaultDeclaration>(prog.body[0].v);
+    EXPECT_FALSE(decl.local_name.has_value());
+}
+
+// export async 后跟换行再 function 不是 async function 声明（ASI 语义）
+TEST(ParserModule, ExportAsyncWithNewlineIsError) {
+    // async\nfunction 之间有换行，不应被解析为 async function 声明
+    ASSERT_PARSE_ERR("export async\nfunction foo() {}");
+}
+
+// 回归：export function 仍然正常工作
+TEST(ParserModule, ExportFunctionRegression) {
+    ASSERT_PARSE_OK("export function bar() { return 1; }", prog);
+    const auto& decl = std::get<ExportNamedDeclaration>(prog.body[0].v);
+    ASSERT_NE(decl.declaration, nullptr);
+    ASSERT_TRUE(std::holds_alternative<FunctionDeclaration>(decl.declaration->v));
+}
+
+// 回归：顶层 async function 声明仍然正常工作
+TEST(ParserModule, TopLevelAsyncFunctionRegression) {
+    ASSERT_PARSE_OK("async function baz() { return 1; }", prog);
+    ASSERT_EQ(prog.body.size(), 1u);
+    ASSERT_TRUE(std::holds_alternative<AsyncFunctionDeclaration>(prog.body[0].v));
+}
+
+// ---- export async function 错误路径 ----
+
+// export async 后没有 function（跟普通标识符）→ 报错
+TEST(ParserModule, ExportAsyncNoFunction) {
+    ASSERT_PARSE_ERR("export async foo() {}");
+}
+
+// export async 后没有任何 token（EOF）→ 报错
+TEST(ParserModule, ExportAsyncEof) {
+    ASSERT_PARSE_ERR("export async");
+}
+
+// export async function 后没有函数名 → 报错（具名导出必须有名字）
+TEST(ParserModule, ExportAsyncFunctionNoName) {
+    ASSERT_PARSE_ERR("export async function() {}");
+}
+
+// export async function foo 后没有 { → 报错（语法错误）
+TEST(ParserModule, ExportAsyncFunctionMissingBody) {
+    ASSERT_PARSE_ERR("export async function foo");
+}
+
+// export async function 参数列表不完整 → 报错
+TEST(ParserModule, ExportAsyncFunctionMissingCloseParen) {
+    ASSERT_PARSE_ERR("export async function foo(a {}");
+}
+
+// ---- export async function 合法边界 ----
+
+// export async function 带参数，params 正确捕获
+TEST(ParserModule, ExportAsyncFunctionWithParams) {
+    ASSERT_PARSE_OK("export async function add(a, b) {}", prog);
+    const auto& decl = std::get<ExportNamedDeclaration>(prog.body[0].v);
+    ASSERT_NE(decl.declaration, nullptr);
+    ASSERT_TRUE(std::holds_alternative<AsyncFunctionDeclaration>(decl.declaration->v));
+    const auto& afd = std::get<AsyncFunctionDeclaration>(decl.declaration->v);
+    EXPECT_EQ(afd.name, "add");
+    ASSERT_EQ(afd.params.size(), 2u);
+    EXPECT_EQ(afd.params[0], "a");
+    EXPECT_EQ(afd.params[1], "b");
+}
+
+// export async function 与 export function 在同一模块顶层，两个节点均正确
+TEST(ParserModule, ExportAsyncAndSyncFunctionCoexist) {
+    ASSERT_PARSE_OK("export async function asyncFoo() {} export function syncFoo() {}", prog);
+    ASSERT_EQ(prog.body.size(), 2u);
+    const auto& decl0 = std::get<ExportNamedDeclaration>(prog.body[0].v);
+    ASSERT_TRUE(std::holds_alternative<AsyncFunctionDeclaration>(decl0.declaration->v));
+    const auto& decl1 = std::get<ExportNamedDeclaration>(prog.body[1].v);
+    ASSERT_TRUE(std::holds_alternative<FunctionDeclaration>(decl1.declaration->v));
+}
+
+// 同一模块导出两个 async function，两个节点均正确
+TEST(ParserModule, TwoExportAsyncFunctions) {
+    ASSERT_PARSE_OK("export async function f1() {} export async function f2() {}", prog);
+    ASSERT_EQ(prog.body.size(), 2u);
+    const auto& afd1 = std::get<AsyncFunctionDeclaration>(
+        std::get<ExportNamedDeclaration>(prog.body[0].v).declaration->v);
+    EXPECT_EQ(afd1.name, "f1");
+    const auto& afd2 = std::get<AsyncFunctionDeclaration>(
+        std::get<ExportNamedDeclaration>(prog.body[1].v).declaration->v);
+    EXPECT_EQ(afd2.name, "f2");
+}
+
+// export default async function 后跟换行再 function 应报错（ASI 规则）
+TEST(ParserModule, ExportDefaultAsyncWithNewlineIsError) {
+    ASSERT_PARSE_ERR("export default async\nfunction() {}");
+}
+
+// export async function 重复导出名 → 报错
+TEST(ParserModule, ExportAsyncFunctionDuplicateName) {
+    ASSERT_PARSE_ERR("export async function foo() {} export async function foo() {}");
+}
+
+// export async function 与 export function 重复名 → 报错
+TEST(ParserModule, ExportAsyncFunctionDuplicateWithSync) {
+    ASSERT_PARSE_ERR("export async function foo() {} export function foo() {}");
+}

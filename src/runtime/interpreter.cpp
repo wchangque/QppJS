@@ -1507,6 +1507,15 @@ void Interpreter::hoist_module_vars(const std::vector<StmtNode>& stmts, Environm
                 b->initialized = true;
                 b->cell->initialized = true;
             }
+        } else if (std::holds_alternative<AsyncFunctionDeclaration>(stmt.v)) {
+            const auto& afd = std::get<AsyncFunctionDeclaration>(stmt.v);
+            Binding* b = module_env.find_local(afd.name);
+            if (b == nullptr) {
+                module_env.define_function(afd.name);
+            } else if (!b->cell->initialized) {
+                b->initialized = true;
+                b->cell->initialized = true;
+            }
         } else if (std::holds_alternative<VariableDeclaration>(stmt.v)) {
             const auto& vd = std::get<VariableDeclaration>(stmt.v);
             if (vd.kind == VarKind::Var) {
@@ -3034,6 +3043,24 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
     // 已在 evaluate_module 中执行，返回 eval_result（模块执行结果）
     EvalResult final_result = eval_result;
 
+    // 执行剩余微任务（async function 调用可能产生 pending microtasks）
+    drain_job_queue();
+
+    // 微任务执行后刷新最后一条简单标识符表达式的值（与 exec() 的 drain 后刷新逻辑对称）
+    if (final_result.is_ok() && entry_mod->module_env && !entry_mod->ast.body.empty()) {
+        const auto& last_stmt = entry_mod->ast.body.back();
+        if (const auto* es = std::get_if<ExpressionStatement>(&last_stmt.v)) {
+            if (const auto* id = std::get_if<Identifier>(&es->expr.v)) {
+                if (id->name != "undefined") {
+                    auto reeval = entry_mod->module_env->get(id->name);
+                    if (reeval.is_ok()) {
+                        final_result = EvalResult::ok(reeval.value());
+                    }
+                }
+            }
+        }
+    }
+
     // GC
     {
         std::vector<RcObject*> roots;
@@ -3046,11 +3073,16 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
         add_obj(object_prototype_.get());
         add_obj(array_prototype_.get());
         add_obj(function_prototype_.get());
+        add_obj(promise_prototype_.get());
         add_obj(object_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
         if (pending_throw_.has_value()) add_val(*pending_throw_);
         if (final_result.is_ok()) add_val(final_result.value());
+        // 将 job_queue_ 里的对象也加入 roots，避免 GC 误回收未执行的微任务引用的对象
+        std::vector<Value> jq_vals;
+        job_queue_.CollectRoots(jq_vals);
+        for (const auto& v : jq_vals) add_val(v);
         module_loader_.TraceRoots(gc_heap_);
 
         gc_heap_.Collect(roots);
@@ -3060,10 +3092,21 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
     object_prototype_->clear_function_properties();
     if (array_prototype_) array_prototype_->clear_function_properties();
     if (function_prototype_) function_prototype_->clear_function_properties();
+    if (promise_prototype_) promise_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     // 清理所有模块环境中的函数引用（打破 module_env ↔ JSFunction 循环引用）
     module_loader_.ClearModuleEnvs();
     module_loader_.Clear();
+
+    // 将 final_result 中的对象从 GcHeap 摘除，避免 Interpreter 析构后 gc_heap_ 失效
+    // 导致调用者持有的 EvalResult 析构时触发 Unregister 崩溃。
+    if (final_result.is_ok() && final_result.value().is_object()) {
+        RcObject* raw = final_result.value().as_object_raw();
+        if (raw && raw->gc_heap_) {
+            gc_heap_.Unregister(raw);
+            raw->gc_heap_ = nullptr;  // 防止析构时再次调用 Unregister
+        }
+    }
 
     return final_result;
 }
@@ -3114,6 +3157,10 @@ EvalResult Interpreter::link_module(ModuleRecord& mod) {
                     name = fd->name;
                     is_mutable = true;
                     initialized = true;  // function 声明提升，无 TDZ
+                } else if (const auto* afd = std::get_if<AsyncFunctionDeclaration>(&exp->declaration->v)) {
+                    name = afd->name;
+                    is_mutable = true;
+                    initialized = true;  // async function 声明提升，无 TDZ
                 }
                 if (!name.empty()) {
                     Cell* cell = mod.find_export(name);
@@ -3249,7 +3296,7 @@ EvalResult Interpreter::exec_module_body(ModuleRecord& mod) {
     // 已由 Link 阶段通过 define_binding_with_cell 建立，不重复 define）
     hoist_module_vars(mod.ast.body, *mod.module_env);
 
-    // export function 提升：在模块体执行前将函数值写入共享 Cell
+    // function/async function 提升：在模块体执行前将函数值写入 Binding
     // （与 VM compiler 在函数体入口 emit kMakeFunction+kSetVar 的行为对齐）
     for (const auto& stmt : mod.ast.body) {
         if (const auto* exp = std::get_if<ExportNamedDeclaration>(&stmt.v)) {
@@ -3258,8 +3305,18 @@ EvalResult Interpreter::exec_module_body(ModuleRecord& mod) {
                     Value fn_val = make_function_value(
                         fd->name, fd->params, fd->body, current_env_, false);
                     current_env_->set(fd->name, fn_val);
+                } else if (const auto* afd = std::get_if<AsyncFunctionDeclaration>(&exp->declaration->v)) {
+                    Value fn_val = make_async_function_value(
+                        afd->name, afd->params, afd->body, current_env_);
+                    current_env_->set(afd->name, fn_val);
                 }
             }
+        } else if (const auto* afd = std::get_if<AsyncFunctionDeclaration>(&stmt.v)) {
+            // 顶层非导出 async function 声明：P2-C 中 eval_async_function_decl 是 no-op，
+            // 需在此处提升赋值（与 hoist_vars_stmt 对普通 exec() 的处理对齐）
+            Value fn_val = make_async_function_value(
+                afd->name, afd->params, afd->body, current_env_);
+            current_env_->set(afd->name, fn_val);
         }
     }
 
