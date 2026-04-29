@@ -163,6 +163,9 @@ private:
 // Known limitation: std::string causes a second heap allocation (tech debt).
 struct JSString {
     int32_t ref_count = 0;
+    // Cached UTF-8 codepoint count. -1 means not yet computed.
+    // JSString is immutable after construction, so the cache is always valid.
+    int32_t cp_count_ = -1;
     std::string str;
 
     explicit JSString(std::string s) : str(std::move(s)) {}

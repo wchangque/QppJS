@@ -90,6 +90,164 @@ static std::optional<uint32_t> resolve_from_index(uint32_t len, const std::vecto
 }
 
 // ============================================================
+// UTF-8 string utilities (used by string_prototype_ NativeFns)
+// ============================================================
+
+// Compute UTF-16 code unit count with caching via JSString::cp_count_.
+// BMP characters (U+0000..U+FFFF) = 1 code unit; SMP characters (U+10000+) = 2 code units.
+static int32_t utf8_cp_len(JSString* js_str) {
+    if (js_str->cp_count_ >= 0) return js_str->cp_count_;
+    const std::string& s = js_str->str;
+    int32_t count = 0;
+    for (size_t i = 0; i < s.size(); ) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x80) { i += 1; count += 1; }
+        else if (c < 0xE0) { i += 2; count += 1; }
+        else if (c < 0xF0) { i += 3; count += 1; }
+        else { i += 4; count += 2; }  // SMP: 2 UTF-16 code units
+    }
+    js_str->cp_count_ = count;
+    return count;
+}
+
+// Convert UTF-16 code unit offset to byte offset.
+static size_t utf8_cu_to_byte(const std::string& s, int32_t cu_offset) {
+    size_t i = 0;
+    int32_t cu = 0;
+    while (i < s.size() && cu < cu_offset) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x80) { i += 1; cu += 1; }
+        else if (c < 0xE0) { i += 2; cu += 1; }
+        else if (c < 0xF0) { i += 3; cu += 1; }
+        else { i += 4; cu += 2; }  // SMP: 2 code units
+    }
+    return i;
+}
+
+// Extract substring [cu_start, cu_end) by UTF-16 code unit indices.
+static std::string utf8_substr(const std::string& s, int32_t cu_start, int32_t cu_end) {
+    if (cu_start >= cu_end) return "";
+    size_t byte_start = utf8_cu_to_byte(s, cu_start);
+    size_t byte_end = utf8_cu_to_byte(s, cu_end);
+    return s.substr(byte_start, byte_end - byte_start);
+}
+
+// Check if a Unicode codepoint is a JS whitespace character.
+static bool is_js_whitespace_cp(uint32_t cp) {
+    if (cp <= 0x20) {
+        return cp == 0x09 || cp == 0x0A || cp == 0x0B || cp == 0x0C || cp == 0x0D || cp == 0x20;
+    }
+    switch (cp) {
+    case 0x00A0: case 0x1680:
+    case 0x2000: case 0x2001: case 0x2002: case 0x2003: case 0x2004:
+    case 0x2005: case 0x2006: case 0x2007: case 0x2008: case 0x2009:
+    case 0x200A: case 0x2028: case 0x2029: case 0x202F: case 0x205F:
+    case 0x3000: case 0xFEFF:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Decode one UTF-8 codepoint from s[i], advance i.
+static uint32_t utf8_decode_one(const std::string& s, size_t& i) {
+    unsigned char c = static_cast<unsigned char>(s[i]);
+    uint32_t cp;
+    if (c < 0x80) {
+        cp = c; i += 1;
+    } else if (c < 0xE0) {
+        cp = (c & 0x1F);
+        if (i + 1 < s.size()) cp = (cp << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3F);
+        i += 2;
+    } else if (c < 0xF0) {
+        cp = (c & 0x0F);
+        if (i + 1 < s.size()) cp = (cp << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3F);
+        if (i + 2 < s.size()) cp = (cp << 6) | (static_cast<unsigned char>(s[i + 2]) & 0x3F);
+        i += 3;
+    } else {
+        cp = (c & 0x07);
+        if (i + 1 < s.size()) cp = (cp << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3F);
+        if (i + 2 < s.size()) cp = (cp << 6) | (static_cast<unsigned char>(s[i + 2]) & 0x3F);
+        if (i + 3 < s.size()) cp = (cp << 6) | (static_cast<unsigned char>(s[i + 3]) & 0x3F);
+        i += 4;
+    }
+    return cp;
+}
+
+static std::string utf8_trim_impl(const std::string& s, bool trim_start, bool trim_end) {
+    size_t start = 0;
+    if (trim_start) {
+        while (start < s.size()) {
+            size_t tmp = start;
+            uint32_t cp = utf8_decode_one(s, tmp);
+            if (!is_js_whitespace_cp(cp)) break;
+            start = tmp;
+        }
+    }
+    size_t end = s.size();
+    if (trim_end && end > start) {
+        // Walk backwards without allocating a positions vector.
+        // Find the start of the last UTF-8 codepoint by scanning back over continuation bytes.
+        while (end > start) {
+            size_t cp_start = end - 1;
+            while (cp_start > start && (static_cast<unsigned char>(s[cp_start]) & 0xC0) == 0x80) {
+                --cp_start;
+            }
+            size_t tmp = cp_start;
+            uint32_t cp = utf8_decode_one(s, tmp);
+            if (!is_js_whitespace_cp(cp)) break;
+            end = cp_start;
+        }
+    }
+    if (start >= end) return "";
+    return s.substr(start, end - start);
+}
+
+// indexOf: returns UTF-16 code unit index of first occurrence of needle in haystack
+// starting from code unit offset cu_from. Returns -1 if not found.
+static int32_t str_index_of(const std::string& haystack, const std::string& needle,
+                             int32_t cu_from, int32_t len) {
+    if (needle.empty()) {
+        return std::min(cu_from, len);
+    }
+    size_t byte_from = utf8_cu_to_byte(haystack, cu_from);
+    size_t pos = haystack.find(needle, byte_from);
+    if (pos == std::string::npos) return -1;
+    // Convert byte pos back to UTF-16 code unit index
+    int32_t cu_idx = 0;
+    for (size_t i = 0; i < pos; ) {
+        unsigned char c = static_cast<unsigned char>(haystack[i]);
+        if (c < 0x80) { i += 1; cu_idx += 1; }
+        else if (c < 0xE0) { i += 2; cu_idx += 1; }
+        else if (c < 0xF0) { i += 3; cu_idx += 1; }
+        else { i += 4; cu_idx += 2; }  // SMP: 2 code units
+    }
+    return cu_idx;
+}
+
+// lastIndexOf: returns UTF-16 code unit index of last occurrence of needle in haystack
+// searching up to and including code unit offset cu_from. Returns -1 if not found.
+static int32_t str_last_index_of(const std::string& haystack, const std::string& needle,
+                                  int32_t cu_from, int32_t len) {
+    if (needle.empty()) {
+        return std::min(cu_from, len);
+    }
+    // byte_from is the byte offset of cu_from (the maximum allowed start position).
+    size_t byte_from = utf8_cu_to_byte(haystack, cu_from);
+    size_t pos = haystack.rfind(needle, byte_from);
+    if (pos == std::string::npos) return -1;
+    int32_t cu_idx = 0;
+    for (size_t i = 0; i < pos; ) {
+        unsigned char c = static_cast<unsigned char>(haystack[i]);
+        if (c < 0x80) { i += 1; cu_idx += 1; }
+        else if (c < 0xE0) { i += 2; cu_idx += 1; }
+        else if (c < 0xF0) { i += 3; cu_idx += 1; }
+        else { i += 4; cu_idx += 2; }  // SMP: 2 code units
+    }
+    return cu_idx;
+}
+
+// ============================================================
 // Completion
 // ============================================================
 
@@ -1230,6 +1388,238 @@ void Interpreter::init_runtime() {
     global_env_->define_initialized("Promise");
     global_env_->set("Promise", Value::object(ObjectPtr(promise_ctor)));
 
+    // String.prototype
+    string_prototype_ = RcPtr<JSObject>::make();
+    string_prototype_->set_proto(object_prototype_);
+
+    // indexOf(searchString, fromIndex)
+    auto str_index_of_fn = RcPtr<JSFunction>::make();
+    str_index_of_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_null() || this_val.is_undefined()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.indexOf called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        std::string str = to_string_val(this_val);
+        JSString tmp_str(str);
+        int32_t len = utf8_cp_len(&tmp_str);
+        std::string search = args.empty() ? "undefined" : to_string_val(args[0]);
+        int32_t k = 0;
+        if (args.size() >= 2) {
+            double n = to_number_double(args[1]);
+            if (std::isinf(n) && n > 0) {
+                k = len;
+            } else {
+                if (std::isnan(n)) n = 0.0;
+                n = std::trunc(n);
+                k = n < 0.0 ? 0 : (n > len ? len : static_cast<int32_t>(n));
+            }
+        }
+        return EvalResult::ok(Value::number(static_cast<double>(str_index_of(str, search, k, len))));
+    });
+    gc_heap_.Register(str_index_of_fn.get());
+    string_prototype_->set_property("indexOf", Value::object(ObjectPtr(str_index_of_fn)));
+
+    // lastIndexOf(searchString, fromIndex)
+    auto str_last_index_of_fn = RcPtr<JSFunction>::make();
+    str_last_index_of_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_null() || this_val.is_undefined()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.lastIndexOf called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        std::string str = to_string_val(this_val);
+        JSString tmp_str(str);
+        int32_t len = utf8_cp_len(&tmp_str);
+        std::string search = args.empty() ? "undefined" : to_string_val(args[0]);
+        int32_t k = len;
+        if (args.size() >= 2) {
+            double n = to_number_double(args[1]);
+            if (std::isnan(n)) {
+                k = len;
+            } else {
+                n = std::trunc(n);
+                if (n < 0.0) k = 0;
+                else if (n > len) k = len;
+                else k = static_cast<int32_t>(n);
+            }
+        }
+        return EvalResult::ok(Value::number(static_cast<double>(str_last_index_of(str, search, k, len))));
+    });
+    gc_heap_.Register(str_last_index_of_fn.get());
+    string_prototype_->set_property("lastIndexOf", Value::object(ObjectPtr(str_last_index_of_fn)));
+
+    // slice(start, end)
+    auto str_slice_fn = RcPtr<JSFunction>::make();
+    str_slice_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_null() || this_val.is_undefined()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.slice called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        std::string str = to_string_val(this_val);
+        JSString tmp_str(str);
+        int32_t len = utf8_cp_len(&tmp_str);
+        auto resolve_slice_idx = [&](size_t arg_pos, int32_t default_val) -> int32_t {
+            if (args.size() <= arg_pos || args[arg_pos].is_undefined()) return default_val;
+            double n = to_number_double(args[arg_pos]);
+            if (std::isnan(n)) return 0;
+            if (std::isinf(n)) return n > 0 ? len : 0;
+            n = std::trunc(n);
+            if (n < 0.0) return static_cast<int32_t>(std::max(0.0, static_cast<double>(len) + n));
+            return static_cast<int32_t>(std::min(static_cast<double>(len), n));
+        };
+        int32_t from = resolve_slice_idx(0, 0);
+        int32_t to = resolve_slice_idx(1, len);
+        return EvalResult::ok(Value::string(utf8_substr(str, from, to)));
+    });
+    gc_heap_.Register(str_slice_fn.get());
+    string_prototype_->set_property("slice", Value::object(ObjectPtr(str_slice_fn)));
+
+    // substring(start, end)
+    auto str_substring_fn = RcPtr<JSFunction>::make();
+    str_substring_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_null() || this_val.is_undefined()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.substring called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        std::string str = to_string_val(this_val);
+        JSString tmp_str(str);
+        int32_t len = utf8_cp_len(&tmp_str);
+        auto resolve_sub_idx = [&](size_t arg_pos, int32_t default_val) -> int32_t {
+            if (args.size() <= arg_pos || args[arg_pos].is_undefined()) return default_val;
+            double n = to_number_double(args[arg_pos]);
+            if (std::isnan(n) || n < 0.0) return 0;
+            if (n > static_cast<double>(len)) return len;
+            return static_cast<int32_t>(std::trunc(n));
+        };
+        int32_t start = resolve_sub_idx(0, 0);
+        int32_t end = resolve_sub_idx(1, len);
+        if (start > end) std::swap(start, end);
+        return EvalResult::ok(Value::string(utf8_substr(str, start, end)));
+    });
+    gc_heap_.Register(str_substring_fn.get());
+    string_prototype_->set_property("substring", Value::object(ObjectPtr(str_substring_fn)));
+
+    // split(separator, limit)
+    auto str_split_fn = RcPtr<JSFunction>::make();
+    str_split_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_null() || this_val.is_undefined()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.split called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        std::string str = to_string_val(this_val);
+        auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
+        result->set_proto(array_prototype_);
+        gc_heap_.Register(result.get());
+
+        // M-2: parse limit before checking undefined separator
+        uint32_t limit = std::numeric_limits<uint32_t>::max();
+        if (args.size() >= 2 && !args[1].is_undefined()) {
+            double n = to_number_double(args[1]);
+            if (std::isnan(n) || std::isinf(n)) {
+                limit = 0;
+            } else {
+                // ToUint32: modulo 2^32 of ToInteger(n)
+                limit = static_cast<uint32_t>(static_cast<int64_t>(std::trunc(n)));
+            }
+        }
+
+        if (limit == 0) {
+            result->array_length_ = 0;
+            return EvalResult::ok(Value::object(ObjectPtr(result)));
+        }
+
+        if (args.empty() || args[0].is_undefined()) {
+            result->elements_[0] = Value::string(str);
+            result->array_length_ = 1;
+            return EvalResult::ok(Value::object(ObjectPtr(result)));
+        }
+
+        std::string sep = to_string_val(args[0]);
+        uint32_t idx = 0;
+
+        if (sep.empty()) {
+            // Split by UTF-16 code unit (BMP = 1 element, SMP = 2 elements per spec)
+            // Simplified: treat each UTF-8 sequence as one element (per-codepoint split).
+            // SMP surrogate-pair splitting is not implemented (known limitation).
+            size_t i = 0;
+            while (i < str.size() && idx < limit) {
+                size_t start = i;
+                unsigned char c = static_cast<unsigned char>(str[i]);
+                size_t cp_bytes;
+                if (c < 0x80) cp_bytes = 1;
+                else if (c < 0xE0) cp_bytes = 2;
+                else if (c < 0xF0) cp_bytes = 3;
+                else cp_bytes = 4;
+                i += cp_bytes;
+                result->elements_[idx] = Value::string(str.substr(start, cp_bytes));
+                ++idx;
+            }
+        } else {
+            size_t pos = 0;
+            while (idx < limit) {
+                size_t found = str.find(sep, pos);
+                if (found == std::string::npos) {
+                    result->elements_[idx] = Value::string(str.substr(pos));
+                    ++idx;
+                    break;
+                }
+                result->elements_[idx] = Value::string(str.substr(pos, found - pos));
+                ++idx;
+                pos = found + sep.size();
+            }
+        }
+        result->array_length_ = idx;
+        return EvalResult::ok(Value::object(ObjectPtr(result)));
+    });
+    gc_heap_.Register(str_split_fn.get());
+    string_prototype_->set_property("split", Value::object(ObjectPtr(str_split_fn)));
+
+    // trim()
+    auto str_trim_fn = RcPtr<JSFunction>::make();
+    str_trim_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        (void)args;
+        if (this_val.is_null() || this_val.is_undefined()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.trim called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        return EvalResult::ok(Value::string(utf8_trim_impl(to_string_val(this_val), true, true)));
+    });
+    gc_heap_.Register(str_trim_fn.get());
+    string_prototype_->set_property("trim", Value::object(ObjectPtr(str_trim_fn)));
+
+    // trimStart()
+    auto str_trim_start_fn = RcPtr<JSFunction>::make();
+    str_trim_start_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        (void)args;
+        if (this_val.is_null() || this_val.is_undefined()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.trimStart called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        return EvalResult::ok(Value::string(utf8_trim_impl(to_string_val(this_val), true, false)));
+    });
+    gc_heap_.Register(str_trim_start_fn.get());
+    string_prototype_->set_property("trimStart", Value::object(ObjectPtr(str_trim_start_fn)));
+
+    // trimEnd()
+    auto str_trim_end_fn = RcPtr<JSFunction>::make();
+    str_trim_end_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        (void)args;
+        if (this_val.is_null() || this_val.is_undefined()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.trimEnd called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        return EvalResult::ok(Value::string(utf8_trim_impl(to_string_val(this_val), false, true)));
+    });
+    gc_heap_.Register(str_trim_end_fn.get());
+    string_prototype_->set_property("trimEnd", Value::object(ObjectPtr(str_trim_end_fn)));
+
     // Register the global environment with GcHeap so user-created closures reachable
     // from it are treated as roots and not swept.
     gc_heap_.Register(global_env_.get());
@@ -1643,6 +2033,7 @@ EvalResult Interpreter::exec(const Program& program) {
         add_obj(array_prototype_.get());
         add_obj(function_prototype_.get());
         add_obj(promise_prototype_.get());
+        add_obj(string_prototype_.get());
         add_obj(object_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
@@ -1663,6 +2054,7 @@ EvalResult Interpreter::exec(const Program& program) {
     if (array_prototype_) array_prototype_->clear_function_properties();
     if (function_prototype_) function_prototype_->clear_function_properties();
     if (promise_prototype_) promise_prototype_->clear_function_properties();
+    if (string_prototype_) string_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
 
     return final_result;
@@ -2462,6 +2854,19 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
         return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
 
+    // String primitive: handle length and string_prototype_ methods
+    if (obj_val.is_string()) {
+        auto key_result = eval_expr(*expr.property);
+        if (!key_result.is_ok()) return key_result;
+        std::string key = to_string_val(key_result.value());
+        if (key == "length") {
+            JSString tmp_str(obj_val.as_string());
+            return EvalResult::ok(Value::number(static_cast<double>(utf8_cp_len(&tmp_str))));
+        }
+        if (string_prototype_) return EvalResult::ok(string_prototype_->get_property(key));
+        return EvalResult::ok(Value::undefined());
+    }
+
     // 非对象：Phase 3 返回 undefined（Phase 5 补原始值包装）
     if (!obj_val.is_object()) {
         return EvalResult::ok(Value::undefined());
@@ -2868,11 +3273,17 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
         }
         std::string key = to_string_val(key_result.value());
 
-        if (!this_val.is_object()) {
+        if (this_val.is_string()) {
+            if (string_prototype_) {
+                callee_val = string_prototype_->get_property(key);
+            } else {
+                callee_val = Value::undefined();
+            }
+        } else if (!this_val.is_object()) {
             pending_throw_ = make_error_value(NativeErrorType::kTypeError,
                 "Cannot read properties of " + to_string_val(this_val));
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
-        }
+        } else {
         RcObject* obj_ptr = this_val.as_object_raw();
         if (obj_ptr->object_kind() == ObjectKind::kOrdinary || obj_ptr->object_kind() == ObjectKind::kArray) {
             auto* js_obj = static_cast<JSObject*>(obj_ptr);
@@ -2896,6 +3307,7 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
             }
         } else {
             callee_val = Value::undefined();
+        }
         }
     } else {
         auto callee_result = eval_expr(*expr.callee);
@@ -3074,6 +3486,7 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
         add_obj(array_prototype_.get());
         add_obj(function_prototype_.get());
         add_obj(promise_prototype_.get());
+        add_obj(string_prototype_.get());
         add_obj(object_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
@@ -3093,6 +3506,7 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
     if (array_prototype_) array_prototype_->clear_function_properties();
     if (function_prototype_) function_prototype_->clear_function_properties();
     if (promise_prototype_) promise_prototype_->clear_function_properties();
+    if (string_prototype_) string_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     // 清理所有模块环境中的函数引用（打破 module_env ↔ JSFunction 循环引用）
     module_loader_.ClearModuleEnvs();

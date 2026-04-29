@@ -6,9 +6,9 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | `export async function` 解析修复 Review 修复轮次（M-1/M-2） |
-| 测试计数 | 1891/1891 通过（coverage），1885/1885 通过（run_ut ASAN），0 LSan 泄漏 |
-| 最近更新 | 2026-04-28 |
+| 当前阶段 | String.prototype Review 修复（M-1/M-2/M-3/P1-1/P1-3） |
+| 测试计数 | 2035/2035 通过（coverage），2021/2021 通过（run_ut ASAN），0 LSan 泄漏 |
+| 最近更新 | 2026-04-29 |
 | 下一步 | Phase 12（待定：P3-1 JSString 优化、更多内建对象、dynamic import()）|
 
 ## 已知遗留问题
@@ -21,6 +21,9 @@
 
 ## 最近完成
 
+- [x] String.prototype Review 修复（M-1/M-2/M-3/P1-1/P1-3）：M-1：UTF-16 码元语义修复——`utf8_cp_len`/`utf8_cu_to_byte`/`utf8_substr`/`str_index_of`/`str_last_index_of` 全部改为 UTF-16 码元计数（SMP 字符 U+10000+ 计 2 个码元），interpreter.cpp + vm.cpp 两侧对称；M-2：split `undefined` separator 前先解析 limit，修复 `"abc".split(undefined, 0)` 返回 `["abc"]` 而非 `[]` 的 bug（两侧）；M-3：VM `kGetElem` 添加字符串分支（length + string_prototype_ 查找），与 kGetProp 对称；P1-1：split 循环改用 `result->elements_[idx]` 替代 `set_property(std::to_string(idx), ...)`（两侧）；P1-3：`utf8_trim_impl`/`utf8_trim_impl_vm` 向后扫描改为从末尾向前找 UTF-8 码点起始字节，消除 vector 分配（两侧）；新增 12 个测试（S-65～S-70 × Interp+VM，含非 BMP 字符 length/indexOf/slice 语义验证 + M-2/M-3 回归）。2035/2035 通过（coverage），0 LSan 泄漏。
+- [x] String.prototype Testing Agent 边界补测 + 3 处 Bug 修复：新增 56 个测试（28 Interp + 28 VM，S-39～S-64 × 2）。覆盖：indexOf 空串 fromIndex=0/len/整串匹配/两端空串/跳过首次匹配；lastIndexOf fromIndex=0/中间值/空串无 from/空串有 from；slice 无参/start=0/start=end/负数绝对值超长；substring 相等参数/end 超出/swap 从 2；split 空串+空分隔符返回 []、空串+非空分隔符返回 [""]、首尾分隔符产生空元素、ToUint32(-1)=4294967295 不截断；trim U+2029/U+FEFF/内部空格保留；链式 trim+split 和 split+indexOf。同步修复 3 处 Bug：(1) `str_last_index_of` 中 `cp_from+1` 改为 `cp_from`，修复 `"abcabc".lastIndexOf("a",2)` 返回 3 而非 0 的语义错误（interpreter.cpp + vm.cpp 两处）；(2) split limit 的 `ToUint32` 语义——负数/+Inf/-Inf 走正确的 modulo 2^32 路径，修复 `split("X",-1)` 返回 [] 而非全部元素的 bug（两处）。2023/2023 通过（coverage），2021/2021 通过（run_ut ASAN），0 LSan 泄漏。
+- [x] String.prototype 8 个方法实现（indexOf/lastIndexOf/slice/substring/split/trim/trimStart/trimEnd）：建立 `string_prototype_`（Interpreter + VM 两侧对称）；`JSString` 新增 `cp_count_` 缓存字段（O(1) length）；UTF-8 工具函数（utf8_cp_len/utf8_substr/utf8_trim_impl/str_index_of/str_last_index_of）；eval_member_expr + eval_call_expr + kGetProp 字符串分支；GC roots/clear 注册；新增 76 个测试（38 Interp + 38 VM，S-01～S-38 × 2）。1967/1967 通过（coverage），1965/1965 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] `export async function` 解析修复 Review 修复轮次（M-1/M-2）：M-1：`export default async function foo(){}` 的 `local_name` 修复——在 `parse_export_decl()` async default export 分支中，`fn_name` move 到 `AsyncFunctionExpression` 之前保存为 `saved_fn_name`，并写入 `ExportDefaultDeclaration.local_name`（与同步版本对称）；M-2：`exec_module()` drain 后刷新返回值——在 `drain_job_queue()`/`vm_drain_job_queue()` 之后，访问 `entry_mod->ast.body` 最后一条语句，若为简单标识符表达式则从 `entry_mod->module_env->get()` 重新读取值（Interpreter + VM 两侧对称）；新增 4 个测试（2 Parser + 2 Interp+VM 集成）。1891/1891 通过（coverage），1885/1885 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] `export async function` Testing Agent 边界补测：新增 27 个测试（11 Parser + 16 Interp+VM 对称，M-45～M-52）。覆盖：多个 export async function 独立可调用（M-45）、async+sync 混用（M-46）、跨模块 await（M-47）、多个 await 串行（M-48）、提升语义（M-49）、default async function 可调用性（M-50）、多次调用产生新 Promise（M-51）、async throw 不向外同步传播（M-52）；Parser 错误路径：export async 后无 function/EOF/无函数名/缺 body/缺括号、export default async 换行报错、重复 async function 导出名；发现并修复 Parser 重复导出检查 bug（`AsyncFunctionDeclaration` 未加入重复名检查集合）；记录已知技术债务：`JSFunction.name_` 字段未暴露到 `own_properties_`，`fn.name` 返回 undefined。1887/1887 通过（coverage），0 LSan 泄漏。
 - [x] `export async function` 解析修复 + exec_module GC 安全修复：Parser `parse_export_decl()` 添加 `async function` 处理（`export async function foo(){}` 和 `export default async function`）；module_loader.cpp Load 阶段添加 `AsyncFunctionDeclaration` 导出 Cell 分配；Interpreter/VM Link 阶段添加 `AsyncFunctionDeclaration` Binding 建立；Interpreter `hoist_module_vars` 和 `exec_module_body` 提升循环添加 `AsyncFunctionDeclaration` 提升赋值；Compiler 函数提升循环添加 `ExportNamedDeclaration` 含 `AsyncFunctionDeclaration` 的处理；修复 `exec_module` GC 安全问题（添加 `drain_job_queue`/`vm_drain_job_queue` 调用、`promise_prototype_` 加入 GC roots、job_queue CollectRoots 加入 GC roots、`eval_result` 对象 Unregister + gc_heap_ 置 null 防止析构崩溃）。新增 18 个测试（6 Parser + 12 Interp+VM 对称，M-39～M-44）。1860/1860 通过（coverage），1796/1796 通过（run_ut ASAN），0 LSan 泄漏。

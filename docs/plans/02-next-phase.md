@@ -6,6 +6,7 @@
 
 - 下一阶段：Phase 12（待定）
 - Phase 11 + P2-A 全部完成（1618/1618 测试通过，0 LSan 失败）
+- String.prototype 8 个方法已完成（1967/1967 测试通过，0 LSan 失败）
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 
@@ -16,7 +17,8 @@
 - P3-1：JSString 二次堆分配优化（小字符串内联）
 - ~~**Array.map/filter/reduce/reduceRight**：已完成（2026-04-28）~~
 - ~~**Array.find/findIndex/some/every/indexOf/includes**：已完成（2026-04-28）~~
-- 更多内建对象（String 方法、Array.sort/splice/slice 等）
+- ~~**String.prototype 8 个方法**：已完成（2026-04-29）~~
+- 更多内建对象（Array.sort/splice/slice、Number/Math 方法等）
 - 动态 import()（依赖 Phase 11 Promise）
 - Top-Level Await
 

@@ -172,6 +172,155 @@ static std::optional<uint32_t> resolve_from_index_vm(uint32_t len, const std::ve
     return static_cast<uint32_t>(k < 0.0 ? 0.0 : k);
 }
 
+// ============================================================
+// UTF-8 string utilities (used by string_prototype_ NativeFns)
+// ============================================================
+
+// UTF-16 code unit count: BMP = 1, SMP (U+10000+) = 2.
+static int32_t utf8_cp_len_vm(JSString* js_str) {
+    if (js_str->cp_count_ >= 0) return js_str->cp_count_;
+    const std::string& s = js_str->str;
+    int32_t count = 0;
+    for (size_t i = 0; i < s.size(); ) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x80) { i += 1; count += 1; }
+        else if (c < 0xE0) { i += 2; count += 1; }
+        else if (c < 0xF0) { i += 3; count += 1; }
+        else { i += 4; count += 2; }  // SMP: 2 UTF-16 code units
+    }
+    js_str->cp_count_ = count;
+    return count;
+}
+
+// Convert UTF-16 code unit offset to byte offset.
+static size_t utf8_cu_to_byte_vm(const std::string& s, int32_t cu_offset) {
+    size_t i = 0;
+    int32_t cu = 0;
+    while (i < s.size() && cu < cu_offset) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x80) { i += 1; cu += 1; }
+        else if (c < 0xE0) { i += 2; cu += 1; }
+        else if (c < 0xF0) { i += 3; cu += 1; }
+        else { i += 4; cu += 2; }  // SMP: 2 code units
+    }
+    return i;
+}
+
+static std::string utf8_substr_vm(const std::string& s, int32_t cu_start, int32_t cu_end) {
+    if (cu_start >= cu_end) return "";
+    size_t byte_start = utf8_cu_to_byte_vm(s, cu_start);
+    size_t byte_end = utf8_cu_to_byte_vm(s, cu_end);
+    return s.substr(byte_start, byte_end - byte_start);
+}
+
+static bool is_js_whitespace_cp_vm(uint32_t cp) {
+    if (cp <= 0x20) {
+        return cp == 0x09 || cp == 0x0A || cp == 0x0B || cp == 0x0C || cp == 0x0D || cp == 0x20;
+    }
+    switch (cp) {
+    case 0x00A0: case 0x1680:
+    case 0x2000: case 0x2001: case 0x2002: case 0x2003: case 0x2004:
+    case 0x2005: case 0x2006: case 0x2007: case 0x2008: case 0x2009:
+    case 0x200A: case 0x2028: case 0x2029: case 0x202F: case 0x205F:
+    case 0x3000: case 0xFEFF:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static uint32_t utf8_decode_one_vm(const std::string& s, size_t& i) {
+    unsigned char c = static_cast<unsigned char>(s[i]);
+    uint32_t cp;
+    if (c < 0x80) {
+        cp = c; i += 1;
+    } else if (c < 0xE0) {
+        cp = (c & 0x1F);
+        if (i + 1 < s.size()) cp = (cp << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3F);
+        i += 2;
+    } else if (c < 0xF0) {
+        cp = (c & 0x0F);
+        if (i + 1 < s.size()) cp = (cp << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3F);
+        if (i + 2 < s.size()) cp = (cp << 6) | (static_cast<unsigned char>(s[i + 2]) & 0x3F);
+        i += 3;
+    } else {
+        cp = (c & 0x07);
+        if (i + 1 < s.size()) cp = (cp << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3F);
+        if (i + 2 < s.size()) cp = (cp << 6) | (static_cast<unsigned char>(s[i + 2]) & 0x3F);
+        if (i + 3 < s.size()) cp = (cp << 6) | (static_cast<unsigned char>(s[i + 3]) & 0x3F);
+        i += 4;
+    }
+    return cp;
+}
+
+static std::string utf8_trim_impl_vm(const std::string& s, bool trim_start, bool trim_end) {
+    size_t start = 0;
+    if (trim_start) {
+        while (start < s.size()) {
+            size_t tmp = start;
+            uint32_t cp = utf8_decode_one_vm(s, tmp);
+            if (!is_js_whitespace_cp_vm(cp)) break;
+            start = tmp;
+        }
+    }
+    size_t end = s.size();
+    if (trim_end && end > start) {
+        // Walk backwards without allocating a positions vector.
+        while (end > start) {
+            size_t cp_start = end - 1;
+            while (cp_start > start && (static_cast<unsigned char>(s[cp_start]) & 0xC0) == 0x80) {
+                --cp_start;
+            }
+            size_t tmp = cp_start;
+            uint32_t cp = utf8_decode_one_vm(s, tmp);
+            if (!is_js_whitespace_cp_vm(cp)) break;
+            end = cp_start;
+        }
+    }
+    if (start >= end) return "";
+    return s.substr(start, end - start);
+}
+
+static int32_t str_index_of_vm(const std::string& haystack, const std::string& needle,
+                                int32_t cu_from, int32_t len) {
+    if (needle.empty()) {
+        return std::min(cu_from, len);
+    }
+    size_t byte_from = utf8_cu_to_byte_vm(haystack, cu_from);
+    size_t pos = haystack.find(needle, byte_from);
+    if (pos == std::string::npos) return -1;
+    // Convert byte pos back to UTF-16 code unit index
+    int32_t cu_idx = 0;
+    for (size_t i = 0; i < pos; ) {
+        unsigned char c = static_cast<unsigned char>(haystack[i]);
+        if (c < 0x80) { i += 1; cu_idx += 1; }
+        else if (c < 0xE0) { i += 2; cu_idx += 1; }
+        else if (c < 0xF0) { i += 3; cu_idx += 1; }
+        else { i += 4; cu_idx += 2; }  // SMP: 2 code units
+    }
+    return cu_idx;
+}
+
+static int32_t str_last_index_of_vm(const std::string& haystack, const std::string& needle,
+                                     int32_t cu_from, int32_t len) {
+    if (needle.empty()) {
+        return std::min(cu_from, len);
+    }
+    // byte_from is the byte offset of cu_from (the maximum allowed start position).
+    size_t byte_from = utf8_cu_to_byte_vm(haystack, cu_from);
+    size_t pos = haystack.rfind(needle, byte_from);
+    if (pos == std::string::npos) return -1;
+    int32_t cu_idx = 0;
+    for (size_t i = 0; i < pos; ) {
+        unsigned char c = static_cast<unsigned char>(haystack[i]);
+        if (c < 0x80) { i += 1; cu_idx += 1; }
+        else if (c < 0xE0) { i += 2; cu_idx += 1; }
+        else if (c < 0xF0) { i += 3; cu_idx += 1; }
+        else { i += 4; cu_idx += 2; }  // SMP: 2 code units
+    }
+    return cu_idx;
+}
+
 bool VM::abstract_eq(const Value& a, const Value& b) {
     if (a.kind() == b.kind()) return strict_eq(a, b);
     bool a_nullish = a.is_null() || a.is_undefined();
@@ -1241,6 +1390,236 @@ void VM::init_global_env() {
     global_env_->define("Promise", VarKind::Const);
     global_env_->initialize("Promise", Value::object(ObjectPtr(vm_promise_ctor)));
 
+    // String.prototype
+    string_prototype_ = RcPtr<JSObject>::make();
+    string_prototype_->set_proto(object_prototype_);
+
+    // indexOf(searchString, fromIndex)
+    auto vm_str_index_of_fn = RcPtr<JSFunction>::make();
+    vm_str_index_of_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_null() || this_val.is_undefined()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.indexOf called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string str = to_string_val(this_val);
+        JSString tmp_str(str);
+        int32_t len = utf8_cp_len_vm(&tmp_str);
+        std::string search = args.empty() ? "undefined" : to_string_val(args[0]);
+        int32_t k = 0;
+        if (args.size() >= 2) {
+            double n = to_number_double_vm(args[1]);
+            if (std::isinf(n) && n > 0) {
+                k = len;
+            } else {
+                if (std::isnan(n)) n = 0.0;
+                n = std::trunc(n);
+                k = n < 0.0 ? 0 : (n > len ? len : static_cast<int32_t>(n));
+            }
+        }
+        return EvalResult::ok(Value::number(static_cast<double>(str_index_of_vm(str, search, k, len))));
+    });
+    gc_heap_.Register(vm_str_index_of_fn.get());
+    string_prototype_->set_property("indexOf", Value::object(ObjectPtr(vm_str_index_of_fn)));
+
+    // lastIndexOf(searchString, fromIndex)
+    auto vm_str_last_index_of_fn = RcPtr<JSFunction>::make();
+    vm_str_last_index_of_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_null() || this_val.is_undefined()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.lastIndexOf called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string str = to_string_val(this_val);
+        JSString tmp_str(str);
+        int32_t len = utf8_cp_len_vm(&tmp_str);
+        std::string search = args.empty() ? "undefined" : to_string_val(args[0]);
+        int32_t k = len;
+        if (args.size() >= 2) {
+            double n = to_number_double_vm(args[1]);
+            if (std::isnan(n)) {
+                k = len;
+            } else {
+                n = std::trunc(n);
+                if (n < 0.0) k = 0;
+                else if (n > len) k = len;
+                else k = static_cast<int32_t>(n);
+            }
+        }
+        return EvalResult::ok(Value::number(static_cast<double>(str_last_index_of_vm(str, search, k, len))));
+    });
+    gc_heap_.Register(vm_str_last_index_of_fn.get());
+    string_prototype_->set_property("lastIndexOf", Value::object(ObjectPtr(vm_str_last_index_of_fn)));
+
+    // slice(start, end)
+    auto vm_str_slice_fn = RcPtr<JSFunction>::make();
+    vm_str_slice_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_null() || this_val.is_undefined()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.slice called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string str = to_string_val(this_val);
+        JSString tmp_str(str);
+        int32_t len = utf8_cp_len_vm(&tmp_str);
+        auto resolve_slice_idx = [&](size_t arg_pos, int32_t default_val) -> int32_t {
+            if (args.size() <= arg_pos || args[arg_pos].is_undefined()) return default_val;
+            double n = to_number_double_vm(args[arg_pos]);
+            if (std::isnan(n)) return 0;
+            if (std::isinf(n)) return n > 0 ? len : 0;
+            n = std::trunc(n);
+            if (n < 0.0) return static_cast<int32_t>(std::max(0.0, static_cast<double>(len) + n));
+            return static_cast<int32_t>(std::min(static_cast<double>(len), n));
+        };
+        int32_t from = resolve_slice_idx(0, 0);
+        int32_t to = resolve_slice_idx(1, len);
+        return EvalResult::ok(Value::string(utf8_substr_vm(str, from, to)));
+    });
+    gc_heap_.Register(vm_str_slice_fn.get());
+    string_prototype_->set_property("slice", Value::object(ObjectPtr(vm_str_slice_fn)));
+
+    // substring(start, end)
+    auto vm_str_substring_fn = RcPtr<JSFunction>::make();
+    vm_str_substring_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_null() || this_val.is_undefined()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.substring called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string str = to_string_val(this_val);
+        JSString tmp_str(str);
+        int32_t len = utf8_cp_len_vm(&tmp_str);
+        auto resolve_sub_idx = [&](size_t arg_pos, int32_t default_val) -> int32_t {
+            if (args.size() <= arg_pos || args[arg_pos].is_undefined()) return default_val;
+            double n = to_number_double_vm(args[arg_pos]);
+            if (std::isnan(n) || n < 0.0) return 0;
+            if (n > static_cast<double>(len)) return len;
+            return static_cast<int32_t>(std::trunc(n));
+        };
+        int32_t start = resolve_sub_idx(0, 0);
+        int32_t end = resolve_sub_idx(1, len);
+        if (start > end) std::swap(start, end);
+        return EvalResult::ok(Value::string(utf8_substr_vm(str, start, end)));
+    });
+    gc_heap_.Register(vm_str_substring_fn.get());
+    string_prototype_->set_property("substring", Value::object(ObjectPtr(vm_str_substring_fn)));
+
+    // split(separator, limit)
+    auto vm_str_split_fn = RcPtr<JSFunction>::make();
+    vm_str_split_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_null() || this_val.is_undefined()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.split called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string str = to_string_val(this_val);
+        auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
+        result->set_proto(array_prototype_);
+        gc_heap_.Register(result.get());
+
+        // M-2: parse limit before checking undefined separator
+        uint32_t limit = std::numeric_limits<uint32_t>::max();
+        if (args.size() >= 2 && !args[1].is_undefined()) {
+            double n = to_number_double_vm(args[1]);
+            if (std::isnan(n) || std::isinf(n)) {
+                limit = 0;
+            } else {
+                // ToUint32: modulo 2^32 of ToInteger(n)
+                limit = static_cast<uint32_t>(static_cast<int64_t>(std::trunc(n)));
+            }
+        }
+
+        if (limit == 0) {
+            result->array_length_ = 0;
+            return EvalResult::ok(Value::object(ObjectPtr(result)));
+        }
+
+        if (args.empty() || args[0].is_undefined()) {
+            result->elements_[0] = Value::string(str);
+            result->array_length_ = 1;
+            return EvalResult::ok(Value::object(ObjectPtr(result)));
+        }
+
+        std::string sep = to_string_val(args[0]);
+        uint32_t idx = 0;
+
+        if (sep.empty()) {
+            // Split by codepoint (SMP surrogate-pair splitting not implemented).
+            size_t i = 0;
+            while (i < str.size() && idx < limit) {
+                size_t start = i;
+                unsigned char c = static_cast<unsigned char>(str[i]);
+                size_t cp_bytes;
+                if (c < 0x80) cp_bytes = 1;
+                else if (c < 0xE0) cp_bytes = 2;
+                else if (c < 0xF0) cp_bytes = 3;
+                else cp_bytes = 4;
+                i += cp_bytes;
+                result->elements_[idx] = Value::string(str.substr(start, cp_bytes));
+                ++idx;
+            }
+        } else {
+            size_t pos = 0;
+            while (idx < limit) {
+                size_t found = str.find(sep, pos);
+                if (found == std::string::npos) {
+                    result->elements_[idx] = Value::string(str.substr(pos));
+                    ++idx;
+                    break;
+                }
+                result->elements_[idx] = Value::string(str.substr(pos, found - pos));
+                ++idx;
+                pos = found + sep.size();
+            }
+        }
+        result->array_length_ = idx;
+        return EvalResult::ok(Value::object(ObjectPtr(result)));
+    });
+    gc_heap_.Register(vm_str_split_fn.get());
+    string_prototype_->set_property("split", Value::object(ObjectPtr(vm_str_split_fn)));
+
+    // trim()
+    auto vm_str_trim_fn = RcPtr<JSFunction>::make();
+    vm_str_trim_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        (void)args;
+        if (this_val.is_null() || this_val.is_undefined()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.trim called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        return EvalResult::ok(Value::string(utf8_trim_impl_vm(to_string_val(this_val), true, true)));
+    });
+    gc_heap_.Register(vm_str_trim_fn.get());
+    string_prototype_->set_property("trim", Value::object(ObjectPtr(vm_str_trim_fn)));
+
+    // trimStart()
+    auto vm_str_trim_start_fn = RcPtr<JSFunction>::make();
+    vm_str_trim_start_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        (void)args;
+        if (this_val.is_null() || this_val.is_undefined()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.trimStart called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        return EvalResult::ok(Value::string(utf8_trim_impl_vm(to_string_val(this_val), true, false)));
+    });
+    gc_heap_.Register(vm_str_trim_start_fn.get());
+    string_prototype_->set_property("trimStart", Value::object(ObjectPtr(vm_str_trim_start_fn)));
+
+    // trimEnd()
+    auto vm_str_trim_end_fn = RcPtr<JSFunction>::make();
+    vm_str_trim_end_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        (void)args;
+        if (this_val.is_null() || this_val.is_undefined()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.trimEnd called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        return EvalResult::ok(Value::string(utf8_trim_impl_vm(to_string_val(this_val), false, true)));
+    });
+    gc_heap_.Register(vm_str_trim_end_fn.get());
+    string_prototype_->set_property("trimEnd", Value::object(ObjectPtr(vm_str_trim_end_fn)));
+
     // Register the global environment with GcHeap.
     gc_heap_.Register(global_env_.get());
 }
@@ -1506,6 +1885,7 @@ EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
         add_obj(array_prototype_.get());
         add_obj(function_prototype_.get());
         add_obj(promise_prototype_.get());
+        add_obj(string_prototype_.get());
         add_obj(object_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         // Include call stack frames
@@ -1532,6 +1912,7 @@ EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
     if (array_prototype_) array_prototype_->clear_function_properties();
     if (function_prototype_) function_prototype_->clear_function_properties();
     if (promise_prototype_) promise_prototype_->clear_function_properties();
+    if (string_prototype_) string_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
 
     return result;
@@ -1923,6 +2304,17 @@ EvalResult VM::run(size_t exit_depth) {
                     "Cannot read property '" + name + "' of " + to_string_val(obj_val));
                 continue;
             }
+            if (obj_val.is_string()) {
+                if (name == "length") {
+                    JSString tmp_str(obj_val.as_string());
+                    stack.push_back(Value::number(static_cast<double>(utf8_cp_len_vm(&tmp_str))));
+                } else if (string_prototype_) {
+                    stack.push_back(string_prototype_->get_property(name));
+                } else {
+                    stack.push_back(Value::undefined());
+                }
+                break;
+            }
             if (!obj_val.is_object()) {
                 stack.push_back(Value::undefined());
                 break;
@@ -2012,6 +2404,18 @@ EvalResult VM::run(size_t exit_depth) {
             stack.pop_back();
             Value obj_val = std::move(stack.back());
             stack.pop_back();
+            if (obj_val.is_string()) {
+                std::string key = to_string_val(key_val);
+                if (key == "length") {
+                    JSString tmp_str(obj_val.as_string());
+                    stack.push_back(Value::number(static_cast<double>(utf8_cp_len_vm(&tmp_str))));
+                } else if (string_prototype_) {
+                    stack.push_back(string_prototype_->get_property(key));
+                } else {
+                    stack.push_back(Value::undefined());
+                }
+                break;
+            }
             if (!obj_val.is_object()) {
                 frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
                     "Cannot read element of non-object");
@@ -2247,10 +2651,15 @@ EvalResult VM::run(size_t exit_depth) {
                 auto res = fn->native_fn()(receiver, std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/false);
                 if (!res.is_ok()) {
                     const std::string& msg = res.error().message();
-                    NativeErrorType err_type = NativeErrorType::kTypeError;
-                    if (msg.rfind("ReferenceError:", 0) == 0) err_type = NativeErrorType::kReferenceError;
-                    else if (msg.rfind("RangeError:", 0) == 0) err_type = NativeErrorType::kRangeError;
-                    frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                    if (msg == "__qppjs_pending_throw__" && native_pending_throw_.has_value()) {
+                        frame.pending_throw = std::move(*native_pending_throw_);
+                        native_pending_throw_ = std::nullopt;
+                    } else {
+                        NativeErrorType err_type = NativeErrorType::kTypeError;
+                        if (msg.rfind("ReferenceError:", 0) == 0) err_type = NativeErrorType::kReferenceError;
+                        else if (msg.rfind("RangeError:", 0) == 0) err_type = NativeErrorType::kRangeError;
+                        frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                    }
                     continue;
                 }
                 stack.push_back(res.value());
@@ -2838,6 +3247,7 @@ EvalResult VM::exec_module(const std::string& entry_path) {
         add_obj(array_prototype_.get());
         add_obj(function_prototype_.get());
         add_obj(promise_prototype_.get());
+        add_obj(string_prototype_.get());
         add_obj(object_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         for (auto& cf : call_stack_) {
@@ -2863,6 +3273,7 @@ EvalResult VM::exec_module(const std::string& entry_path) {
     if (array_prototype_) array_prototype_->clear_function_properties();
     if (function_prototype_) function_prototype_->clear_function_properties();
     if (promise_prototype_) promise_prototype_->clear_function_properties();
+    if (string_prototype_) string_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     // 清理所有模块环境中的函数引用（打破 module_env ↔ JSFunction 循环引用）
     module_loader_.ClearModuleEnvs();

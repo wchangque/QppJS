@@ -122,6 +122,7 @@ private:
     RcPtr<JSObject> array_prototype_;
     RcPtr<JSObject> function_prototype_; // Function.prototype (call/apply/bind)
     RcPtr<JSObject> promise_prototype_;  // Promise.prototype (then/catch/finally)
+    RcPtr<JSObject> string_prototype_;   // String.prototype (indexOf/slice/trim/...)
     RcPtr<JSFunction> object_constructor_;  // global Object function
     RcPtr<Environment> global_env_;
 
