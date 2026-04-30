@@ -123,7 +123,11 @@ private:
     RcPtr<JSObject> function_prototype_; // Function.prototype (call/apply/bind)
     RcPtr<JSObject> promise_prototype_;  // Promise.prototype (then/catch/finally)
     RcPtr<JSObject> string_prototype_;   // String.prototype (indexOf/slice/trim/...)
+    RcPtr<JSObject> math_obj_;           // Math object
+    RcPtr<JSObject> number_prototype_;   // Number.prototype
     RcPtr<JSFunction> object_constructor_;  // global Object function
+    RcPtr<JSFunction> number_constructor_;  // global Number function
+    uint64_t math_random_state_ = 1;    // xorshift64* PRNG state
     RcPtr<Environment> global_env_;
 
     // Error prototype cache: indexed by NativeErrorType

@@ -14,7 +14,9 @@
 #include <optional>
 
 #include <cassert>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -42,10 +44,16 @@ static double to_number_double(const Value& v) {
         size_t first = s.find_first_not_of(" \t\n\r\f\v");
         if (first == std::string::npos) return 0.0;
         size_t last = s.find_last_not_of(" \t\n\r\f\v");
-        std::string trimmed = s.substr(first, last - first + 1);
         char* end = nullptr;
-        double r = std::strtod(trimmed.c_str(), &end);
-        if (end == trimmed.c_str() || *end != '\0') return std::numeric_limits<double>::quiet_NaN();
+        double r;
+        if (first == 0 && last + 1 == s.size()) {
+            r = std::strtod(s.c_str(), &end);
+            if (end == s.c_str() || *end != '\0') return std::numeric_limits<double>::quiet_NaN();
+        } else {
+            std::string trimmed = s.substr(first, last - first + 1);
+            r = std::strtod(trimmed.c_str(), &end);
+            if (end == trimmed.c_str() || *end != '\0') return std::numeric_limits<double>::quiet_NaN();
+        }
         return r;
     }
     case ValueKind::Object: return std::numeric_limits<double>::quiet_NaN();
@@ -1620,6 +1628,314 @@ void Interpreter::init_runtime() {
     gc_heap_.Register(str_trim_end_fn.get());
     string_prototype_->set_property("trimEnd", Value::object(ObjectPtr(str_trim_end_fn)));
 
+    // ---- Global constants: NaN, Infinity ----
+
+    global_env_->define("NaN", VarKind::Const);
+    global_env_->initialize("NaN", Value::number(std::numeric_limits<double>::quiet_NaN()));
+    global_env_->define("Infinity", VarKind::Const);
+    global_env_->initialize("Infinity", Value::number(std::numeric_limits<double>::infinity()));
+
+    // ---- Global functions: isNaN, isFinite, parseInt, parseFloat ----
+
+    // parseFloat helper (no substr copy)
+    static auto parse_float_impl = [](const std::string& s) -> double {
+        size_t start = 0;
+        while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) start++;
+        if (start == s.size()) return std::numeric_limits<double>::quiet_NaN();
+        // JS spec: parseFloat only parses decimal float; "0x..." → parse only "0"
+        if (s[start] == '0' && start + 1 < s.size() &&
+            (s[start + 1] == 'x' || s[start + 1] == 'X')) {
+            return 0.0;
+        }
+        char* end = nullptr;
+        double result = std::strtod(s.c_str() + start, &end);
+        if (end == s.c_str() + start) return std::numeric_limits<double>::quiet_NaN();
+        return result;
+    };
+
+    // parseInt helper
+    static auto parse_int_impl = [](const std::string& s, int radix) -> double {
+        size_t i = 0;
+        while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) i++;
+        if (i == s.size()) return std::numeric_limits<double>::quiet_NaN();
+        int sign = 1;
+        if (s[i] == '+') { i++; }
+        else if (s[i] == '-') { sign = -1; i++; }
+        // Detect 0x/0X prefix
+        if (radix == 0 || radix == 16) {
+            if (i + 1 < s.size() && s[i] == '0' && (s[i + 1] == 'x' || s[i + 1] == 'X')) {
+                radix = 16;
+                i += 2;
+            }
+        }
+        if (radix == 0) radix = 10;
+        if (radix < 2 || radix > 36) return std::numeric_limits<double>::quiet_NaN();
+        if (i == s.size()) return std::numeric_limits<double>::quiet_NaN();
+        // Parse digits manually to handle partial match; use double to avoid signed overflow UB
+        double result = 0.0;
+        bool found = false;
+        while (i < s.size()) {
+            char c = s[i];
+            int digit = -1;
+            if (c >= '0' && c <= '9') digit = c - '0';
+            else if (c >= 'a' && c <= 'z') digit = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'Z') digit = c - 'A' + 10;
+            if (digit < 0 || digit >= radix) break;
+            result = result * radix + digit;
+            found = true;
+            i++;
+        }
+        if (!found) return std::numeric_limits<double>::quiet_NaN();
+        return sign < 0 ? -result : result;
+    };
+
+    // Build parseInt function (shared with Number.parseInt)
+    auto parse_int_fn = RcPtr<JSFunction>::make();
+    parse_int_fn->set_name(std::string("parseInt"));
+    parse_int_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        std::string s = args.empty() ? "undefined" : Interpreter::to_string_val(args[0]);
+        int radix = 0;
+        if (args.size() >= 2) {
+            double r = to_number_double(args[1]);
+            radix = std::isnan(r) ? 0 : static_cast<int>(std::trunc(r));
+        }
+        return EvalResult::ok(Value::number(parse_int_impl(s, radix)));
+    });
+    gc_heap_.Register(parse_int_fn.get());
+    Value parse_int_val = Value::object(ObjectPtr(parse_int_fn));
+    global_env_->define_initialized("parseInt");
+    global_env_->set("parseInt", parse_int_val);
+
+    // Build parseFloat function
+    auto parse_float_fn = RcPtr<JSFunction>::make();
+    parse_float_fn->set_name(std::string("parseFloat"));
+    parse_float_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        std::string s = args.empty() ? "undefined" : Interpreter::to_string_val(args[0]);
+        return EvalResult::ok(Value::number(parse_float_impl(s)));
+    });
+    gc_heap_.Register(parse_float_fn.get());
+    global_env_->define_initialized("parseFloat");
+    global_env_->set("parseFloat", Value::object(ObjectPtr(parse_float_fn)));
+
+    // Build global isNaN (does ToNumber conversion)
+    auto is_nan_fn = RcPtr<JSFunction>::make();
+    is_nan_fn->set_name(std::string("isNaN"));
+    is_nan_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        double n = to_number_double(args.empty() ? Value::undefined() : args[0]);
+        return EvalResult::ok(Value::boolean(std::isnan(n)));
+    });
+    gc_heap_.Register(is_nan_fn.get());
+    global_env_->define_initialized("isNaN");
+    global_env_->set("isNaN", Value::object(ObjectPtr(is_nan_fn)));
+
+    // Build global isFinite (does ToNumber conversion)
+    auto is_finite_fn = RcPtr<JSFunction>::make();
+    is_finite_fn->set_name(std::string("isFinite"));
+    is_finite_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        double n = to_number_double(args.empty() ? Value::undefined() : args[0]);
+        return EvalResult::ok(Value::boolean(std::isfinite(n)));
+    });
+    gc_heap_.Register(is_finite_fn.get());
+    global_env_->define_initialized("isFinite");
+    global_env_->set("isFinite", Value::object(ObjectPtr(is_finite_fn)));
+
+    // ---- Number constructor ----
+
+    number_constructor_ = RcPtr<JSFunction>::make();
+    number_constructor_->set_name(std::string("Number"));
+    number_constructor_->set_native_fn([](Value /*this_val*/, std::vector<Value> args,
+                                          bool /*is_new*/) -> EvalResult {
+        double n = args.empty() ? 0.0 : to_number_double(args[0]);
+        return EvalResult::ok(Value::number(n));
+    });
+
+    // Number.isNaN (no ToNumber conversion)
+    auto num_is_nan_fn = RcPtr<JSFunction>::make();
+    num_is_nan_fn->set_name(std::string("isNaN"));
+    num_is_nan_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_number()) return EvalResult::ok(Value::boolean(false));
+        return EvalResult::ok(Value::boolean(std::isnan(args[0].as_number())));
+    });
+    number_constructor_->set_property("isNaN", Value::object(ObjectPtr(num_is_nan_fn)));
+
+    // Number.isFinite (no ToNumber conversion)
+    auto num_is_finite_fn = RcPtr<JSFunction>::make();
+    num_is_finite_fn->set_name(std::string("isFinite"));
+    num_is_finite_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_number()) return EvalResult::ok(Value::boolean(false));
+        return EvalResult::ok(Value::boolean(std::isfinite(args[0].as_number())));
+    });
+    number_constructor_->set_property("isFinite", Value::object(ObjectPtr(num_is_finite_fn)));
+
+    // Number.isInteger
+    auto num_is_integer_fn = RcPtr<JSFunction>::make();
+    num_is_integer_fn->set_name(std::string("isInteger"));
+    num_is_integer_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_number()) return EvalResult::ok(Value::boolean(false));
+        double n = args[0].as_number();
+        if (std::isnan(n) || std::isinf(n)) return EvalResult::ok(Value::boolean(false));
+        return EvalResult::ok(Value::boolean(std::trunc(n) == n));
+    });
+    number_constructor_->set_property("isInteger", Value::object(ObjectPtr(num_is_integer_fn)));
+
+    // Number.parseInt === global parseInt (same object)
+    number_constructor_->set_property("parseInt", parse_int_val);
+
+    // Number.prototype
+    number_prototype_ = RcPtr<JSObject>::make();
+    number_prototype_->set_proto(object_prototype_);
+    gc_heap_.Register(number_prototype_.get());
+    number_constructor_->set_prototype_obj(RcPtr<JSObject>(number_prototype_));
+    number_constructor_->set_property("prototype", Value::object(ObjectPtr(number_prototype_)));
+
+    gc_heap_.Register(number_constructor_.get());
+    global_env_->define_initialized("Number");
+    global_env_->set("Number", Value::object(ObjectPtr(number_constructor_)));
+
+    // ---- Math object ----
+
+    // Initialize PRNG state
+    math_random_state_ = static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    if (math_random_state_ == 0) math_random_state_ = 1;
+
+    math_obj_ = RcPtr<JSObject>::make();
+    math_obj_->set_proto(object_prototype_);
+
+    math_obj_->set_property("PI", Value::number(M_PI));
+    math_obj_->set_property("E", Value::number(M_E));
+
+    // Math.floor
+    auto math_floor_fn = RcPtr<JSFunction>::make();
+    math_floor_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+        double x = args.empty() ? std::numeric_limits<double>::quiet_NaN()
+                                : to_number_double(args[0]);
+        return EvalResult::ok(Value::number(std::floor(x)));
+    });
+    math_obj_->set_property("floor", Value::object(ObjectPtr(math_floor_fn)));
+
+    // Math.ceil
+    auto math_ceil_fn = RcPtr<JSFunction>::make();
+    math_ceil_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+        double x = args.empty() ? std::numeric_limits<double>::quiet_NaN()
+                                : to_number_double(args[0]);
+        return EvalResult::ok(Value::number(std::ceil(x)));
+    });
+    math_obj_->set_property("ceil", Value::object(ObjectPtr(math_ceil_fn)));
+
+    // Math.round: spec tie-breaking: x.5 rounds toward +Infinity; -0.5 → -0
+    auto math_round_fn = RcPtr<JSFunction>::make();
+    math_round_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+        double x = args.empty() ? std::numeric_limits<double>::quiet_NaN()
+                                : to_number_double(args[0]);
+        if (std::isnan(x) || std::isinf(x) || x == 0.0) return EvalResult::ok(Value::number(x));
+        double r = std::floor(x + 0.5);
+        // -0.5 case: x < 0 and result is 0 → return -0
+        if (r == 0.0 && x < 0.0) return EvalResult::ok(Value::number(-0.0));
+        return EvalResult::ok(Value::number(r));
+    });
+    math_obj_->set_property("round", Value::object(ObjectPtr(math_round_fn)));
+
+    // Math.abs
+    auto math_abs_fn = RcPtr<JSFunction>::make();
+    math_abs_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+        double x = args.empty() ? std::numeric_limits<double>::quiet_NaN()
+                                : to_number_double(args[0]);
+        return EvalResult::ok(Value::number(std::abs(x)));
+    });
+    math_obj_->set_property("abs", Value::object(ObjectPtr(math_abs_fn)));
+
+    // Math.max
+    auto math_max_fn = RcPtr<JSFunction>::make();
+    math_max_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+        double result = -std::numeric_limits<double>::infinity();
+        for (auto& arg : args) {
+            double v = to_number_double(arg);
+            if (std::isnan(v)) return EvalResult::ok(Value::number(v));
+            result = std::fmax(result, v);
+        }
+        return EvalResult::ok(Value::number(result));
+    });
+    math_obj_->set_property("max", Value::object(ObjectPtr(math_max_fn)));
+
+    // Math.min
+    auto math_min_fn = RcPtr<JSFunction>::make();
+    math_min_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+        double result = std::numeric_limits<double>::infinity();
+        for (auto& arg : args) {
+            double v = to_number_double(arg);
+            if (std::isnan(v)) return EvalResult::ok(Value::number(v));
+            result = std::fmin(result, v);
+        }
+        return EvalResult::ok(Value::number(result));
+    });
+    math_obj_->set_property("min", Value::object(ObjectPtr(math_min_fn)));
+
+    // Math.pow
+    auto math_pow_fn = RcPtr<JSFunction>::make();
+    math_pow_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+        double base = args.size() >= 1 ? to_number_double(args[0])
+                                       : std::numeric_limits<double>::quiet_NaN();
+        double exp = args.size() >= 2 ? to_number_double(args[1])
+                                      : std::numeric_limits<double>::quiet_NaN();
+        return EvalResult::ok(Value::number(std::pow(base, exp)));
+    });
+    math_obj_->set_property("pow", Value::object(ObjectPtr(math_pow_fn)));
+
+    // Math.sqrt
+    auto math_sqrt_fn = RcPtr<JSFunction>::make();
+    math_sqrt_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+        double x = args.empty() ? std::numeric_limits<double>::quiet_NaN()
+                                : to_number_double(args[0]);
+        return EvalResult::ok(Value::number(std::sqrt(x)));
+    });
+    math_obj_->set_property("sqrt", Value::object(ObjectPtr(math_sqrt_fn)));
+
+    // Math.log
+    auto math_log_fn = RcPtr<JSFunction>::make();
+    math_log_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+        double x = args.empty() ? std::numeric_limits<double>::quiet_NaN()
+                                : to_number_double(args[0]);
+        return EvalResult::ok(Value::number(std::log(x)));
+    });
+    math_obj_->set_property("log", Value::object(ObjectPtr(math_log_fn)));
+
+    // Math.trunc
+    auto math_trunc_fn = RcPtr<JSFunction>::make();
+    math_trunc_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+        double x = args.empty() ? std::numeric_limits<double>::quiet_NaN()
+                                : to_number_double(args[0]);
+        return EvalResult::ok(Value::number(std::trunc(x)));
+    });
+    math_obj_->set_property("trunc", Value::object(ObjectPtr(math_trunc_fn)));
+
+    // Math.sign
+    auto math_sign_fn = RcPtr<JSFunction>::make();
+    math_sign_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+        double x = args.empty() ? std::numeric_limits<double>::quiet_NaN()
+                                : to_number_double(args[0]);
+        if (std::isnan(x)) return EvalResult::ok(Value::number(x));
+        if (x == 0.0) return EvalResult::ok(Value::number(x));  // preserves +0/-0
+        return EvalResult::ok(Value::number(x > 0.0 ? 1.0 : -1.0));
+    });
+    math_obj_->set_property("sign", Value::object(ObjectPtr(math_sign_fn)));
+
+    // Math.random (xorshift64*)
+    auto math_random_fn = RcPtr<JSFunction>::make();
+    math_random_fn->set_native_fn([this](Value, std::vector<Value> /*args*/, bool) -> EvalResult {
+        math_random_state_ ^= math_random_state_ >> 12;
+        math_random_state_ ^= math_random_state_ << 25;
+        math_random_state_ ^= math_random_state_ >> 27;
+        uint64_t r = math_random_state_ * 0x2545F4914F6CDD1DULL;
+        double result = static_cast<double>(r >> 11) / static_cast<double>(1ULL << 53);
+        return EvalResult::ok(Value::number(result));
+    });
+    math_obj_->set_property("random", Value::object(ObjectPtr(math_random_fn)));
+
+    gc_heap_.Register(math_obj_.get());
+    global_env_->define("Math", VarKind::Const);
+    global_env_->initialize("Math", Value::object(ObjectPtr(math_obj_)));
+
     // Register the global environment with GcHeap so user-created closures reachable
     // from it are treated as roots and not swept.
     gc_heap_.Register(global_env_.get());
@@ -2034,7 +2350,10 @@ EvalResult Interpreter::exec(const Program& program) {
         add_obj(function_prototype_.get());
         add_obj(promise_prototype_.get());
         add_obj(string_prototype_.get());
+        add_obj(math_obj_.get());
+        add_obj(number_prototype_.get());
         add_obj(object_constructor_.get());
+        add_obj(number_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
         if (pending_throw_.has_value()) add_val(*pending_throw_);
@@ -2055,7 +2374,10 @@ EvalResult Interpreter::exec(const Program& program) {
     if (function_prototype_) function_prototype_->clear_function_properties();
     if (promise_prototype_) promise_prototype_->clear_function_properties();
     if (string_prototype_) string_prototype_->clear_function_properties();
+    if (math_obj_) math_obj_->clear_function_properties();
+    if (number_prototype_) number_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
+    if (number_constructor_) number_constructor_->clear_own_properties();
 
     return final_result;
 }
@@ -3487,7 +3809,10 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
         add_obj(function_prototype_.get());
         add_obj(promise_prototype_.get());
         add_obj(string_prototype_.get());
+        add_obj(math_obj_.get());
+        add_obj(number_prototype_.get());
         add_obj(object_constructor_.get());
+        add_obj(number_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
         if (pending_throw_.has_value()) add_val(*pending_throw_);
@@ -3507,7 +3832,10 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
     if (function_prototype_) function_prototype_->clear_function_properties();
     if (promise_prototype_) promise_prototype_->clear_function_properties();
     if (string_prototype_) string_prototype_->clear_function_properties();
+    if (math_obj_) math_obj_->clear_function_properties();
+    if (number_prototype_) number_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
+    if (number_constructor_) number_constructor_->clear_own_properties();
     // 清理所有模块环境中的函数引用（打破 module_env ↔ JSFunction 循环引用）
     module_loader_.ClearModuleEnvs();
     module_loader_.Clear();

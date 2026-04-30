@@ -18,7 +18,8 @@
 - ~~**Array.map/filter/reduce/reduceRight**：已完成（2026-04-28）~~
 - ~~**Array.find/findIndex/some/every/indexOf/includes**：已完成（2026-04-28）~~
 - ~~**String.prototype 8 个方法**：已完成（2026-04-29）~~
-- 更多内建对象（Array.sort/splice/slice、Number/Math 方法等）
+- ~~**Number/Math 内建对象**：已完成（2026-04-29）~~
+- 更多内建对象（Array.sort/splice/slice 等）
 - 动态 import()（依赖 Phase 11 Promise）
 - Top-Level Await
 

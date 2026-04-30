@@ -6,10 +6,10 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | String.prototype Review 修复（M-1/M-2/M-3/P1-1/P1-3） |
-| 测试计数 | 2035/2035 通过（coverage），2021/2021 通过（run_ut ASAN），0 LSan 泄漏 |
+| 当前阶段 | Number/Math 内建对象实现（含 Review 修复 M-1/M-2/M-3/P1） |
+| 测试计数 | 2229/2229 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-04-29 |
-| 下一步 | Phase 12（待定：P3-1 JSString 优化、更多内建对象、dynamic import()）|
+| 下一步 | Phase 12（待定：P3-1 JSString 优化、Array.sort/splice/slice、dynamic import()）|
 
 ## 已知遗留问题
 
@@ -21,6 +21,9 @@
 
 ## 最近完成
 
+- [x] Number/Math Review 修复（M-1/M-2/M-3/P1）：M-1：`parse_float_impl`/`vm_parse_float_impl` 添加 `0x`/`0X` 前缀检测，`parseFloat("0x10")` → 0（Interp+VM 两侧）；M-2：`parse_int_impl`/`vm_parse_int_impl` 累加器从 `long long` 改为 `double`，消除大整数有符号溢出 UB（两侧）；M-3：新增 `number_prototype_` 成员（interpreter.h + vm.h），初始化 `Number.prototype` 对象（继承 object_prototype_），加入 GC roots 和 clear 路径（两侧各两处 GC 区域）；P1：`to_number_double`/`to_number_double_vm` 字符串路径添加快速路径——无前后空白时直接用原始 `c_str()` 避免 `substr` 分配（两侧）；新增 6 个测试（NM-95/NM-96/NM-97 × Interp+VM）。2229/2229 通过（coverage），2141/2141 通过（run_ut ASAN），0 LSan 泄漏。
+- [x] Number/Math Testing Agent 边界补测：新增 80 个测试（40 组 Interp+VM 对称，NM-55～NM-94）。覆盖：parseInt 前导空白+正号/负号/"Infinity"字符串/八进制前缀/"z" base36/radix=1/radix=37/radix=0；parseFloat "Infinity"/"-Infinity"/".5" 无整数部分/科学计数法 1e3/1.5e-2；Number.isFinite(0)/(-0)/(1/0)；Math.round(-2.5)→-2/NaN/Infinity；Math.max/min 多参数；Math.pow(1,NaN)/(-7,0.5)/（Infinity,0）；Math.sign(Infinity)/(-Infinity)/NaN/(+0)；Math.log(-1)/0/Infinity；全局 isNaN(null)/isFinite(null)/isFinite("1.5")；Number("3.14")/true/false/null/undefined/""。2223/2223 通过（coverage），0 LSan 泄漏。
+- [x] Number/Math 内建对象：全局常量（NaN/Infinity）、全局函数（isNaN/isFinite/parseInt/parseFloat）、Number 构造函数（Number.isNaN/isFinite/isInteger/parseInt）、Math 对象（PI/E + 12 个方法：floor/ceil/round/abs/max/min/pow/sqrt/log/random/trunc/sign）；Interpreter + VM 两侧对称实现；GC roots/clear 注册；xorshift64* PRNG；新增 108 个测试（NM-01～NM-54 × Interp+VM）。2143/2143 通过（coverage），2141/2141 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] String.prototype Review 修复（M-1/M-2/M-3/P1-1/P1-3）：M-1：UTF-16 码元语义修复——`utf8_cp_len`/`utf8_cu_to_byte`/`utf8_substr`/`str_index_of`/`str_last_index_of` 全部改为 UTF-16 码元计数（SMP 字符 U+10000+ 计 2 个码元），interpreter.cpp + vm.cpp 两侧对称；M-2：split `undefined` separator 前先解析 limit，修复 `"abc".split(undefined, 0)` 返回 `["abc"]` 而非 `[]` 的 bug（两侧）；M-3：VM `kGetElem` 添加字符串分支（length + string_prototype_ 查找），与 kGetProp 对称；P1-1：split 循环改用 `result->elements_[idx]` 替代 `set_property(std::to_string(idx), ...)`（两侧）；P1-3：`utf8_trim_impl`/`utf8_trim_impl_vm` 向后扫描改为从末尾向前找 UTF-8 码点起始字节，消除 vector 分配（两侧）；新增 12 个测试（S-65～S-70 × Interp+VM，含非 BMP 字符 length/indexOf/slice 语义验证 + M-2/M-3 回归）。2035/2035 通过（coverage），0 LSan 泄漏。
 - [x] String.prototype Testing Agent 边界补测 + 3 处 Bug 修复：新增 56 个测试（28 Interp + 28 VM，S-39～S-64 × 2）。覆盖：indexOf 空串 fromIndex=0/len/整串匹配/两端空串/跳过首次匹配；lastIndexOf fromIndex=0/中间值/空串无 from/空串有 from；slice 无参/start=0/start=end/负数绝对值超长；substring 相等参数/end 超出/swap 从 2；split 空串+空分隔符返回 []、空串+非空分隔符返回 [""]、首尾分隔符产生空元素、ToUint32(-1)=4294967295 不截断；trim U+2029/U+FEFF/内部空格保留；链式 trim+split 和 split+indexOf。同步修复 3 处 Bug：(1) `str_last_index_of` 中 `cp_from+1` 改为 `cp_from`，修复 `"abcabc".lastIndexOf("a",2)` 返回 3 而非 0 的语义错误（interpreter.cpp + vm.cpp 两处）；(2) split limit 的 `ToUint32` 语义——负数/+Inf/-Inf 走正确的 modulo 2^32 路径，修复 `split("X",-1)` 返回 [] 而非全部元素的 bug（两处）。2023/2023 通过（coverage），2021/2021 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] String.prototype 8 个方法实现（indexOf/lastIndexOf/slice/substring/split/trim/trimStart/trimEnd）：建立 `string_prototype_`（Interpreter + VM 两侧对称）；`JSString` 新增 `cp_count_` 缓存字段（O(1) length）；UTF-8 工具函数（utf8_cp_len/utf8_substr/utf8_trim_impl/str_index_of/str_last_index_of）；eval_member_expr + eval_call_expr + kGetProp 字符串分支；GC roots/clear 注册；新增 76 个测试（38 Interp + 38 VM，S-01～S-38 × 2）。1967/1967 通过（coverage），1965/1965 通过（run_ut ASAN），0 LSan 泄漏。
