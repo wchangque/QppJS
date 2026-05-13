@@ -2621,6 +2621,7 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const ArrayExpression& e) { return eval_array_expr(e); },
             [this](const AwaitExpression& e) { return eval_await_expr(e); },
             [this](const AsyncFunctionExpression& e) { return eval_async_function_expr(e); },
+            [this](const ImportCallExpression& e) { return eval_import_call(e); },
         },
         expr.v);
 }
@@ -4123,6 +4124,91 @@ EvalResult Interpreter::exec_module_body(ModuleRecord& mod) {
 
     if (has_error) return final_result;
     return EvalResult::ok(last);
+}
+
+// ---- dynamic import() ----
+
+EvalResult Interpreter::eval_import_call(const ImportCallExpression& expr) {
+    // Evaluate specifier expression
+    auto spec_result = eval_expr(*expr.specifier);
+    if (!spec_result.is_ok()) {
+        // Return rejected Promise with the evaluation error
+        auto p = RcPtr<JSPromise>::make();
+        gc_heap_.Register(p.get());
+        Value err_val = pending_throw_.has_value() ? *pending_throw_
+                      : make_error_value(NativeErrorType::kTypeError, "import() specifier evaluation failed");
+        pending_throw_ = std::nullopt;
+        p->Reject(err_val, job_queue_);
+        return EvalResult::ok(Value::object(ObjectPtr(p)));
+    }
+
+    std::string specifier = to_string_val(spec_result.value());
+
+    // Resolve the specifier relative to the current module's directory (or cwd)
+    std::string base_dir;
+    if (current_module_) {
+        base_dir = std::filesystem::path(current_module_->specifier).parent_path().string();
+    } else {
+        base_dir = std::filesystem::current_path().string();
+    }
+
+    // Create the result promise
+    auto promise = RcPtr<JSPromise>::make();
+    gc_heap_.Register(promise.get());
+
+    // Load the module
+    auto load_result = module_loader_.Load(specifier, base_dir);
+    if (!load_result.ok()) {
+        Value err_val = make_error_value(NativeErrorType::kError,
+            "Cannot load module '" + specifier + "': " + load_result.error().message());
+        promise->Reject(err_val, job_queue_);
+        return EvalResult::ok(Value::object(ObjectPtr(promise)));
+    }
+    auto mod = load_result.value();
+
+    // Link the module
+    auto link_result = link_module(*mod);
+    if (!link_result.is_ok()) {
+        Value err_val;
+        if (pending_throw_.has_value()) {
+            err_val = std::move(*pending_throw_);
+            pending_throw_ = std::nullopt;
+        } else {
+            err_val = make_error_value(NativeErrorType::kError,
+                "Cannot link module '" + specifier + "'");
+        }
+        promise->Reject(err_val, job_queue_);
+        return EvalResult::ok(Value::object(ObjectPtr(promise)));
+    }
+
+    // Evaluate the module
+    auto eval_result = evaluate_module(*mod);
+    if (!eval_result.is_ok()) {
+        Value err_val;
+        if (pending_throw_.has_value()) {
+            err_val = std::move(*pending_throw_);
+            pending_throw_ = std::nullopt;
+        } else {
+            err_val = make_error_value(NativeErrorType::kError,
+                "Cannot evaluate module '" + specifier + "'");
+        }
+        promise->Reject(err_val, job_queue_);
+        return EvalResult::ok(Value::object(ObjectPtr(promise)));
+    }
+
+    // Build namespace object from module exports
+    auto ns_obj = RcPtr<JSObject>::make();
+    gc_heap_.Register(ns_obj.get());
+    for (const auto& entry : mod->exports) {
+        if (entry.cell && entry.cell->initialized) {
+            ns_obj->set_property(entry.name, entry.cell->value);
+        } else if (entry.cell) {
+            ns_obj->set_property(entry.name, Value::undefined());
+        }
+    }
+
+    promise->Fulfill(Value::object(ObjectPtr(ns_obj)), job_queue_);
+    return EvalResult::ok(Value::object(ObjectPtr(promise)));
 }
 
 // ---- async/await ----

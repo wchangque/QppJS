@@ -20,7 +20,7 @@
 - ~~**String.prototype 8 个方法**：已完成（2026-04-29）~~
 - ~~**Number/Math 内建对象**：已完成（2026-04-29）~~
 - 更多内建对象（Array.sort/splice/slice 等）
-- 动态 import()（依赖 Phase 11 Promise）
+- ~~动态 import()（依赖 Phase 11 Promise）~~（已完成 2026-05-13）
 - Top-Level Await
 
 ## 3. 进入前提

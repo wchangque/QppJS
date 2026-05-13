@@ -240,6 +240,11 @@ std::string dump_expr(const ExprNode& node, int indent) {
                                result += dump_stmt(s, indent + 2);
                            }
                        },
+                       [&](const ImportCallExpression& ic) {
+                           result = prefix + "ImportCallExpression\n";
+                           result += ind(indent + 1) + "specifier:\n";
+                           result += dump_expr(*ic.specifier, indent + 2);
+                       },
                },
                node.v);
 

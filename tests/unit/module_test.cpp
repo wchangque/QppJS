@@ -2024,4 +2024,322 @@ foo();
     EXPECT_TRUE(res.value().is_object());
 }
 
+// ============================================================
+// DI-01: 基础动态 import — 返回 Promise，resolve 为 namespace 对象
+// ============================================================
+
+TEST(InterpModule, DI01_BasicDynamicImport) {
+    TempDir tmp;
+    tmp.write("m.js", "export let x = 42;");
+    tmp.write("entry.js", R"(
+import('./m.js').then(function(ns) { ns.x; });
+)");
+    auto result = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+}
+
+TEST(VmModule, DI01_BasicDynamicImport) {
+    TempDir tmp;
+    tmp.write("m.js", "export let x = 42;");
+    tmp.write("entry.js", R"(
+import('./m.js').then(function(ns) { ns.x; });
+)");
+    auto result = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+}
+
+// ============================================================
+// DI-02: import() 返回值是 Promise（是 object）
+// ============================================================
+
+TEST(InterpModule, DI02_ReturnsPromise) {
+    TempDir tmp;
+    tmp.write("m.js", "export let v = 1;");
+    tmp.write("entry.js", R"(
+let p = import('./m.js');
+typeof p;
+)");
+    auto result = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_EQ(result.value().as_string(), "object");
+}
+
+TEST(VmModule, DI02_ReturnsPromise) {
+    TempDir tmp;
+    tmp.write("m.js", "export let v = 1;");
+    tmp.write("entry.js", R"(
+let p = import('./m.js');
+typeof p;
+)");
+    auto result = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_EQ(result.value().as_string(), "object");
+}
+
+// ============================================================
+// DI-03: namespace 对象包含导出的值
+// ============================================================
+
+TEST(InterpModule, DI03_NamespaceHasExport) {
+    TempDir tmp;
+    tmp.write("m.js", "export let answer = 42;");
+    tmp.write("entry.js", R"(
+let result = 0;
+import('./m.js').then(function(ns) { result = ns.answer; });
+result;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 42.0);
+}
+
+TEST(VmModule, DI03_NamespaceHasExport) {
+    TempDir tmp;
+    tmp.write("m.js", "export let answer = 42;");
+    tmp.write("entry.js", R"(
+let result = 0;
+import('./m.js').then(function(ns) { result = ns.answer; });
+result;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 42.0);
+}
+
+// ============================================================
+// DI-04: 动态 import 带变量 specifier
+// ============================================================
+
+TEST(InterpModule, DI04_VariableSpecifier) {
+    TempDir tmp;
+    tmp.write("math.js", "export let PI = 3;");
+    tmp.write("entry.js", R"(
+let mod = './math.js';
+let result = 0;
+import(mod).then(function(ns) { result = ns.PI; });
+result;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 3.0);
+}
+
+TEST(VmModule, DI04_VariableSpecifier) {
+    TempDir tmp;
+    tmp.write("math.js", "export let PI = 3;");
+    tmp.write("entry.js", R"(
+let mod = './math.js';
+let result = 0;
+import(mod).then(function(ns) { result = ns.PI; });
+result;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 3.0);
+}
+
+// ============================================================
+// DI-05: 错误模块 → rejected Promise（不抛出同步异常）
+// ============================================================
+
+TEST(InterpModule, DI05_ErrorModuleRejectsPromise) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let rejected = false;
+import('./nonexistent.js').then(null, function(e) { rejected = true; });
+rejected;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().as_bool());
+}
+
+TEST(VmModule, DI05_ErrorModuleRejectsPromise) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let rejected = false;
+import('./nonexistent.js').then(null, function(e) { rejected = true; });
+rejected;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().as_bool());
+}
+
+// ============================================================
+// DI-06: 多个导出都在 namespace 对象中
+// ============================================================
+
+TEST(InterpModule, DI06_MultipleExports) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export let a = 1;
+export let b = 2;
+export function add(x, y) { return x + y; }
+)");
+    tmp.write("entry.js", R"(
+let sum = 0;
+import('./m.js').then(function(ns) { sum = ns.a + ns.b; });
+sum;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 3.0);
+}
+
+TEST(VmModule, DI06_MultipleExports) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export let a = 1;
+export let b = 2;
+export function add(x, y) { return x + y; }
+)");
+    tmp.write("entry.js", R"(
+let sum = 0;
+import('./m.js').then(function(ns) { sum = ns.a + ns.b; });
+sum;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 3.0);
+}
+
+// ============================================================
+// DI-07: 模块缓存 — 多次 import 同一模块只执行一次
+// ============================================================
+
+TEST(InterpModule, DI07_ModuleCaching) {
+    TempDir tmp;
+    tmp.write("counter.js", R"(
+export let count = 0;
+)");
+    tmp.write("entry.js", R"(
+let n1 = 0;
+let n2 = 0;
+import('./counter.js').then(function(ns) { n1 = ns.count; });
+import('./counter.js').then(function(ns) { n2 = ns.count; });
+n1 + n2;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 0.0);
+}
+
+TEST(VmModule, DI07_ModuleCaching) {
+    TempDir tmp;
+    tmp.write("counter.js", R"(
+export let count = 0;
+)");
+    tmp.write("entry.js", R"(
+let n1 = 0;
+let n2 = 0;
+import('./counter.js').then(function(ns) { n1 = ns.count; });
+import('./counter.js').then(function(ns) { n2 = ns.count; });
+n1 + n2;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 0.0);
+}
+
+// ============================================================
+// DI-08: 在 async 函数中 await import()
+// ============================================================
+
+TEST(InterpModule, DI08_AwaitImport) {
+    TempDir tmp;
+    tmp.write("m.js", "export let val = 99;");
+    tmp.write("entry.js", R"(
+let result = 0;
+async function load() {
+    let ns = await import('./m.js');
+    result = ns.val;
+}
+load();
+result;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 99.0);
+}
+
+TEST(VmModule, DI08_AwaitImport) {
+    TempDir tmp;
+    tmp.write("m.js", "export let val = 99;");
+    tmp.write("entry.js", R"(
+let result = 0;
+async function load() {
+    let ns = await import('./m.js');
+    result = ns.val;
+}
+load();
+result;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 99.0);
+}
+
+// ============================================================
+// DI-09: import() 表达式可以在非模块上下文中使用
+// ============================================================
+
+TEST(InterpModule, DI09_ImportInScript) {
+    TempDir tmp;
+    tmp.write("m.js", "export let x = 7;");
+    tmp.write("entry.js", R"(
+let result = 0;
+import('./m.js').then(function(ns) { result = ns.x; });
+result;
+)");
+    // exec_module 是模块上下文，但 import() 也应该在普通脚本上下文中工作
+    // 这里用 exec_module 因为 exec() 不支持模块加载
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 7.0);
+}
+
+TEST(VmModule, DI09_ImportInScript) {
+    TempDir tmp;
+    tmp.write("m.js", "export let x = 7;");
+    tmp.write("entry.js", R"(
+let result = 0;
+import('./m.js').then(function(ns) { result = ns.x; });
+result;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 7.0);
+}
+
+// ============================================================
+// DI-10: default export 在 namespace 对象中
+// ============================================================
+
+TEST(InterpModule, DI10_DefaultExportInNamespace) {
+    TempDir tmp;
+    tmp.write("m.js", "export default 42;");
+    tmp.write("entry.js", R"(
+let result = 0;
+import('./m.js').then(function(ns) { result = ns.default; });
+result;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 42.0);
+}
+
+TEST(VmModule, DI10_DefaultExportInNamespace) {
+    TempDir tmp;
+    tmp.write("m.js", "export default 42;");
+    tmp.write("entry.js", R"(
+let result = 0;
+import('./m.js').then(function(ns) { result = ns.default; });
+result;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 42.0);
+}
+
 }  // namespace

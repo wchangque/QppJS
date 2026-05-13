@@ -73,6 +73,7 @@ private:
     EvalResult eval_array_expr(const ArrayExpression& expr);
     EvalResult eval_async_function_expr(const AsyncFunctionExpression& expr);
     EvalResult eval_await_expr(const AwaitExpression& expr);
+    EvalResult eval_import_call(const ImportCallExpression& expr);
 
     // Type conversions (static)
     static bool to_boolean(const Value& v);
