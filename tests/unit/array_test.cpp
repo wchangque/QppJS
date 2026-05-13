@@ -2572,4 +2572,474 @@ TEST(VMArray, IndexOfFromIndexSpacedString) {
     EXPECT_DOUBLE_EQ(v.as_number(), 1.0);
 }
 
+// ============================================================
+// Array.prototype.slice — Interpreter
+// ============================================================
+
+// A-172 Interp: slice() with no args returns a copy
+TEST(InterpArray, SliceNoArgs) {
+    auto v = interp_ok("var a=[1,2,3]; var b=a.slice(); b[0]=99; a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-173 Interp: slice(1) returns from index 1 to end
+TEST(InterpArray, SliceFromOne) {
+    auto v = interp_ok("[1,2,3].slice(1).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-174 Interp: slice(1,2) returns one element
+TEST(InterpArray, SliceOneToTwo) {
+    auto v = interp_ok("[10,20,30].slice(1,2)[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 20.0);
+}
+
+// A-175 Interp: slice(-1) returns last element
+TEST(InterpArray, SliceNegOne) {
+    auto v = interp_ok("[1,2,3].slice(-1)[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-176 Interp: slice(-2,-1) returns second to last
+TEST(InterpArray, SliceNegTwoNegOne) {
+    auto v = interp_ok("[1,2,3].slice(-2,-1)[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-177 Interp: slice(0,0) returns empty array
+TEST(InterpArray, SliceZeroZero) {
+    auto v = interp_ok("[1,2,3].slice(0,0).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-178 Interp: slice on empty array returns empty array
+TEST(InterpArray, SliceEmptyArray) {
+    auto v = interp_ok("[].slice().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-179 Interp: slice preserves length (dense array)
+TEST(InterpArray, SliceNoHoles) {
+    // Dense array: slice copies all elements, length correct
+    auto v = interp_ok("[1,2,3].slice().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-180 Interp: slice start > length returns empty
+TEST(InterpArray, SliceStartBeyondLength) {
+    auto v = interp_ok("[1,2,3].slice(10).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-181 Interp: slice end < start returns empty
+TEST(InterpArray, SliceEndBeforeStart) {
+    auto v = interp_ok("[1,2,3].slice(2,1).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// ============================================================
+// Array.prototype.slice — VM
+// ============================================================
+
+// A-172b VM: slice() with no args returns a copy
+TEST(VMArray, SliceNoArgs) {
+    auto v = vm_ok("var a=[1,2,3]; var b=a.slice(); b[0]=99; a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-173b VM: slice(1) returns from index 1 to end
+TEST(VMArray, SliceFromOne) {
+    auto v = vm_ok("[1,2,3].slice(1).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-174b VM: slice(1,2) returns one element
+TEST(VMArray, SliceOneToTwo) {
+    auto v = vm_ok("[10,20,30].slice(1,2)[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 20.0);
+}
+
+// A-175b VM: slice(-1) returns last element
+TEST(VMArray, SliceNegOne) {
+    auto v = vm_ok("[1,2,3].slice(-1)[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-176b VM: slice(-2,-1) returns second to last
+TEST(VMArray, SliceNegTwoNegOne) {
+    auto v = vm_ok("[1,2,3].slice(-2,-1)[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-177b VM: slice(0,0) returns empty array
+TEST(VMArray, SliceZeroZero) {
+    auto v = vm_ok("[1,2,3].slice(0,0).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-178b VM: slice on empty array returns empty array
+TEST(VMArray, SliceEmptyArray) {
+    auto v = vm_ok("[].slice().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-180b VM: slice start > length returns empty
+TEST(VMArray, SliceStartBeyondLength) {
+    auto v = vm_ok("[1,2,3].slice(10).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-181b VM: slice end < start returns empty
+TEST(VMArray, SliceEndBeforeStart) {
+    auto v = vm_ok("[1,2,3].slice(2,1).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// ============================================================
+// Array.prototype.splice — Interpreter
+// ============================================================
+
+// A-182 Interp: splice(1,1) removes one element, returns deleted
+TEST(InterpArray, SpliceDeleteOne) {
+    auto v = interp_ok("var a=[1,2,3]; var d=a.splice(1,1); d[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-183 Interp: splice modifies original array length
+TEST(InterpArray, SpliceOriginalLength) {
+    auto v = interp_ok("var a=[1,2,3]; a.splice(1,1); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-184 Interp: splice(1,0,'x') inserts without deleting
+TEST(InterpArray, SpliceInsert) {
+    auto v = interp_ok("var a=[1,2,3]; a.splice(1,0,'x'); a[1]");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "x");
+}
+
+// A-185 Interp: splice insert increases length
+TEST(InterpArray, SpliceInsertLength) {
+    auto v = interp_ok("var a=[1,2,3]; a.splice(1,0,'x'); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
+// A-186 Interp: splice(0) removes all from start
+TEST(InterpArray, SpliceFromZero) {
+    auto v = interp_ok("var a=[1,2,3]; var d=a.splice(0); d.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-187 Interp: splice(0) leaves original empty
+TEST(InterpArray, SpliceFromZeroOrigEmpty) {
+    auto v = interp_ok("var a=[1,2,3]; a.splice(0); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-188 Interp: splice with negative start
+TEST(InterpArray, SpliceNegStart) {
+    auto v = interp_ok("var a=[1,2,3,4]; var d=a.splice(-2,1); d[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-189 Interp: splice(1,1,'a','b') replace and insert
+TEST(InterpArray, SpliceReplaceAndInsert) {
+    auto v = interp_ok("var a=[1,2,3]; a.splice(1,1,'a','b'); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
+// A-190 Interp: splice(1,1,'a','b') check elements
+TEST(InterpArray, SpliceReplaceAndInsertElements) {
+    auto v = interp_ok("var a=[1,2,3]; a.splice(1,1,'a','b'); a[1]+a[2]");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "ab");
+}
+
+// A-191 Interp: splice with deleteCount=0 returns empty deleted array
+TEST(InterpArray, SpliceDeleteZero) {
+    auto v = interp_ok("var a=[1,2,3]; a.splice(1,0).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-192 Interp: splice with deleteCount > remaining clamps
+TEST(InterpArray, SpliceDeleteCountClamp) {
+    auto v = interp_ok("var a=[1,2,3]; var d=a.splice(1,100); d.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// ============================================================
+// Array.prototype.splice — VM
+// ============================================================
+
+// A-182b VM: splice(1,1) removes one element, returns deleted
+TEST(VMArray, SpliceDeleteOne) {
+    auto v = vm_ok("var a=[1,2,3]; var d=a.splice(1,1); d[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-183b VM: splice modifies original array length
+TEST(VMArray, SpliceOriginalLength) {
+    auto v = vm_ok("var a=[1,2,3]; a.splice(1,1); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-184b VM: splice(1,0,'x') inserts without deleting
+TEST(VMArray, SpliceInsert) {
+    auto v = vm_ok("var a=[1,2,3]; a.splice(1,0,'x'); a[1]");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "x");
+}
+
+// A-185b VM: splice insert increases length
+TEST(VMArray, SpliceInsertLength) {
+    auto v = vm_ok("var a=[1,2,3]; a.splice(1,0,'x'); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
+// A-186b VM: splice(0) removes all from start
+TEST(VMArray, SpliceFromZero) {
+    auto v = vm_ok("var a=[1,2,3]; var d=a.splice(0); d.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-187b VM: splice(0) leaves original empty
+TEST(VMArray, SpliceFromZeroOrigEmpty) {
+    auto v = vm_ok("var a=[1,2,3]; a.splice(0); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-188b VM: splice with negative start
+TEST(VMArray, SpliceNegStart) {
+    auto v = vm_ok("var a=[1,2,3,4]; var d=a.splice(-2,1); d[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-189b VM: splice(1,1,'a','b') replace and insert
+TEST(VMArray, SpliceReplaceAndInsert) {
+    auto v = vm_ok("var a=[1,2,3]; a.splice(1,1,'a','b'); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
+// A-190b VM: splice(1,1,'a','b') check elements
+TEST(VMArray, SpliceReplaceAndInsertElements) {
+    auto v = vm_ok("var a=[1,2,3]; a.splice(1,1,'a','b'); a[1]+a[2]");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "ab");
+}
+
+// A-191b VM: splice with deleteCount=0 returns empty deleted array
+TEST(VMArray, SpliceDeleteZero) {
+    auto v = vm_ok("var a=[1,2,3]; a.splice(1,0).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-192b VM: splice with deleteCount > remaining clamps
+TEST(VMArray, SpliceDeleteCountClamp) {
+    auto v = vm_ok("var a=[1,2,3]; var d=a.splice(1,100); d.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// ============================================================
+// Array.prototype.sort — Interpreter
+// ============================================================
+
+// A-193 Interp: sort numbers with default comparator (string sort)
+TEST(InterpArray, SortDefaultNumbers) {
+    // Default sort is lexicographic: [10,9,1] -> [1,10,9]
+    auto v = interp_ok("[10,9,1].sort()[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-194 Interp: sort strings lexicographically
+TEST(InterpArray, SortStrings) {
+    auto v = interp_ok("['banana','apple','cherry'].sort()[0]");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "apple");
+}
+
+// A-195 Interp: sort with numeric comparator
+TEST(InterpArray, SortNumericComparator) {
+    auto v = interp_ok("[10,9,1].sort(function(a,b){ return a-b; })[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-196 Interp: sort with numeric comparator descending
+TEST(InterpArray, SortNumericComparatorDesc) {
+    auto v = interp_ok("[1,9,10].sort(function(a,b){ return b-a; })[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 10.0);
+}
+
+// A-197 Interp: sort modifies original array
+TEST(InterpArray, SortModifiesOriginal) {
+    auto v = interp_ok("var a=[3,1,2]; a.sort(function(a,b){return a-b;}); a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-198 Interp: sort returns same array
+TEST(InterpArray, SortReturnsSameArray) {
+    auto v = interp_ok("var a=[3,1,2]; a.sort(function(a,b){return a-b;}) === a");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-199 Interp: sort empty array
+TEST(InterpArray, SortEmptyArray) {
+    auto v = interp_ok("[].sort().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-200 Interp: sort single element
+TEST(InterpArray, SortSingleElement) {
+    auto v = interp_ok("[42].sort()[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 42.0);
+}
+
+// A-201 Interp: sort is stable — equal elements preserve relative order
+TEST(InterpArray, SortStable) {
+    // Sort objects by key, equal keys preserve original order
+    auto v = interp_ok(
+        "var a=[{k:1,i:0},{k:0,i:1},{k:0,i:2},{k:1,i:3}];"
+        "a.sort(function(x,y){return x.k-y.k;});"
+        "a[0].i === 1 && a[1].i === 2");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-202 Interp: sort dense array ascending
+TEST(InterpArray, SortHolesToEnd) {
+    auto v = interp_ok("var a=[3,1,2]; a.sort(function(x,y){return x-y;}); a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-203 Interp: sort with non-function throws TypeError
+TEST(InterpArray, SortNonFunctionThrows) {
+    EXPECT_TRUE(interp_err("[1,2,3].sort(42)"));
+}
+
+// ============================================================
+// Array.prototype.sort — VM
+// ============================================================
+
+// A-193b VM: sort numbers with default comparator (string sort)
+TEST(VMArray, SortDefaultNumbers) {
+    auto v = vm_ok("[10,9,1].sort()[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-194b VM: sort strings lexicographically
+TEST(VMArray, SortStrings) {
+    auto v = vm_ok("['banana','apple','cherry'].sort()[0]");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "apple");
+}
+
+// A-195b VM: sort with numeric comparator
+TEST(VMArray, SortNumericComparator) {
+    auto v = vm_ok("[10,9,1].sort(function(a,b){ return a-b; })[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-196b VM: sort with numeric comparator descending
+TEST(VMArray, SortNumericComparatorDesc) {
+    auto v = vm_ok("[1,9,10].sort(function(a,b){ return b-a; })[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 10.0);
+}
+
+// A-197b VM: sort modifies original array
+TEST(VMArray, SortModifiesOriginal) {
+    auto v = vm_ok("var a=[3,1,2]; a.sort(function(a,b){return a-b;}); a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-198b VM: sort returns same array
+TEST(VMArray, SortReturnsSameArray) {
+    auto v = vm_ok("var a=[3,1,2]; a.sort(function(a,b){return a-b;}) === a");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-199b VM: sort empty array
+TEST(VMArray, SortEmptyArray) {
+    auto v = vm_ok("[].sort().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-200b VM: sort single element
+TEST(VMArray, SortSingleElement) {
+    auto v = vm_ok("[42].sort()[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 42.0);
+}
+
+// A-201b VM: sort is stable — equal elements preserve relative order
+TEST(VMArray, SortStable) {
+    auto v = vm_ok(
+        "var a=[{k:1,i:0},{k:0,i:1},{k:0,i:2},{k:1,i:3}];"
+        "a.sort(function(x,y){return x.k-y.k;});"
+        "a[0].i === 1 && a[1].i === 2");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-202b VM: sort dense array ascending
+TEST(VMArray, SortHolesToEnd) {
+    auto v = vm_ok("var a=[3,1,2]; a.sort(function(x,y){return x-y;}); a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-203b VM: sort with non-function throws TypeError
+TEST(VMArray, SortNonFunctionThrows) {
+    EXPECT_TRUE(vm_err("[1,2,3].sort(42)"));
+}
+
 }  // namespace
