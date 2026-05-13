@@ -867,6 +867,192 @@ void Interpreter::init_runtime() {
     });
     array_prototype_->set_property("includes", Value::object(ObjectPtr(includes_fn)));
 
+    // Array.prototype.slice
+    auto slice_fn = RcPtr<JSFunction>::make();
+    slice_fn->set_name(std::string("slice"));
+    slice_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError, "slice called on non-array");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        int64_t len = static_cast<int64_t>(arr->array_length_);
+        double start_d = args.size() >= 1 && !args[0].is_undefined() ? to_number_double(args[0]) : 0.0;
+        if (std::isnan(start_d)) start_d = 0.0;
+        start_d = std::trunc(start_d);
+        int64_t start = start_d < 0.0 ? std::max(len + static_cast<int64_t>(start_d), int64_t{0})
+                                       : std::min(static_cast<int64_t>(start_d), len);
+        double end_d = args.size() >= 2 && !args[1].is_undefined() ? to_number_double(args[1])
+                                                                    : static_cast<double>(len);
+        if (std::isnan(end_d)) end_d = 0.0;
+        end_d = std::trunc(end_d);
+        int64_t end = end_d < 0.0 ? std::max(len + static_cast<int64_t>(end_d), int64_t{0})
+                                   : std::min(static_cast<int64_t>(end_d), len);
+        int64_t count = std::max(end - start, int64_t{0});
+        auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(result.get());
+        result->set_proto(array_prototype_);
+        uint32_t n = 0;
+        for (int64_t k = start; k < start + count; k++) {
+            auto it = arr->elements_.find(static_cast<uint32_t>(k));
+            if (it != arr->elements_.end()) {
+                result->elements_[n] = it->second;
+            }
+            n++;
+        }
+        result->array_length_ = static_cast<uint32_t>(count);
+        return EvalResult::ok(Value::object(ObjectPtr(result)));
+    });
+    array_prototype_->set_property("slice", Value::object(ObjectPtr(slice_fn)));
+
+    // Array.prototype.splice
+    auto splice_fn = RcPtr<JSFunction>::make();
+    splice_fn->set_name(std::string("splice"));
+    splice_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError, "splice called on non-array");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        int64_t len = static_cast<int64_t>(arr->array_length_);
+        int64_t start = 0;
+        if (!args.empty()) {
+            double s = to_number_double(args[0]);
+            if (std::isnan(s)) s = 0.0;
+            s = std::trunc(s);
+            if (std::isinf(s) && s < 0.0) {
+                start = 0;
+            } else if (std::isinf(s)) {
+                start = len;
+            } else if (s < 0.0) {
+                start = std::max(len + static_cast<int64_t>(s), int64_t{0});
+            } else {
+                start = std::min(static_cast<int64_t>(s), len);
+            }
+        }
+        int64_t del_count = 0;
+        uint32_t item_count = 0;
+        if (args.empty()) {
+            del_count = 0;
+        } else if (args.size() == 1) {
+            del_count = len - start;
+        } else {
+            item_count = static_cast<uint32_t>(args.size() - 2);
+            double dc = to_number_double(args[1]);
+            if (std::isnan(dc)) dc = 0.0;
+            dc = std::trunc(dc);
+            del_count = static_cast<int64_t>(
+                std::max(0.0, std::min(dc, static_cast<double>(len - start))));
+        }
+        auto deleted = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(deleted.get());
+        deleted->set_proto(array_prototype_);
+        for (int64_t k = 0; k < del_count; k++) {
+            auto it = arr->elements_.find(static_cast<uint32_t>(start + k));
+            if (it != arr->elements_.end()) {
+                deleted->elements_[static_cast<uint32_t>(k)] = it->second;
+            }
+        }
+        deleted->array_length_ = static_cast<uint32_t>(del_count);
+        int64_t new_len = len - del_count + static_cast<int64_t>(item_count);
+        if (item_count < static_cast<uint32_t>(del_count)) {
+            int64_t shift = del_count - static_cast<int64_t>(item_count);
+            for (int64_t k = start + static_cast<int64_t>(item_count); k < new_len; k++) {
+                auto it = arr->elements_.find(static_cast<uint32_t>(k + shift));
+                if (it != arr->elements_.end()) {
+                    arr->elements_[static_cast<uint32_t>(k)] = std::move(it->second);
+                    arr->elements_.erase(it);
+                } else {
+                    arr->elements_.erase(static_cast<uint32_t>(k));
+                }
+            }
+            for (int64_t k = new_len; k < len; k++) {
+                arr->elements_.erase(static_cast<uint32_t>(k));
+            }
+        } else if (item_count > static_cast<uint32_t>(del_count)) {
+            int64_t shift = static_cast<int64_t>(item_count) - del_count;
+            for (int64_t k = len - 1; k >= start + del_count; k--) {
+                auto it = arr->elements_.find(static_cast<uint32_t>(k));
+                if (it != arr->elements_.end()) {
+                    arr->elements_[static_cast<uint32_t>(k + shift)] = std::move(it->second);
+                    arr->elements_.erase(it);
+                } else {
+                    arr->elements_.erase(static_cast<uint32_t>(k + shift));
+                }
+            }
+        }
+        for (uint32_t i = 0; i < item_count; i++) {
+            arr->elements_[static_cast<uint32_t>(start) + i] = args[2 + i];
+        }
+        arr->array_length_ = static_cast<uint32_t>(new_len);
+        return EvalResult::ok(Value::object(ObjectPtr(deleted)));
+    });
+    array_prototype_->set_property("splice", Value::object(ObjectPtr(splice_fn)));
+
+    // Array.prototype.sort
+    auto sort_fn = RcPtr<JSFunction>::make();
+    sort_fn->set_name(std::string("sort"));
+    sort_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError, "sort called on non-array");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        bool has_cmp = !args.empty() && !args[0].is_undefined();
+        if (has_cmp) {
+            if (!args[0].is_object() || args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                  "compareFn must be a function");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        uint32_t len = arr->array_length_;
+        struct Slot {
+            Value val;
+            uint32_t pos;
+        };
+        std::vector<Slot> slots;
+        slots.reserve(arr->elements_.size());
+        for (uint32_t i = 0; i < len; i++) {
+            auto it = arr->elements_.find(i);
+            if (it != arr->elements_.end()) {
+                slots.push_back({it->second, i});
+            }
+        }
+        Value cmp_fn = has_cmp ? args[0] : Value::undefined();
+        EvalResult sort_err = EvalResult::ok(Value::undefined());
+        bool had_error = false;
+        std::stable_sort(slots.begin(), slots.end(), [&](const Slot& a, const Slot& b) -> bool {
+            if (had_error) return false;
+            if (has_cmp) {
+                Value call_args[2] = {a.val, b.val};
+                auto res = call_function_val(cmp_fn, Value::undefined(), {call_args, 2});
+                if (!res.is_ok()) {
+                    sort_err = res;
+                    had_error = true;
+                    return false;
+                }
+                double cmp = to_number_double(res.value());
+                if (std::isnan(cmp)) cmp = 0.0;
+                return cmp < 0.0;
+            } else {
+                std::string sa = Interpreter::to_string_val(a.val);
+                std::string sb = Interpreter::to_string_val(b.val);
+                return sa < sb;
+            }
+        });
+        if (had_error) return sort_err;
+        arr->elements_.clear();
+        for (uint32_t i = 0; i < static_cast<uint32_t>(slots.size()); i++) {
+            arr->elements_[i] = std::move(slots[i].val);
+        }
+        return EvalResult::ok(this_val);
+    });
+    array_prototype_->set_property("sort", Value::object(ObjectPtr(sort_fn)));
+
     // Build Object.keys
     auto keys_fn = RcPtr<JSFunction>::make();
     keys_fn->set_name(std::string("keys"));
