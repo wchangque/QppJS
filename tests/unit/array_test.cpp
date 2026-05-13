@@ -3042,4 +3042,918 @@ TEST(VMArray, SortNonFunctionThrows) {
     EXPECT_TRUE(vm_err("[1,2,3].sort(42)"));
 }
 
+// ============================================================
+// Array.prototype.join
+// ============================================================
+
+// A-204 Interp: join with default separator
+TEST(InterpArray, JoinDefault) {
+    auto v = interp_ok("[1,2,3].join()");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1,2,3");
+}
+
+// A-205 Interp: join with custom separator
+TEST(InterpArray, JoinCustomSep) {
+    auto v = interp_ok("[1,2,3].join('-')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1-2-3");
+}
+
+// A-206 Interp: join empty array returns empty string
+TEST(InterpArray, JoinEmpty) {
+    auto v = interp_ok("[].join()");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "");
+}
+
+// A-207 Interp: join null/undefined elements become empty string
+TEST(InterpArray, JoinNullUndefined) {
+    auto v = interp_ok("[1,null,undefined,2].join(',')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1,,,2");
+}
+
+// A-208 Interp: join single element no separator
+TEST(InterpArray, JoinSingle) {
+    auto v = interp_ok("[42].join('-')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "42");
+}
+
+// A-209 Interp: join with empty string separator
+TEST(InterpArray, JoinEmptySep) {
+    auto v = interp_ok("['a','b','c'].join('')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "abc");
+}
+
+// A-204b VM: join with default separator
+TEST(VMArray, JoinDefault) {
+    auto v = vm_ok("[1,2,3].join()");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1,2,3");
+}
+
+// A-205b VM: join with custom separator
+TEST(VMArray, JoinCustomSep) {
+    auto v = vm_ok("[1,2,3].join('-')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1-2-3");
+}
+
+// A-206b VM: join empty array returns empty string
+TEST(VMArray, JoinEmpty) {
+    auto v = vm_ok("[].join()");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "");
+}
+
+// A-207b VM: join null/undefined elements become empty string
+TEST(VMArray, JoinNullUndefined) {
+    auto v = vm_ok("[1,null,undefined,2].join(',')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1,,,2");
+}
+
+// A-208b VM: join single element no separator
+TEST(VMArray, JoinSingle) {
+    auto v = vm_ok("[42].join('-')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "42");
+}
+
+// A-209b VM: join with empty string separator
+TEST(VMArray, JoinEmptySep) {
+    auto v = vm_ok("['a','b','c'].join('')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "abc");
+}
+
+// ============================================================
+// Array.prototype.reverse
+// ============================================================
+
+// A-210 Interp: reverse basic array
+TEST(InterpArray, ReverseBasic) {
+    auto v = interp_ok("var a=[1,2,3]; a.reverse(); a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-211 Interp: reverse returns same array
+TEST(InterpArray, ReverseReturnsSameArray) {
+    auto v = interp_ok("var a=[1,2,3]; a.reverse() === a");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-212 Interp: reverse modifies in place
+TEST(InterpArray, ReverseInPlace) {
+    auto v = interp_ok("var a=[1,2,3]; a.reverse(); a[2]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-213 Interp: reverse empty array
+TEST(InterpArray, ReverseEmpty) {
+    auto v = interp_ok("[].reverse().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-214 Interp: reverse single element
+TEST(InterpArray, ReverseSingle) {
+    auto v = interp_ok("[42].reverse()[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 42.0);
+}
+
+// A-210b VM: reverse basic array
+TEST(VMArray, ReverseBasic) {
+    auto v = vm_ok("var a=[1,2,3]; a.reverse(); a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-211b VM: reverse returns same array
+TEST(VMArray, ReverseReturnsSameArray) {
+    auto v = vm_ok("var a=[1,2,3]; a.reverse() === a");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-212b VM: reverse modifies in place
+TEST(VMArray, ReverseInPlace) {
+    auto v = vm_ok("var a=[1,2,3]; a.reverse(); a[2]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-213b VM: reverse empty array
+TEST(VMArray, ReverseEmpty) {
+    auto v = vm_ok("[].reverse().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-214b VM: reverse single element
+TEST(VMArray, ReverseSingle) {
+    auto v = vm_ok("[42].reverse()[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 42.0);
+}
+
+// ============================================================
+// Array.prototype.flat
+// ============================================================
+
+// A-215 Interp: flat default depth=1
+TEST(InterpArray, FlatDefault) {
+    auto v = interp_ok("[[1,2],[3,4]].flat()[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-216 Interp: flat depth=1 does not flatten nested 2-level
+TEST(InterpArray, FlatDepth1) {
+    // [[[1,2]]].flat() => [[1,2]], so result[0] is an array object (not a number)
+    auto v = interp_ok("[[[1,2]]].flat()[0][0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-217 Interp: flat depth=2 flattens 2-level
+TEST(InterpArray, FlatDepth2) {
+    auto v = interp_ok("[[[1,2]]].flat(2)[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-218 Interp: flat result length
+TEST(InterpArray, FlatLength) {
+    auto v = interp_ok("[[1,2],[3]].flat().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-219 Interp: flat depth=0 returns shallow copy
+TEST(InterpArray, FlatDepth0) {
+    auto v = interp_ok("[[1,2]].flat(0).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-220 Interp: flat Infinity depth
+TEST(InterpArray, FlatInfinity) {
+    auto v = interp_ok("[1,[2,[3,[4]]]].flat(Infinity)[3]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
+// A-215b VM: flat default depth=1
+TEST(VMArray, FlatDefault) {
+    auto v = vm_ok("[[1,2],[3,4]].flat()[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-216b VM: flat depth=1 does not flatten nested 2-level
+TEST(VMArray, FlatDepth1) {
+    // [[[1,2]]].flat() => [[1,2]], so result[0] is an array object (not a number)
+    auto v = vm_ok("[[[1,2]]].flat()[0][0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-217b VM: flat depth=2 flattens 2-level
+TEST(VMArray, FlatDepth2) {
+    auto v = vm_ok("[[[1,2]]].flat(2)[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-218b VM: flat result length
+TEST(VMArray, FlatLength) {
+    auto v = vm_ok("[[1,2],[3]].flat().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-219b VM: flat depth=0 returns shallow copy
+TEST(VMArray, FlatDepth0) {
+    auto v = vm_ok("[[1,2]].flat(0).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-220b VM: flat Infinity depth
+TEST(VMArray, FlatInfinity) {
+    auto v = vm_ok("[1,[2,[3,[4]]]].flat(Infinity)[3]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
+// ============================================================
+// Array.prototype.flatMap
+// ============================================================
+
+// A-221 Interp: flatMap basic
+TEST(InterpArray, FlatMapBasic) {
+    auto v = interp_ok("[1,2,3].flatMap(function(x){return [x,x*2]})[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-222 Interp: flatMap result length
+TEST(InterpArray, FlatMapLength) {
+    auto v = interp_ok("[1,2,3].flatMap(function(x){return [x,x*2]}).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 6.0);
+}
+
+// A-223 Interp: flatMap non-array return treated as single element
+TEST(InterpArray, FlatMapScalar) {
+    auto v = interp_ok("[1,2,3].flatMap(function(x){return x*2}).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-224 Interp: flatMap non-function throws TypeError
+TEST(InterpArray, FlatMapNonFunction) {
+    EXPECT_TRUE(interp_err("[1,2,3].flatMap(42)"));
+}
+
+// A-225 Interp: flatMap thisArg passed correctly
+TEST(InterpArray, FlatMapThisArg) {
+    auto v = interp_ok(
+        "var obj = {mul:3};"
+        "[1,2].flatMap(function(x){return [x*this.mul]}, obj).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-221b VM: flatMap basic
+TEST(VMArray, FlatMapBasic) {
+    auto v = vm_ok("[1,2,3].flatMap(function(x){return [x,x*2]})[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-222b VM: flatMap result length
+TEST(VMArray, FlatMapLength) {
+    auto v = vm_ok("[1,2,3].flatMap(function(x){return [x,x*2]}).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 6.0);
+}
+
+// A-223b VM: flatMap non-array return treated as single element
+TEST(VMArray, FlatMapScalar) {
+    auto v = vm_ok("[1,2,3].flatMap(function(x){return x*2}).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-224b VM: flatMap non-function throws TypeError
+TEST(VMArray, FlatMapNonFunction) {
+    EXPECT_TRUE(vm_err("[1,2,3].flatMap(42)"));
+}
+
+// A-225b VM: flatMap thisArg passed correctly
+TEST(VMArray, FlatMapThisArg) {
+    auto v = vm_ok(
+        "var obj = {mul:3};"
+        "[1,2].flatMap(function(x){return [x*this.mul]}, obj).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// ============================================================
+// A-226～A-265: join/reverse/flat/flatMap 边界与错误路径补测
+// Interp 侧 A-226～A-245，VM 侧 A-226b～A-245b
+// ============================================================
+
+// ------------------------------------------------------------
+// join — 边界
+// ------------------------------------------------------------
+
+// A-226 Interp: join — separator 为 undefined 时等同默认 ","
+TEST(InterpArray, JoinSepUndefined) {
+    // join(undefined) 规范：separator 为 undefined 时使用 ","
+    auto v = interp_ok("[1,2,3].join(undefined)");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1,2,3");
+}
+
+// A-227 Interp: join — hole 等同 undefined，转为空字符串
+TEST(InterpArray, JoinHoleAsEmpty) {
+    // [1,,3].join(',') → "1,,3"（hole 位置为空串）
+    auto v = interp_ok("[1,,3].join(',')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1,,3");
+}
+
+// A-228 Interp: join — 布尔值元素通过 ToString 转换
+TEST(InterpArray, JoinBoolElements) {
+    auto v = interp_ok("[true,false].join(',')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "true,false");
+}
+
+// A-229 Interp: join — 多字符分隔符
+TEST(InterpArray, JoinMultiCharSep) {
+    auto v = interp_ok("[1,2,3].join(' | ')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1 | 2 | 3");
+}
+
+// A-230 Interp: join — 单元素数组不添加分隔符
+TEST(InterpArray, JoinSingleNoSep) {
+    auto v = interp_ok("[99].join()");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "99");
+}
+
+// A-231 Interp: join — 全部 null/undefined 元素结果全为空串（仅分隔符）
+TEST(InterpArray, JoinAllNullUndefined) {
+    // [null, undefined].join(',') → ","
+    auto v = interp_ok("[null,undefined].join(',')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), ",");
+}
+
+// A-232 Interp: join — 返回值类型为 string
+TEST(InterpArray, JoinReturnType) {
+    auto v = interp_ok("[1,2].join()");
+    EXPECT_TRUE(v.is_string());
+}
+
+// A-233 Interp: join — 数值元素通过 ToString 转换（浮点数）
+TEST(InterpArray, JoinFloatElement) {
+    auto v = interp_ok("[1.5, 2.5].join('-')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1.5-2.5");
+}
+
+// ------------------------------------------------------------
+// reverse — 边界（hole 四情况）
+// ------------------------------------------------------------
+
+// A-234 Interp: reverse — 偶数长度完整互换
+TEST(InterpArray, ReverseEvenLength) {
+    // [1,2,3,4].reverse() → [4,3,2,1]
+    auto v = interp_ok("var a=[1,2,3,4]; a.reverse(); a[0] === 4 && a[3] === 1");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-235 Interp: reverse — 奇数长度中间元素不动
+TEST(InterpArray, ReverseOddMiddleUnchanged) {
+    // [1,2,3,4,5].reverse() → [5,4,3,2,1]，中间元素 a[2] 仍为 3
+    auto v = interp_ok("var a=[1,2,3,4,5]; a.reverse(); a[2]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-236 Interp: reverse — 两端均为 hole → no-op（hole 四情况：均无）
+TEST(InterpArray, ReverseBothHoleNoOp) {
+    // [,,,] length=3，reverse 后仍全为 hole，length 不变
+    auto v = interp_ok("var a=[,,,]; a.reverse(); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-237 Interp: reverse — 仅 lower 存在 → 写 upper 删 lower
+// [1,,] length=2: lower=0 有值, upper=1 是 hole → reverse 后 a[0] 是 hole, a[1] === 1
+TEST(InterpArray, ReverseLowerOnlyMovesToUpper) {
+    auto v_upper = interp_ok("var a=[1,,]; a.reverse(); a[1]");
+    EXPECT_TRUE(v_upper.is_number());
+    EXPECT_EQ(v_upper.as_number(), 1.0);
+
+    // lower 位置（原 upper）变为 hole
+    auto v_lower = interp_ok("var a=[1,,]; a.reverse(); a[0]");
+    EXPECT_TRUE(v_lower.is_undefined());
+}
+
+// A-238 Interp: reverse — 仅 upper 存在 → 写 lower 删 upper
+// [,2] length=2: lower=0 是 hole, upper=1 有值 → reverse 后 a[0]===2, a[1] 是 hole
+TEST(InterpArray, ReverseUpperOnlyMovesToLower) {
+    auto v_lower = interp_ok("var a=[,2]; a.reverse(); a[0]");
+    EXPECT_TRUE(v_lower.is_number());
+    EXPECT_EQ(v_lower.as_number(), 2.0);
+
+    auto v_upper = interp_ok("var a=[,2]; a.reverse(); a[1]");
+    EXPECT_TRUE(v_upper.is_undefined());
+}
+
+// A-239 Interp: reverse — 两端均存在 → swap
+TEST(InterpArray, ReverseBothPresentSwap) {
+    auto v = interp_ok("var a=[10,20,30]; a.reverse(); a[0] === 30 && a[2] === 10");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-240 Interp: reverse — 两次 reverse 恢复原数组
+TEST(InterpArray, ReverseDoubleRestore) {
+    auto v = interp_ok("var a=[1,2,3]; a.reverse(); a.reverse(); a[0] === 1 && a[2] === 3");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// ------------------------------------------------------------
+// flat — 边界（depth 转换、hole 移除、不修改原数组）
+// ------------------------------------------------------------
+
+// A-241 Interp: flat — depth=NaN 等同 depth=0（ToIntegerOrInfinity(NaN)=0）
+TEST(InterpArray, FlatNaNDepthEqualsZero) {
+    // depth=NaN → 0，不展开，结果长度 1（外层数组）
+    auto v = interp_ok("[[1,2]].flat(0/0).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-242 Interp: flat — depth 负数等同 depth=0（ToIntegerOrInfinity(-1)=-1，规范 clamp 到 0）
+TEST(InterpArray, FlatNegativeDepthEqualsZero) {
+    // depth=-1 → 不展开，结果长度 1
+    auto v = interp_ok("[[1,2]].flat(-1).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-243 Interp: flat — hole 在展开层被移除
+TEST(InterpArray, FlatRemovesHoles) {
+    // [1,,3].flat() → [1,3]，hole 被移除，length=2
+    auto v = interp_ok("[1,,3].flat().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-244 Interp: flat — 不修改原数组（返回新数组）
+TEST(InterpArray, FlatDoesNotModifyOriginal) {
+    auto v = interp_ok(R"(
+        var orig = [[1,2],[3,4]];
+        var result = orig.flat();
+        orig.length === 2 && result.length === 4
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-245 Interp: flat — 混合深度数组，depth=1 只展开一层
+TEST(InterpArray, FlatMixedDepth) {
+    // [1, [2, [3]]].flat() → [1, 2, [3]]，length=3，result[2] 是数组
+    auto v = interp_ok("[1,[2,[3]]].flat().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-246 Interp: flat — 空数组 flat 返回空数组
+TEST(InterpArray, FlatEmptyArray) {
+    auto v = interp_ok("[].flat().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-247 Interp: flat — 非数组元素（数字/字符串）原样保留
+TEST(InterpArray, FlatNonArrayElements) {
+    auto v = interp_ok("[1,'a',true].flat()[1]");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "a");
+}
+
+// ------------------------------------------------------------
+// flatMap — 边界（hole 跳过、callback 参数、空数组、异常传播）
+// ------------------------------------------------------------
+
+// A-248 Interp: flatMap — 空数组返回空数组
+TEST(InterpArray, FlatMapEmpty) {
+    auto v = interp_ok("[].flatMap(function(x){ return [x]; }).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-249 Interp: flatMap — 源数组 hole 跳过（不调用 callback）
+TEST(InterpArray, FlatMapSkipsHoles) {
+    // [1,,3].flatMap(x => [x]) → [1,3]，length=2（hole 跳过）
+    auto v = interp_ok("[1,,3].flatMap(function(x){ return [x]; }).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-250 Interp: flatMap — callback 接收 (element, index, array) 三个参数
+TEST(InterpArray, FlatMapCallbackArgs) {
+    // 验证 index 参数正确传递
+    auto v = interp_ok(R"(
+        var indices = [];
+        [10,20,30].flatMap(function(x, i){ indices.push(i); return [x]; });
+        indices[0] === 0 && indices[1] === 1 && indices[2] === 2
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-251 Interp: flatMap — callback 返回空数组，对应元素被消除
+TEST(InterpArray, FlatMapCallbackReturnsEmpty) {
+    // 所有 callback 返回 []，结果为空数组
+    auto v = interp_ok("[1,2,3].flatMap(function(){ return []; }).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-252 Interp: flatMap — callback 返回嵌套数组只展开一层（depth 固定为 1）
+TEST(InterpArray, FlatMapDepthFixedAt1) {
+    // callback 返回 [[x]]，只展开一层，结果元素是数组 [x]，不是数字 x
+    auto v = interp_ok("[1,2].flatMap(function(x){ return [[x]]; })[0][0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-253 Interp: flatMap — callback 抛异常传播
+TEST(InterpArray, FlatMapCallbackThrowPropagates) {
+    EXPECT_TRUE(interp_err("[1,2,3].flatMap(function(){ throw 'boom'; })"));
+}
+
+// A-254 Interp: flatMap — undefined callback throws TypeError（遍历前检查）
+TEST(InterpArray, FlatMapUndefinedCallbackThrows) {
+    EXPECT_TRUE(interp_err("[1,2,3].flatMap(undefined)"));
+}
+
+// A-255 Interp: flatMap — null callback throws TypeError
+TEST(InterpArray, FlatMapNullCallbackThrows) {
+    EXPECT_TRUE(interp_err("[1,2,3].flatMap(null)"));
+}
+
+// A-256 Interp: flatMap — 不修改原数组
+TEST(InterpArray, FlatMapDoesNotModifyOriginal) {
+    auto v = interp_ok(R"(
+        var orig = [1,2,3];
+        orig.flatMap(function(x){ return [x*2]; });
+        orig[0] === 1 && orig.length === 3
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// ============================================================
+// VM 镜像：A-226b～A-256b
+// ============================================================
+
+// A-226b VM: join — separator 为 undefined 时等同默认 ","
+TEST(VMArray, JoinSepUndefined) {
+    auto v = vm_ok("[1,2,3].join(undefined)");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1,2,3");
+}
+
+// A-227b VM: join — hole 等同 undefined，转为空字符串
+TEST(VMArray, JoinHoleAsEmpty) {
+    auto v = vm_ok("[1,,3].join(',')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1,,3");
+}
+
+// A-228b VM: join — 布尔值元素通过 ToString 转换
+TEST(VMArray, JoinBoolElements) {
+    auto v = vm_ok("[true,false].join(',')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "true,false");
+}
+
+// A-229b VM: join — 多字符分隔符
+TEST(VMArray, JoinMultiCharSep) {
+    auto v = vm_ok("[1,2,3].join(' | ')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1 | 2 | 3");
+}
+
+// A-230b VM: join — 单元素数组不添加分隔符
+TEST(VMArray, JoinSingleNoSep) {
+    auto v = vm_ok("[99].join()");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "99");
+}
+
+// A-231b VM: join — 全部 null/undefined 元素结果全为空串（仅分隔符）
+TEST(VMArray, JoinAllNullUndefined) {
+    auto v = vm_ok("[null,undefined].join(',')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), ",");
+}
+
+// A-232b VM: join — 返回值类型为 string
+TEST(VMArray, JoinReturnType) {
+    auto v = vm_ok("[1,2].join()");
+    EXPECT_TRUE(v.is_string());
+}
+
+// A-233b VM: join — 数值元素通过 ToString 转换（浮点数）
+TEST(VMArray, JoinFloatElement) {
+    auto v = vm_ok("[1.5, 2.5].join('-')");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1.5-2.5");
+}
+
+// A-234b VM: reverse — 偶数长度完整互换
+TEST(VMArray, ReverseEvenLength) {
+    auto v = vm_ok("var a=[1,2,3,4]; a.reverse(); a[0] === 4 && a[3] === 1");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-235b VM: reverse — 奇数长度中间元素不动
+TEST(VMArray, ReverseOddMiddleUnchanged) {
+    auto v = vm_ok("var a=[1,2,3,4,5]; a.reverse(); a[2]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-236b VM: reverse — 两端均为 hole → no-op
+TEST(VMArray, ReverseBothHoleNoOp) {
+    auto v = vm_ok("var a=[,,,]; a.reverse(); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-237b VM: reverse — 仅 lower 存在 → 写 upper 删 lower
+TEST(VMArray, ReverseLowerOnlyMovesToUpper) {
+    auto v_upper = vm_ok("var a=[1,,]; a.reverse(); a[1]");
+    EXPECT_TRUE(v_upper.is_number());
+    EXPECT_EQ(v_upper.as_number(), 1.0);
+
+    auto v_lower = vm_ok("var a=[1,,]; a.reverse(); a[0]");
+    EXPECT_TRUE(v_lower.is_undefined());
+}
+
+// A-238b VM: reverse — 仅 upper 存在 → 写 lower 删 upper
+TEST(VMArray, ReverseUpperOnlyMovesToLower) {
+    auto v_lower = vm_ok("var a=[,2]; a.reverse(); a[0]");
+    EXPECT_TRUE(v_lower.is_number());
+    EXPECT_EQ(v_lower.as_number(), 2.0);
+
+    auto v_upper = vm_ok("var a=[,2]; a.reverse(); a[1]");
+    EXPECT_TRUE(v_upper.is_undefined());
+}
+
+// A-239b VM: reverse — 两端均存在 → swap
+TEST(VMArray, ReverseBothPresentSwap) {
+    auto v = vm_ok("var a=[10,20,30]; a.reverse(); a[0] === 30 && a[2] === 10");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-240b VM: reverse — 两次 reverse 恢复原数组
+TEST(VMArray, ReverseDoubleRestore) {
+    auto v = vm_ok("var a=[1,2,3]; a.reverse(); a.reverse(); a[0] === 1 && a[2] === 3");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-241b VM: flat — depth=NaN 等同 depth=0
+TEST(VMArray, FlatNaNDepthEqualsZero) {
+    auto v = vm_ok("[[1,2]].flat(0/0).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-242b VM: flat — depth 负数等同 depth=0
+TEST(VMArray, FlatNegativeDepthEqualsZero) {
+    auto v = vm_ok("[[1,2]].flat(-1).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-243b VM: flat — hole 在展开层被移除
+TEST(VMArray, FlatRemovesHoles) {
+    auto v = vm_ok("[1,,3].flat().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-244b VM: flat — 不修改原数组
+TEST(VMArray, FlatDoesNotModifyOriginal) {
+    auto v = vm_ok(R"(
+        var orig = [[1,2],[3,4]];
+        var result = orig.flat();
+        orig.length === 2 && result.length === 4
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-245b VM: flat — 混合深度数组，depth=1 只展开一层
+TEST(VMArray, FlatMixedDepth) {
+    auto v = vm_ok("[1,[2,[3]]].flat().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-246b VM: flat — 空数组 flat 返回空数组
+TEST(VMArray, FlatEmptyArray) {
+    auto v = vm_ok("[].flat().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-247b VM: flat — 非数组元素原样保留
+TEST(VMArray, FlatNonArrayElements) {
+    auto v = vm_ok("[1,'a',true].flat()[1]");
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "a");
+}
+
+// A-248b VM: flatMap — 空数组返回空数组
+TEST(VMArray, FlatMapEmpty) {
+    auto v = vm_ok("[].flatMap(function(x){ return [x]; }).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-249b VM: flatMap — 源数组 hole 跳过
+TEST(VMArray, FlatMapSkipsHoles) {
+    auto v = vm_ok("[1,,3].flatMap(function(x){ return [x]; }).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-250b VM: flatMap — callback 接收 (element, index, array) 三个参数
+TEST(VMArray, FlatMapCallbackArgs) {
+    auto v = vm_ok(R"(
+        var indices = [];
+        [10,20,30].flatMap(function(x, i){ indices.push(i); return [x]; });
+        indices[0] === 0 && indices[1] === 1 && indices[2] === 2
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-251b VM: flatMap — callback 返回空数组，对应元素被消除
+TEST(VMArray, FlatMapCallbackReturnsEmpty) {
+    auto v = vm_ok("[1,2,3].flatMap(function(){ return []; }).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-252b VM: flatMap — callback 返回嵌套数组只展开一层
+TEST(VMArray, FlatMapDepthFixedAt1) {
+    auto v = vm_ok("[1,2].flatMap(function(x){ return [[x]]; })[0][0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-253b VM: flatMap — callback 抛异常传播
+TEST(VMArray, FlatMapCallbackThrowPropagates) {
+    EXPECT_TRUE(vm_err("[1,2,3].flatMap(function(){ throw 'boom'; })"));
+}
+
+// A-254b VM: flatMap — undefined callback throws TypeError
+TEST(VMArray, FlatMapUndefinedCallbackThrows) {
+    EXPECT_TRUE(vm_err("[1,2,3].flatMap(undefined)"));
+}
+
+// A-255b VM: flatMap — null callback throws TypeError
+TEST(VMArray, FlatMapNullCallbackThrows) {
+    EXPECT_TRUE(vm_err("[1,2,3].flatMap(null)"));
+}
+
+// A-256b VM: flatMap — 不修改原数组
+TEST(VMArray, FlatMapDoesNotModifyOriginal) {
+    auto v = vm_ok(R"(
+        var orig = [1,2,3];
+        orig.flatMap(function(x){ return [x*2]; });
+        orig[0] === 1 && orig.length === 3
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// ============================================================
+// 回归测试：join/reverse/flat/flatMap 与现有方法互不干扰
+// ============================================================
+
+// A-257 Interp: reverse 后 forEach 顺序正确
+TEST(InterpArray, ReverseBeforeForEach) {
+    auto v = interp_ok(R"(
+        var a = [1,2,3];
+        a.reverse();
+        var sum = 0;
+        a.forEach(function(x){ sum = sum + x; });
+        sum
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 6.0);
+}
+
+// A-258 Interp: flat 后 map 结果正确
+TEST(InterpArray, FlatThenMap) {
+    auto v = interp_ok("[[1,2],[3]].flat().map(function(x){ return x*2; })[2]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 6.0);
+}
+
+// A-259 Interp: join 与 split 对称性（无 hole）
+TEST(InterpArray, JoinSplitSymmetry) {
+    auto v = interp_ok(R"(
+        var a = [1,2,3];
+        var s = a.join('-');
+        s === '1-2-3'
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-260 Interp: flatMap 链式调用 filter
+TEST(InterpArray, FlatMapThenFilter) {
+    // flatMap 展开后 filter 偶数
+    auto v = interp_ok(R"(
+        var r = [1,2,3].flatMap(function(x){ return [x, x*2]; })
+                        .filter(function(x){ return x % 2 === 0; });
+        r.length
+    )");
+    // [1,2, 2,4, 3,6] → filter even → [2,2,4,6] length=4
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
+// A-257b VM: reverse 后 forEach 顺序正确
+TEST(VMArray, ReverseBeforeForEach) {
+    auto v = vm_ok(R"(
+        var a = [1,2,3];
+        a.reverse();
+        var sum = 0;
+        a.forEach(function(x){ sum = sum + x; });
+        sum
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 6.0);
+}
+
+// A-258b VM: flat 后 map 结果正确
+TEST(VMArray, FlatThenMap) {
+    auto v = vm_ok("[[1,2],[3]].flat().map(function(x){ return x*2; })[2]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 6.0);
+}
+
+// A-259b VM: join 与 split 对称性（无 hole）
+TEST(VMArray, JoinSplitSymmetry) {
+    auto v = vm_ok(R"(
+        var a = [1,2,3];
+        var s = a.join('-');
+        s === '1-2-3'
+    )");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-260b VM: flatMap 链式调用 filter
+TEST(VMArray, FlatMapThenFilter) {
+    auto v = vm_ok(R"(
+        var r = [1,2,3].flatMap(function(x){ return [x, x*2]; })
+                        .filter(function(x){ return x % 2 === 0; });
+        r.length
+    )");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
 }  // namespace

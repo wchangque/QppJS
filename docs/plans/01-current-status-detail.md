@@ -397,3 +397,38 @@
 - **[S1] 链式 bind name 修复**（两侧对称）：计算 `target_name` 时先查 `target_raw->get_property("name")`，若结果 is_string 则使用，否则回退到 `target_raw->name()` 字段；修复 `fn.bind(null).bind(null).name === "bound bound fn"`
 - **新增测试**：`tests/unit/function_builtin_test.cpp` 追加 10 个测试（Interp × 5 + VM × 5）：M1 × 2 + M2 × 2 + S1 × 1 各侧
 - **验证**：`coverage.sh --quiet` 1213/1213 通过，无回归
+
+## Array.prototype.join/reverse/flat/flatMap（2026-05-13）
+
+### 目标
+在 `interpreter.cpp` 和 `vm.cpp` 的 `array_prototype_` 注册区域新增 join/reverse/flat/flatMap 四个 NativeFn，Interp+VM 两侧对称实现。
+
+### 实现要点
+
+**join**：
+- 两遍扫描：第一遍累加各段长度（String 用 `sv().size()` 避免堆拷贝），`result.reserve(total)` 后第二遍追加
+- String 类型元素直接 `sv()` 取 string_view，非 String 类型走 `to_string_val`
+- null/undefined 元素输出空串
+
+**reverse**：
+- 原地交换 `elements_` 条目，hole 处理三路（both/upper-only/lower-only/both-absent）
+- 返回 `this_val`（原数组）
+
+**flat**：
+- 递归辅助 `flatten_into_array`（vm 侧加 `_vm` 后缀避免 ODR 冲突）
+- 深度硬限制 10000 防栈溢出
+- `Infinity` 深度保持为 `+Inf`，负数 depth 归零
+- 结果数组 `gc_heap_.Register` + `set_proto(array_prototype_)`
+
+**flatMap**：
+- depth=1 展开：callback 返回 kArray 则展开一层，否则直接追加
+- 非函数 callback 抛 TypeError
+- 跳过 hole（`elements_.find` 未命中则 continue）
+
+### 测试
+- 新增 44 个测试（A-204～A-225 × Interp+VM 对称，测试文件 `tests/unit/array_test.cpp`）
+- 覆盖：join 默认/自定义/空串/null-undefined/单元素/空分隔符；reverse 基本/原地/返回值/空/单元素；flat 默认深度/depth=1不展开2层/depth=2/length/depth=0/Infinity；flatMap 基本/length/标量返回/非函数TypeError/thisArg
+
+### 验证
+- `./scripts/coverage.sh --quiet`：2488/2488 通过
+- `./scripts/run_ut.sh --quiet`：2488/2488 通过，0 LSan 泄漏

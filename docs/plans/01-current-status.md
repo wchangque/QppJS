@@ -6,10 +6,10 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | Array.sort/splice/slice + 动态 import() + Top-Level Await 全部完成 |
-| 测试计数 | 2372/2372 通过（run_ut ASAN），0 LSan 泄漏 |
+| 当前阶段 | Array.prototype.join/reverse/flat/flatMap 全部完成 |
+| 测试计数 | 2488/2488 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-05-13 |
-| 下一步 | Array.prototype.join/reverse/flat/flatMap，或 import.meta，或 QuickJS 风格优化调研 |
+| 下一步 | import.meta，或 QuickJS 风格优化调研 |
 
 ## 已知遗留问题
 
@@ -22,6 +22,7 @@
 
 ## 最近完成
 
+- [x] Array.prototype.join/reverse/flat/flatMap：在 interpreter.cpp 和 vm.cpp 的 array_prototype_ 注册区域各新增 4 个 NativeFn（Interp+VM 对称）。join：两遍扫描（先 reserve 后追加），String 值用 sv() 避免堆拷贝；reverse：原地交换 elements_ 条目，hole 处理（both/one/neither）；flat：递归辅助 flatten_into_array（vm 侧加 _vm 后缀），深度硬限制 10000 防栈溢出，支持 Infinity 深度；flatMap：depth=1 展开 callback 返回数组，非数组直接追加。新增 44 个测试（A-204～A-225 × Interp+VM 对称）。2488/2488 通过（coverage），0 LSan 泄漏。
 - [x] Top-Level Await：Parser 增加 `in_module_` 标志（模块上下文允许顶层 `await` 表达式，普通函数体内重置）；`parse_program` 增加 `bool is_module = false` 默认参数；`module_loader.cpp` 传入 `is_module=true`；Interpreter `exec_module_body` 检测 `kAsyncSuspendSentinel`，通过 `run_async_body` + `drain_job_queue` 同步等待 TLA 完成，从 outer_promise 读取最终结果；VM `exec_module_body` 类似，通过 `vm_handle_async_result` + `vm_drain_job_queue` 处理挂起；新增 23 个测试（TLA-01～TLA-12 × Interp+VM 对称）。2291/2291 通过（coverage），2289/2289 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] 动态 import() 实现：新增 `ImportCallExpression` AST 节点；Parser 在 nud Ident 分支和 parse_import_decl() 中识别 `import(` 语法；Interpreter `eval_import_call` 同步加载模块（Load/Link/Evaluate）并返回 fulfilled/rejected Promise（namespace 对象）；VM 新增 `kImportCall` 字节码，Compiler 编译 ImportCallExpression，VM run loop 处理 kImportCall；ast_dump 添加 ImportCallExpression 处理。新增 20 个测试（DI-01～DI-10 × Interp+VM）。2288/2288 通过（coverage），2286/2286 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] NM49 修复（Math.max/min 的 +0/-0 语义）：`std::fmax`/`std::fmin` 无法区分 `+0` 和 `-0`（C++ 标准认为两者相等），改为手动比较：Math.max 在 `v` 为 `+0` 且 `result` 为 `-0` 时取 `v`；Math.min 在 `v` 为 `-0` 时取 `v`。interpreter.cpp + vm.cpp 两侧对称修复（各 4 行）。2268/2268 通过（coverage），2266/2266 通过（run_ut ASAN），0 LSan 泄漏。
@@ -87,7 +88,6 @@
 
 ## 未开始
 
-- Array.prototype.join/reverse/flat/flatMap
 - import.meta
 - QuickJS 风格优化调研
 

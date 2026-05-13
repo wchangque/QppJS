@@ -1053,6 +1053,179 @@ void Interpreter::init_runtime() {
     });
     array_prototype_->set_property("sort", Value::object(ObjectPtr(sort_fn)));
 
+    // Array.prototype.join
+    auto join_fn = RcPtr<JSFunction>::make();
+    join_fn->set_name(std::string("join"));
+    join_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError, "join called on non-array");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        uint32_t len = arr->array_length_;
+        std::string sep = (args.empty() || args[0].is_undefined()) ? "," : Interpreter::to_string_val(args[0]);
+        if (len == 0) return EvalResult::ok(Value::string(""));
+        // First pass: compute total length for reserve
+        size_t total = 0;
+        for (uint32_t k = 0; k < len; k++) {
+            auto it = arr->elements_.find(k);
+            if (it != arr->elements_.end() && !it->second.is_null() && !it->second.is_undefined()) {
+                if (it->second.is_string()) {
+                    total += it->second.sv().size();
+                } else {
+                    total += Interpreter::to_string_val(it->second).size();
+                }
+            }
+            if (k > 0) total += sep.size();
+        }
+        std::string result;
+        result.reserve(total);
+        for (uint32_t k = 0; k < len; k++) {
+            if (k > 0) result += sep;
+            auto it = arr->elements_.find(k);
+            if (it != arr->elements_.end() && !it->second.is_null() && !it->second.is_undefined()) {
+                if (it->second.is_string()) {
+                    result += it->second.sv();
+                } else {
+                    result += Interpreter::to_string_val(it->second);
+                }
+            }
+        }
+        return EvalResult::ok(Value::string(result));
+    });
+    array_prototype_->set_property("join", Value::object(ObjectPtr(join_fn)));
+
+    // Array.prototype.reverse
+    auto reverse_fn = RcPtr<JSFunction>::make();
+    reverse_fn->set_name(std::string("reverse"));
+    reverse_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        (void)args;
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError, "reverse called on non-array");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        uint32_t len = arr->array_length_;
+        uint32_t middle = len / 2;
+        for (uint32_t lower = 0; lower < middle; lower++) {
+            uint32_t upper = len - 1 - lower;
+            bool lower_exists = arr->elements_.count(lower) > 0;
+            bool upper_exists = arr->elements_.count(upper) > 0;
+            if (lower_exists && upper_exists) {
+                std::swap(arr->elements_[lower], arr->elements_[upper]);
+            } else if (upper_exists) {
+                arr->elements_[lower] = arr->elements_[upper];
+                arr->elements_.erase(upper);
+            } else if (lower_exists) {
+                arr->elements_[upper] = arr->elements_[lower];
+                arr->elements_.erase(lower);
+            }
+        }
+        return EvalResult::ok(this_val);
+    });
+    array_prototype_->set_property("reverse", Value::object(ObjectPtr(reverse_fn)));
+
+    // Array.prototype.flat
+    // Recursive helper captured by the native lambda
+    auto flatten_into_array = [](auto& self, JSObject* result, JSObject* source,
+                                 uint32_t source_len, uint32_t& target_idx,
+                                 double depth, int recursion_depth) -> void {
+        if (recursion_depth > 10000) return;
+        for (uint32_t k = 0; k < source_len; k++) {
+            auto it = source->elements_.find(k);
+            if (it == source->elements_.end()) continue;
+            const Value& elem = it->second;
+            if (depth > 0.0 && elem.is_object() &&
+                elem.as_object_raw()->object_kind() == ObjectKind::kArray) {
+                auto* inner = static_cast<JSObject*>(elem.as_object_raw());
+                self(self, result, inner, inner->array_length_, target_idx, depth - 1.0,
+                     recursion_depth + 1);
+            } else {
+                result->elements_[target_idx++] = elem;
+            }
+        }
+    };
+    auto flat_fn = RcPtr<JSFunction>::make();
+    flat_fn->set_name(std::string("flat"));
+    flat_fn->set_native_fn([this, flatten_into_array](Value this_val, std::vector<Value> args,
+                                                       bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError, "flat called on non-array");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        double depth_num = 1.0;
+        if (!args.empty() && !args[0].is_undefined()) {
+            depth_num = to_number_double(args[0]);
+            if (std::isnan(depth_num)) depth_num = 0.0;
+            depth_num = std::trunc(depth_num);
+            if (std::isinf(depth_num) && depth_num > 0.0) {
+                // positive infinity — keep as +Inf
+            } else if (depth_num < 0.0) {
+                depth_num = 0.0;
+            }
+        }
+        auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(result.get());
+        result->set_proto(array_prototype_);
+        uint32_t target_idx = 0;
+        flatten_into_array(flatten_into_array, result.get(), arr, arr->array_length_, target_idx,
+                           depth_num, 0);
+        result->array_length_ = target_idx;
+        return EvalResult::ok(Value::object(ObjectPtr(result)));
+    });
+    array_prototype_->set_property("flat", Value::object(ObjectPtr(flat_fn)));
+
+    // Array.prototype.flatMap
+    auto flat_map_fn = RcPtr<JSFunction>::make();
+    flat_map_fn->set_name(std::string("flatMap"));
+    flat_map_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "flatMap called on non-array");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        if (args.empty() || !args[0].is_object() ||
+            args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "flatMap callback must be a function");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        Value callback = args[0];
+        Value this_arg = args.size() >= 2 ? args[1] : Value::undefined();
+        auto* arr = static_cast<JSObject*>(raw);
+        auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(result.get());
+        result->set_proto(array_prototype_);
+        uint32_t target_idx = 0;
+        for (uint32_t k = 0; k < arr->array_length_; k++) {
+            auto it = arr->elements_.find(k);
+            if (it == arr->elements_.end()) continue;
+            Value call_args[3] = {it->second, Value::number(static_cast<double>(k)), this_val};
+            auto res = call_function_val(callback, this_arg, {call_args, 3});
+            if (!res.is_ok()) return res;
+            Value mapped = res.value();
+            if (mapped.is_object() && mapped.as_object_raw()->object_kind() == ObjectKind::kArray) {
+                auto* inner = static_cast<JSObject*>(mapped.as_object_raw());
+                for (uint32_t j = 0; j < inner->array_length_; j++) {
+                    auto jt = inner->elements_.find(j);
+                    if (jt != inner->elements_.end()) {
+                        result->elements_[target_idx++] = jt->second;
+                    }
+                }
+            } else {
+                result->elements_[target_idx++] = std::move(mapped);
+            }
+        }
+        result->array_length_ = target_idx;
+        return EvalResult::ok(Value::object(ObjectPtr(result)));
+    });
+    array_prototype_->set_property("flatMap", Value::object(ObjectPtr(flat_map_fn)));
+
     // Build Object.keys
     auto keys_fn = RcPtr<JSFunction>::make();
     keys_fn->set_name(std::string("keys"));
