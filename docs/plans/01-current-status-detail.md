@@ -4,6 +4,8 @@
 
 ## 1. 已完成任务
 
+- [x] **NM49 修复（Math.max/min 的 +0/-0 语义）**（2026-05-13）：`std::fmax`/`std::fmin` 不能正确区分 `+0` 和 `-0`（C++ 标准规定 `+0.0 == -0.0`，`std::fmax` 若参数等价则返回第一个），导致 `Math.min(-0, 0)` 返回 `0` 而非 `-0`，`Math.max(-0, 0)` 返回 `-0` 而非 `0`。修复方案：interpreter.cpp 和 vm.cpp 两侧各替换 `std::fmax(result, v)` 和 `std::fmin(result, v)` 为手动比较：(1) Math.max：`v > result || (v == 0.0 && !std::signbit(v) && std::signbit(result))` 时取 `v`；(2) Math.min：`v < result || (v == 0.0 && std::signbit(v))` 时取 `v`。共改 4 行（每侧 4 行）。2268/2268 通过（coverage），2266/2266 通过（run_ut ASAN），0 LSan 泄漏。
+
 - [x] **P3-1 JSString SSO Review 修复（M-1/M-2）**（2026-05-13）：M-1：String.prototype indexOf/lastIndexOf/slice/substring 四个方法在 null/undefined 检查之后，若 this 不是字符串则通过 `to_string_val` 转换后取 `js_string_raw()`，修复 `String.prototype.indexOf.call(42, "2")` 类调用的 assert 崩溃/UB（interpreter.cpp + vm.cpp 两侧各 4 处，共 8 处）；M-2：`JSString` 堆分配路径 `malloc` 返回 nullptr 时 `std::abort()`（rc_object.h 1 处）。2266/2268 通过（coverage，2 个预存 NM49 失败），0 LSan 泄漏。
 
 - [x] **P3-1 JSString SSO Testing Agent 边界补测**（2026-05-13）：新增 27 个测试（SSO-P1～P10 系列）。覆盖：is_inline 标志（短字符串/32 字节边界/33 字节超出/空串）、ref_count 生命周期（工厂后=1/拷贝+1/析构-1/Move 不变/三共享=3/赋值旧引用减少）、cp_count_ 缓存持久性（拷贝共享/`sv()`不重置/`as_string()`不重置）、`sv()` 指针有效性（inline 指向内部/heap 指向外部）、内容相等不同指针、长字符串析构无泄漏（10 次创建-LSan/拷贝链逐步析构）、Move 赋值所有权转移、非 BMP 字符存储（SMP size_==4/7×28 inline/9×36 heap）、size_ 字段正确性（空/inline/heap）、含 `\0` 字节不截断。2266/2268 通过（coverage，2 个预存 NM49 失败），0 LSan 泄漏。

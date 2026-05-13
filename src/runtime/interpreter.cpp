@@ -1847,7 +1847,8 @@ void Interpreter::init_runtime() {
         for (auto& arg : args) {
             double v = to_number_double(arg);
             if (std::isnan(v)) return EvalResult::ok(Value::number(v));
-            result = std::fmax(result, v);
+            // ES: n > highest, or n is +0 and highest is -0
+            if (v > result || (v == 0.0 && !std::signbit(v) && std::signbit(result))) result = v;
         }
         return EvalResult::ok(Value::number(result));
     });
@@ -1860,7 +1861,8 @@ void Interpreter::init_runtime() {
         for (auto& arg : args) {
             double v = to_number_double(arg);
             if (std::isnan(v)) return EvalResult::ok(Value::number(v));
-            result = std::fmin(result, v);
+            // ES: n < lowest, or n is -0
+            if (v < result || (v == 0.0 && std::signbit(v))) result = v;
         }
         return EvalResult::ok(Value::number(result));
     });
