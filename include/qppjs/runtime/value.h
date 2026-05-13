@@ -5,6 +5,7 @@
 #include <bit>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace qppjs {
 
@@ -45,7 +46,7 @@ public:
     static Value null();
     static Value boolean(bool value);
     static Value number(double value);
-    static Value string(std::string value);
+    static Value string(std::string_view value);
     static Value object(ObjectPtr value);
 
     // Type predicates
@@ -60,7 +61,12 @@ public:
     // Accessors
     [[nodiscard]] bool as_bool() const;
     [[nodiscard]] double as_number() const;
-    [[nodiscard]] const std::string& as_string() const;
+    // Returns a std::string (value copy). Use sv() for read-only access.
+    [[nodiscard]] std::string as_string() const;
+    // Returns a string_view into the JSString data. Valid as long as this Value is alive.
+    [[nodiscard]] std::string_view sv() const;
+    // Returns raw JSString pointer without incrementing ref count. Valid as long as Value is alive.
+    [[nodiscard]] JSString* js_string_raw() const;
     // Returns a new RcPtr (increments ref count).
     [[nodiscard]] ObjectPtr as_object() const;
     // Returns raw pointer without incrementing ref count. Valid as long as Value is alive.

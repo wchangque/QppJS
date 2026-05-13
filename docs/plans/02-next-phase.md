@@ -4,9 +4,9 @@
 
 ## 1. 下一阶段
 
-- 下一阶段：Phase 12（待定）
-- Phase 11 + P2-A 全部完成（1618/1618 测试通过，0 LSan 失败）
-- String.prototype 8 个方法已完成（1967/1967 测试通过，0 LSan 失败）
+- 下一阶段：Phase 12 — Array.sort/splice/slice 内建方法
+- P3-1 JSString SSO 已完成（2266/2268 测试通过，0 LSan 泄漏）
+- 所有 Phase 1～11 已全部完成
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 
@@ -14,7 +14,7 @@
 
 - ~~**P2-A（遗留）**：已完成（2026-04-27）~~
 - ~~**export async function 解析**：已完成（2026-04-28）~~
-- P3-1：JSString 二次堆分配优化（小字符串内联）
+- ~~**P3-1**：已完成（2026-05-13）—— JSString SSO 布局~~
 - ~~**Array.map/filter/reduce/reduceRight**：已完成（2026-04-28）~~
 - ~~**Array.find/findIndex/some/every/indexOf/includes**：已完成（2026-04-28）~~
 - ~~**String.prototype 8 个方法**：已完成（2026-04-29）~~

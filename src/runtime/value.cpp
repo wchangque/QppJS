@@ -125,9 +125,9 @@ Value Value::number(double d) {
     return v;
 }
 
-Value Value::string(std::string s) {
+Value Value::string(std::string_view sv) {
     Value v;
-    auto* js_str = new JSString(std::move(s));
+    auto* js_str = new JSString(sv);
     js_str->add_ref();
     auto ptr = reinterpret_cast<uintptr_t>(js_str);
     v.raw_ = encode_tag_payload(kTagString, static_cast<uint64_t>(ptr) & kPayloadMask);
@@ -192,11 +192,23 @@ double Value::as_number() const {
     return std::bit_cast<double>(raw_);
 }
 
-const std::string& Value::as_string() const {
+std::string Value::as_string() const {
     assert(is_string());
     auto* p = reinterpret_cast<JSString*>(static_cast<uintptr_t>(payload()));
     assert(p != nullptr);
-    return p->str;
+    return std::string(p->sv());
+}
+
+std::string_view Value::sv() const {
+    assert(is_string());
+    auto* p = reinterpret_cast<JSString*>(static_cast<uintptr_t>(payload()));
+    assert(p != nullptr);
+    return p->sv();
+}
+
+JSString* Value::js_string_raw() const {
+    assert(is_string());
+    return reinterpret_cast<JSString*>(static_cast<uintptr_t>(payload()));
 }
 
 ObjectPtr Value::as_object() const {

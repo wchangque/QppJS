@@ -1,7 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace qppjs {
@@ -159,16 +162,82 @@ private:
     T* ptr_;
 };
 
-// JSString: heap-allocated string with non-atomic reference counting.
-// Known limitation: std::string causes a second heap allocation (tech debt).
+// JSString: heap-allocated string with non-atomic reference counting and SSO.
+// Strings up to kInlineCapacity bytes are stored inline (no second heap allocation).
+// Longer strings use a separately malloc'd buffer.
 struct JSString {
     int32_t ref_count = 0;
-    // Cached UTF-8 codepoint count. -1 means not yet computed.
-    // JSString is immutable after construction, so the cache is always valid.
+    // Cached UTF-16 code unit count. -1 means not yet computed.
     int32_t cp_count_ = -1;
-    std::string str;
+    uint32_t size_ = 0;
+    uint32_t flags_ = 0;  // bit 0: 1 = inline storage, 0 = heap storage
 
-    explicit JSString(std::string s) : str(std::move(s)) {}
+    static constexpr uint32_t kInlineCapacity = 32;
+    static constexpr uint32_t kFlagInline = 1u;
+
+    union {
+        char inline_buf_[kInlineCapacity];
+        char* heap_ptr_;
+    };
+
+    explicit JSString(std::string_view sv) : size_(static_cast<uint32_t>(sv.size())) {
+        // Reject strings larger than UINT32_MAX to prevent silent truncation.
+        if (sv.size() > UINT32_MAX) std::abort();
+        if (size_ <= kInlineCapacity) {
+            flags_ = kFlagInline;
+            std::memcpy(inline_buf_, sv.data(), size_);
+        } else {
+            flags_ = 0;
+            heap_ptr_ = static_cast<char*>(std::malloc(size_));
+            if (!heap_ptr_) std::abort();
+            std::memcpy(heap_ptr_, sv.data(), size_);
+        }
+    }
+
+    // JSString owns heap_ptr_ in the non-inline case, so copying is not allowed.
+    JSString(const JSString&) = delete;
+    JSString& operator=(const JSString&) = delete;
+
+    JSString(JSString&& other) noexcept
+        : ref_count(other.ref_count), cp_count_(other.cp_count_), size_(other.size_), flags_(other.flags_) {
+        if (flags_ & kFlagInline) {
+            std::memcpy(inline_buf_, other.inline_buf_, size_);
+        } else {
+            heap_ptr_ = other.heap_ptr_;
+            other.flags_ |= kFlagInline;
+            other.size_ = 0;
+        }
+    }
+
+    JSString& operator=(JSString&& other) noexcept {
+        if (this != &other) {
+            if (!(flags_ & kFlagInline)) std::free(heap_ptr_);
+            ref_count = other.ref_count;
+            cp_count_ = other.cp_count_;
+            size_ = other.size_;
+            flags_ = other.flags_;
+            if (flags_ & kFlagInline) {
+                std::memcpy(inline_buf_, other.inline_buf_, size_);
+            } else {
+                heap_ptr_ = other.heap_ptr_;
+                other.flags_ |= kFlagInline;
+                other.size_ = 0;
+            }
+        }
+        return *this;
+    }
+
+    ~JSString() {
+        if (!(flags_ & kFlagInline)) {
+            std::free(heap_ptr_);
+        }
+    }
+
+    [[nodiscard]] bool is_inline() const noexcept { return (flags_ & kFlagInline) != 0; }
+
+    [[nodiscard]] std::string_view sv() const noexcept {
+        return std::string_view(is_inline() ? inline_buf_ : heap_ptr_, size_);
+    }
 
     void add_ref() { ++ref_count; }
 
@@ -178,5 +247,7 @@ struct JSString {
         }
     }
 };
+
+static_assert(sizeof(JSString) == 48, "JSString must be 48 bytes with SSO layout");
 
 }  // namespace qppjs

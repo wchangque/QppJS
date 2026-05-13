@@ -6,21 +6,24 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | Number/Math 内建对象实现（含 Review 修复 M-1/M-2/M-3/P1） |
-| 测试计数 | 2229/2229 通过（coverage），0 LSan 泄漏 |
-| 最近更新 | 2026-04-29 |
-| 下一步 | Phase 12（待定：P3-1 JSString 优化、Array.sort/splice/slice、dynamic import()）|
+| 当前阶段 | P3-1 JSString SSO 优化 + Review 修复（M-1/M-2）已完成 |
+| 测试计数 | 2266/2268 通过（coverage，2 个预存 NM49 失败），0 LSan 泄漏 |
+| 最近更新 | 2026-05-13 |
+| 下一步 | Array.sort/splice/slice 内建方法，或 dynamic import() |
 
 ## 已知遗留问题
 
 - ~~**P2-1**：已在 8.6 修复~~
 - ~~**P2-2**：已在 8.7 修复~~
-- **P3-1**：`JSString` 二次堆分配（`std::string` 成员），已知技术债务，Phase 10 优化
+- ~~**P3-1**：已完成（2026-05-13）—— JSString SSO 布局，32 字节内联缓冲，消除 11 处 tmp_str 二次分配~~
 - ~~**P3-2**：已在 Phase 9.1-9.5 通过 mark-sweep GC 修复~~
 - ~~**P2-A**：已完成（2026-04-27）——协程挂起/恢复机制，Interp+VM 两侧对称实现~~
+- **NM49**：`Math.min(-0, 0)` 返回 `-0` 的 `===` 判断，预先存在的 Interp+VM 两侧 bug，暂未修复
 
 ## 最近完成
 
+- [x] P3-1 JSString SSO Review 修复（M-1/M-2）：M-1：String.prototype indexOf/lastIndexOf/slice/substring 四个方法在 null/undefined 检查之后，若 this 不是字符串则通过 `to_string_val` 转换后取 `js_string_raw()`（interpreter.cpp + vm.cpp 两侧各 4 处，共 8 处）；M-2：`JSString` 堆分配路径 `malloc` 返回 nullptr 时 `std::abort()`（rc_object.h 1 处），同步添加 `<cstdlib>` include。2264/2266 通过（run_ut ASAN，2 个预先存在失败 NM49），0 LSan 泄漏。
+- [x] P3-1 JSString SSO 优化：`JSString` 改为 union SSO 布局（32 字节 inline_buf_ / heap_ptr_，`sizeof(JSString)==48`，`static_assert` 保证）；`Value` 新增 `sv()` 返回 `std::string_view`、`js_string_raw()` 返回 `JSString*`；`as_string()` 改为返回 `std::string`（值）；`Value::string()` 工厂接受 `std::string_view`；工具函数 `utf8_cu_to_byte`/`utf8_substr`/`utf8_trim_impl`/`str_index_of`/`str_last_index_of` 及 vm.cpp 对应函数参数全部改为 `std::string_view`；消除 interpreter.cpp 5 处 + vm.cpp 6 处 `JSString tmp_str(str)` 二次堆分配（indexOf/lastIndexOf/slice/substring/length 计算）；修复 `const std::string& = as_string()` 悬空引用（to_number_double、abstract_eq 共 6 处）；新增 12 个 SSO 单元测试（JSStringSSOTest 系列）。2239/2241 通过（coverage，2 个预先存在失败 NM49），0 LSan 泄漏。
 - [x] Number/Math Review 修复（M-1/M-2/M-3/P1）：M-1：`parse_float_impl`/`vm_parse_float_impl` 添加 `0x`/`0X` 前缀检测，`parseFloat("0x10")` → 0（Interp+VM 两侧）；M-2：`parse_int_impl`/`vm_parse_int_impl` 累加器从 `long long` 改为 `double`，消除大整数有符号溢出 UB（两侧）；M-3：新增 `number_prototype_` 成员（interpreter.h + vm.h），初始化 `Number.prototype` 对象（继承 object_prototype_），加入 GC roots 和 clear 路径（两侧各两处 GC 区域）；P1：`to_number_double`/`to_number_double_vm` 字符串路径添加快速路径——无前后空白时直接用原始 `c_str()` 避免 `substr` 分配（两侧）；新增 6 个测试（NM-95/NM-96/NM-97 × Interp+VM）。2229/2229 通过（coverage），2141/2141 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] Number/Math Testing Agent 边界补测：新增 80 个测试（40 组 Interp+VM 对称，NM-55～NM-94）。覆盖：parseInt 前导空白+正号/负号/"Infinity"字符串/八进制前缀/"z" base36/radix=1/radix=37/radix=0；parseFloat "Infinity"/"-Infinity"/".5" 无整数部分/科学计数法 1e3/1.5e-2；Number.isFinite(0)/(-0)/(1/0)；Math.round(-2.5)→-2/NaN/Infinity；Math.max/min 多参数；Math.pow(1,NaN)/(-7,0.5)/（Infinity,0）；Math.sign(Infinity)/(-Infinity)/NaN/(+0)；Math.log(-1)/0/Infinity；全局 isNaN(null)/isFinite(null)/isFinite("1.5")；Number("3.14")/true/false/null/undefined/""。2223/2223 通过（coverage），0 LSan 泄漏。
 - [x] Number/Math 内建对象：全局常量（NaN/Infinity）、全局函数（isNaN/isFinite/parseInt/parseFloat）、Number 构造函数（Number.isNaN/isFinite/isInteger/parseInt）、Math 对象（PI/E + 12 个方法：floor/ceil/round/abs/max/min/pow/sqrt/log/random/trunc/sign）；Interpreter + VM 两侧对称实现；GC roots/clear 注册；xorshift64* PRNG；新增 108 个测试（NM-01～NM-54 × Interp+VM）。2143/2143 通过（coverage），2141/2141 通过（run_ut ASAN），0 LSan 泄漏。
@@ -81,7 +84,9 @@
 
 ## 未开始
 
-- Phase 12（QuickJS 风格优化，或 P3-1 JSString 优化、更多内建对象）
+- Array.sort/splice/slice 内建方法
+- 动态 import()
+- Top-Level Await
 
 ## 阻塞
 

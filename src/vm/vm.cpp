@@ -59,7 +59,7 @@ EvalResult VM::to_number(const Value& v) {
     case ValueKind::Number:
         return EvalResult::ok(v);
     case ValueKind::String: {
-        const std::string& s = v.as_string();
+        std::string s = v.as_string();
         if (s.empty()) {
             return EvalResult::ok(Value::number(0.0));
         }
@@ -146,21 +146,16 @@ static double to_number_double_vm(const Value& v) {
     case ValueKind::Bool:      return v.as_bool() ? 1.0 : 0.0;
     case ValueKind::Number:    return v.as_number();
     case ValueKind::String: {
-        const std::string& s = v.as_string();
-        if (s.empty()) return 0.0;
-        size_t first = s.find_first_not_of(" \t\n\r\f\v");
-        if (first == std::string::npos) return 0.0;
-        size_t last = s.find_last_not_of(" \t\n\r\f\v");
+        std::string_view sv = v.sv();
+        if (sv.empty()) return 0.0;
+        size_t first = sv.find_first_not_of(" \t\n\r\f\v");
+        if (first == std::string_view::npos) return 0.0;
+        size_t last = sv.find_last_not_of(" \t\n\r\f\v");
+        // strtod requires a null-terminated string; build one from the trimmed range.
+        std::string s(sv.substr(first, last - first + 1));
         char* end = nullptr;
-        double r;
-        if (first == 0 && last + 1 == s.size()) {
-            r = std::strtod(s.c_str(), &end);
-            if (end == s.c_str() || *end != '\0') return std::numeric_limits<double>::quiet_NaN();
-        } else {
-            std::string trimmed = s.substr(first, last - first + 1);
-            r = std::strtod(trimmed.c_str(), &end);
-            if (end == trimmed.c_str() || *end != '\0') return std::numeric_limits<double>::quiet_NaN();
-        }
+        double r = std::strtod(s.c_str(), &end);
+        if (end == s.c_str() || *end != '\0') return std::numeric_limits<double>::quiet_NaN();
         return r;
     }
     case ValueKind::Object: return std::numeric_limits<double>::quiet_NaN();
@@ -187,7 +182,7 @@ static std::optional<uint32_t> resolve_from_index_vm(uint32_t len, const std::ve
 // UTF-16 code unit count: BMP = 1, SMP (U+10000+) = 2.
 static int32_t utf8_cp_len_vm(JSString* js_str) {
     if (js_str->cp_count_ >= 0) return js_str->cp_count_;
-    const std::string& s = js_str->str;
+    std::string_view s = js_str->sv();
     int32_t count = 0;
     for (size_t i = 0; i < s.size(); ) {
         unsigned char c = static_cast<unsigned char>(s[i]);
@@ -201,7 +196,7 @@ static int32_t utf8_cp_len_vm(JSString* js_str) {
 }
 
 // Convert UTF-16 code unit offset to byte offset.
-static size_t utf8_cu_to_byte_vm(const std::string& s, int32_t cu_offset) {
+static size_t utf8_cu_to_byte_vm(std::string_view s, int32_t cu_offset) {
     size_t i = 0;
     int32_t cu = 0;
     while (i < s.size() && cu < cu_offset) {
@@ -214,11 +209,11 @@ static size_t utf8_cu_to_byte_vm(const std::string& s, int32_t cu_offset) {
     return i;
 }
 
-static std::string utf8_substr_vm(const std::string& s, int32_t cu_start, int32_t cu_end) {
+static std::string utf8_substr_vm(std::string_view s, int32_t cu_start, int32_t cu_end) {
     if (cu_start >= cu_end) return "";
     size_t byte_start = utf8_cu_to_byte_vm(s, cu_start);
     size_t byte_end = utf8_cu_to_byte_vm(s, cu_end);
-    return s.substr(byte_start, byte_end - byte_start);
+    return std::string(s.substr(byte_start, byte_end - byte_start));
 }
 
 static bool is_js_whitespace_cp_vm(uint32_t cp) {
@@ -237,7 +232,7 @@ static bool is_js_whitespace_cp_vm(uint32_t cp) {
     }
 }
 
-static uint32_t utf8_decode_one_vm(const std::string& s, size_t& i) {
+static uint32_t utf8_decode_one_vm(std::string_view s, size_t& i) {
     unsigned char c = static_cast<unsigned char>(s[i]);
     uint32_t cp;
     if (c < 0x80) {
@@ -261,7 +256,7 @@ static uint32_t utf8_decode_one_vm(const std::string& s, size_t& i) {
     return cp;
 }
 
-static std::string utf8_trim_impl_vm(const std::string& s, bool trim_start, bool trim_end) {
+static std::string utf8_trim_impl_vm(std::string_view s, bool trim_start, bool trim_end) {
     size_t start = 0;
     if (trim_start) {
         while (start < s.size()) {
@@ -286,17 +281,17 @@ static std::string utf8_trim_impl_vm(const std::string& s, bool trim_start, bool
         }
     }
     if (start >= end) return "";
-    return s.substr(start, end - start);
+    return std::string(s.substr(start, end - start));
 }
 
-static int32_t str_index_of_vm(const std::string& haystack, const std::string& needle,
+static int32_t str_index_of_vm(std::string_view haystack, std::string_view needle,
                                 int32_t cu_from, int32_t len) {
     if (needle.empty()) {
         return std::min(cu_from, len);
     }
     size_t byte_from = utf8_cu_to_byte_vm(haystack, cu_from);
     size_t pos = haystack.find(needle, byte_from);
-    if (pos == std::string::npos) return -1;
+    if (pos == std::string_view::npos) return -1;
     // Convert byte pos back to UTF-16 code unit index
     int32_t cu_idx = 0;
     for (size_t i = 0; i < pos; ) {
@@ -309,7 +304,7 @@ static int32_t str_index_of_vm(const std::string& haystack, const std::string& n
     return cu_idx;
 }
 
-static int32_t str_last_index_of_vm(const std::string& haystack, const std::string& needle,
+static int32_t str_last_index_of_vm(std::string_view haystack, std::string_view needle,
                                      int32_t cu_from, int32_t len) {
     if (needle.empty()) {
         return std::min(cu_from, len);
@@ -317,7 +312,7 @@ static int32_t str_last_index_of_vm(const std::string& haystack, const std::stri
     // byte_from is the byte offset of cu_from (the maximum allowed start position).
     size_t byte_from = utf8_cu_to_byte_vm(haystack, cu_from);
     size_t pos = haystack.rfind(needle, byte_from);
-    if (pos == std::string::npos) return -1;
+    if (pos == std::string_view::npos) return -1;
     int32_t cu_idx = 0;
     for (size_t i = 0; i < pos; ) {
         unsigned char c = static_cast<unsigned char>(haystack[i]);
@@ -339,17 +334,17 @@ bool VM::abstract_eq(const Value& a, const Value& b) {
     if (b.is_bool()) return abstract_eq(a, Value::number(b.as_bool() ? 1.0 : 0.0));
     if (a.is_string() && b.is_number()) {
         char* end = nullptr;
-        const std::string& s = a.as_string();
-        double n = s.empty() ? 0.0 : std::strtod(s.c_str(), &end);
-        if (!s.empty() && (end == s.c_str() || *end != '\0'))
+        std::string sa = a.as_string();
+        double n = sa.empty() ? 0.0 : std::strtod(sa.c_str(), &end);
+        if (!sa.empty() && (end == sa.c_str() || *end != '\0'))
             n = std::numeric_limits<double>::quiet_NaN();
         return abstract_eq(Value::number(n), b);
     }
     if (a.is_number() && b.is_string()) {
         char* end = nullptr;
-        const std::string& s = b.as_string();
-        double n = s.empty() ? 0.0 : std::strtod(s.c_str(), &end);
-        if (!s.empty() && (end == s.c_str() || *end != '\0'))
+        std::string sb = b.as_string();
+        double n = sb.empty() ? 0.0 : std::strtod(sb.c_str(), &end);
+        if (!sb.empty() && (end == sb.c_str() || *end != '\0'))
             n = std::numeric_limits<double>::quiet_NaN();
         return abstract_eq(a, Value::number(n));
     }
@@ -1410,9 +1405,9 @@ void VM::init_global_env() {
                 "String.prototype.indexOf called on null or undefined");
             return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
         }
-        std::string str = to_string_val(this_val);
-        JSString tmp_str(str);
-        int32_t len = utf8_cp_len_vm(&tmp_str);
+        Value effective_this = this_val.is_string() ? this_val : Value::string(to_string_val(this_val));
+        JSString* js_str = effective_this.js_string_raw();
+        int32_t len = utf8_cp_len_vm(js_str);
         std::string search = args.empty() ? "undefined" : to_string_val(args[0]);
         int32_t k = 0;
         if (args.size() >= 2) {
@@ -1425,7 +1420,7 @@ void VM::init_global_env() {
                 k = n < 0.0 ? 0 : (n > len ? len : static_cast<int32_t>(n));
             }
         }
-        return EvalResult::ok(Value::number(static_cast<double>(str_index_of_vm(str, search, k, len))));
+        return EvalResult::ok(Value::number(static_cast<double>(str_index_of_vm(js_str->sv(), search, k, len))));
     });
     gc_heap_.Register(vm_str_index_of_fn.get());
     string_prototype_->set_property("indexOf", Value::object(ObjectPtr(vm_str_index_of_fn)));
@@ -1438,9 +1433,9 @@ void VM::init_global_env() {
                 "String.prototype.lastIndexOf called on null or undefined");
             return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
         }
-        std::string str = to_string_val(this_val);
-        JSString tmp_str(str);
-        int32_t len = utf8_cp_len_vm(&tmp_str);
+        Value effective_this = this_val.is_string() ? this_val : Value::string(to_string_val(this_val));
+        JSString* js_str = effective_this.js_string_raw();
+        int32_t len = utf8_cp_len_vm(js_str);
         std::string search = args.empty() ? "undefined" : to_string_val(args[0]);
         int32_t k = len;
         if (args.size() >= 2) {
@@ -1454,7 +1449,7 @@ void VM::init_global_env() {
                 else k = static_cast<int32_t>(n);
             }
         }
-        return EvalResult::ok(Value::number(static_cast<double>(str_last_index_of_vm(str, search, k, len))));
+        return EvalResult::ok(Value::number(static_cast<double>(str_last_index_of_vm(js_str->sv(), search, k, len))));
     });
     gc_heap_.Register(vm_str_last_index_of_fn.get());
     string_prototype_->set_property("lastIndexOf", Value::object(ObjectPtr(vm_str_last_index_of_fn)));
@@ -1467,9 +1462,9 @@ void VM::init_global_env() {
                 "String.prototype.slice called on null or undefined");
             return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
         }
-        std::string str = to_string_val(this_val);
-        JSString tmp_str(str);
-        int32_t len = utf8_cp_len_vm(&tmp_str);
+        Value effective_this = this_val.is_string() ? this_val : Value::string(to_string_val(this_val));
+        JSString* js_str = effective_this.js_string_raw();
+        int32_t len = utf8_cp_len_vm(js_str);
         auto resolve_slice_idx = [&](size_t arg_pos, int32_t default_val) -> int32_t {
             if (args.size() <= arg_pos || args[arg_pos].is_undefined()) return default_val;
             double n = to_number_double_vm(args[arg_pos]);
@@ -1481,7 +1476,7 @@ void VM::init_global_env() {
         };
         int32_t from = resolve_slice_idx(0, 0);
         int32_t to = resolve_slice_idx(1, len);
-        return EvalResult::ok(Value::string(utf8_substr_vm(str, from, to)));
+        return EvalResult::ok(Value::string(utf8_substr_vm(js_str->sv(), from, to)));
     });
     gc_heap_.Register(vm_str_slice_fn.get());
     string_prototype_->set_property("slice", Value::object(ObjectPtr(vm_str_slice_fn)));
@@ -1494,9 +1489,9 @@ void VM::init_global_env() {
                 "String.prototype.substring called on null or undefined");
             return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
         }
-        std::string str = to_string_val(this_val);
-        JSString tmp_str(str);
-        int32_t len = utf8_cp_len_vm(&tmp_str);
+        Value effective_this = this_val.is_string() ? this_val : Value::string(to_string_val(this_val));
+        JSString* js_str = effective_this.js_string_raw();
+        int32_t len = utf8_cp_len_vm(js_str);
         auto resolve_sub_idx = [&](size_t arg_pos, int32_t default_val) -> int32_t {
             if (args.size() <= arg_pos || args[arg_pos].is_undefined()) return default_val;
             double n = to_number_double_vm(args[arg_pos]);
@@ -1507,7 +1502,7 @@ void VM::init_global_env() {
         int32_t start = resolve_sub_idx(0, 0);
         int32_t end = resolve_sub_idx(1, len);
         if (start > end) std::swap(start, end);
-        return EvalResult::ok(Value::string(utf8_substr_vm(str, start, end)));
+        return EvalResult::ok(Value::string(utf8_substr_vm(js_str->sv(), start, end)));
     });
     gc_heap_.Register(vm_str_substring_fn.get());
     string_prototype_->set_property("substring", Value::object(ObjectPtr(vm_str_substring_fn)));
@@ -2626,8 +2621,7 @@ EvalResult VM::run(size_t exit_depth) {
             }
             if (obj_val.is_string()) {
                 if (name == "length") {
-                    JSString tmp_str(obj_val.as_string());
-                    stack.push_back(Value::number(static_cast<double>(utf8_cp_len_vm(&tmp_str))));
+                    stack.push_back(Value::number(static_cast<double>(utf8_cp_len_vm(obj_val.js_string_raw()))));
                 } else if (string_prototype_) {
                     stack.push_back(string_prototype_->get_property(name));
                 } else {
@@ -2727,8 +2721,7 @@ EvalResult VM::run(size_t exit_depth) {
             if (obj_val.is_string()) {
                 std::string key = to_string_val(key_val);
                 if (key == "length") {
-                    JSString tmp_str(obj_val.as_string());
-                    stack.push_back(Value::number(static_cast<double>(utf8_cp_len_vm(&tmp_str))));
+                    stack.push_back(Value::number(static_cast<double>(utf8_cp_len_vm(obj_val.js_string_raw()))));
                 } else if (string_prototype_) {
                     stack.push_back(string_prototype_->get_property(key));
                 } else {
