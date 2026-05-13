@@ -30,6 +30,7 @@ add_executable(qppjs_unit_tests
     unit/async_order_test.cpp
     unit/string_test.cpp
     unit/number_math_test.cpp
+    unit/tla_test.cpp
 )
 
 target_link_libraries(qppjs_unit_tests PRIVATE qppjs_core GTest::gtest_main)

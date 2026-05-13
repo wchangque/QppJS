@@ -6,10 +6,10 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | 动态 import() 已完成 |
-| 测试计数 | 2288/2288 通过（coverage），2286/2286 通过（run_ut ASAN），0 LSan 泄漏 |
+| 当前阶段 | Array.sort/splice/slice + 动态 import() + Top-Level Await 全部完成 |
+| 测试计数 | 2372/2372 通过（run_ut ASAN），0 LSan 泄漏 |
 | 最近更新 | 2026-05-13 |
-| 下一步 | Array.sort/splice/slice 内建方法，或 Top-Level Await |
+| 下一步 | Array.prototype.join/reverse/flat/flatMap，或 import.meta，或 QuickJS 风格优化调研 |
 
 ## 已知遗留问题
 
@@ -22,7 +22,8 @@
 
 ## 最近完成
 
-- [x] 动态 import() 实现：新增 `ImportCallExpression` AST 节点；Parser 在 nud Ident 分支和 parse_import_decl() 中识别 `import(` 语法；Interpreter `eval_import_call` 同步加载模块（Load/Link/Evaluate）并返回 fulfilled/rejected Promise（namespace 对象）；VM 新增 `kImportCall` 字节码，Compiler 编译 ImportCallExpression，VM run loop 处理 kImportCall（含 call_stack_ 向上查找 current_module 修复 async 函数帧中 base_dir 问题）；ast_dump 添加 ImportCallExpression 处理。新增 20 个测试（DI-01～DI-10 × Interp+VM）。2288/2288 通过（coverage），2286/2286 通过（run_ut ASAN），0 LSan 泄漏。
+- [x] Top-Level Await：Parser 增加 `in_module_` 标志（模块上下文允许顶层 `await` 表达式，普通函数体内重置）；`parse_program` 增加 `bool is_module = false` 默认参数；`module_loader.cpp` 传入 `is_module=true`；Interpreter `exec_module_body` 检测 `kAsyncSuspendSentinel`，通过 `run_async_body` + `drain_job_queue` 同步等待 TLA 完成，从 outer_promise 读取最终结果；VM `exec_module_body` 类似，通过 `vm_handle_async_result` + `vm_drain_job_queue` 处理挂起；新增 23 个测试（TLA-01～TLA-12 × Interp+VM 对称）。2291/2291 通过（coverage），2289/2289 通过（run_ut ASAN），0 LSan 泄漏。
+- [x] 动态 import() 实现：新增 `ImportCallExpression` AST 节点；Parser 在 nud Ident 分支和 parse_import_decl() 中识别 `import(` 语法；Interpreter `eval_import_call` 同步加载模块（Load/Link/Evaluate）并返回 fulfilled/rejected Promise（namespace 对象）；VM 新增 `kImportCall` 字节码，Compiler 编译 ImportCallExpression，VM run loop 处理 kImportCall；ast_dump 添加 ImportCallExpression 处理。新增 20 个测试（DI-01～DI-10 × Interp+VM）。2288/2288 通过（coverage），2286/2286 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] NM49 修复（Math.max/min 的 +0/-0 语义）：`std::fmax`/`std::fmin` 无法区分 `+0` 和 `-0`（C++ 标准认为两者相等），改为手动比较：Math.max 在 `v` 为 `+0` 且 `result` 为 `-0` 时取 `v`；Math.min 在 `v` 为 `-0` 时取 `v`。interpreter.cpp + vm.cpp 两侧对称修复（各 4 行）。2268/2268 通过（coverage），2266/2266 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] P3-1 JSString SSO Review 修复（M-1/M-2）：M-1：String.prototype indexOf/lastIndexOf/slice/substring 四个方法在 null/undefined 检查之后，若 this 不是字符串则通过 `to_string_val` 转换后取 `js_string_raw()`（interpreter.cpp + vm.cpp 两侧各 4 处，共 8 处）；M-2：`JSString` 堆分配路径 `malloc` 返回 nullptr 时 `std::abort()`（rc_object.h 1 处），同步添加 `<cstdlib>` include。2264/2266 通过（run_ut ASAN，2 个预先存在失败 NM49），0 LSan 泄漏。
 - [x] P3-1 JSString SSO 优化：`JSString` 改为 union SSO 布局（32 字节 inline_buf_ / heap_ptr_，`sizeof(JSString)==48`，`static_assert` 保证）；`Value` 新增 `sv()` 返回 `std::string_view`、`js_string_raw()` 返回 `JSString*`；`as_string()` 改为返回 `std::string`（值）；`Value::string()` 工厂接受 `std::string_view`；工具函数 `utf8_cu_to_byte`/`utf8_substr`/`utf8_trim_impl`/`str_index_of`/`str_last_index_of` 及 vm.cpp 对应函数参数全部改为 `std::string_view`；消除 interpreter.cpp 5 处 + vm.cpp 6 处 `JSString tmp_str(str)` 二次堆分配（indexOf/lastIndexOf/slice/substring/length 计算）；修复 `const std::string& = as_string()` 悬空引用（to_number_double、abstract_eq 共 6 处）；新增 12 个 SSO 单元测试（JSStringSSOTest 系列）。2239/2241 通过（coverage，2 个预先存在失败 NM49），0 LSan 泄漏。
@@ -86,8 +87,9 @@
 
 ## 未开始
 
-- Array.sort/splice/slice 内建方法
-- Top-Level Await
+- Array.prototype.join/reverse/flat/flatMap
+- import.meta
+- QuickJS 风格优化调研
 
 ## 阻塞
 

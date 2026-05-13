@@ -4100,6 +4100,44 @@ EvalResult VM::exec_module_body(ModuleRecord& mod) {
 
     EvalResult result = run(exit_depth);
 
+    // TLA: 顶层 await 挂起，通过 vm_handle_async_result 异步执行剩余字节码
+    if (!result.is_ok() && result.error().message() == kAsyncSuspendSentinel) {
+        auto outer_promise = RcPtr<JSPromise>::make();
+        gc_heap_.Register(outer_promise.get());
+
+        vm_handle_async_result(result, outer_promise);
+
+        // 等待所有微任务完成
+        vm_drain_job_queue();
+
+        // 从 outer_promise 读取最终结果
+        if (outer_promise->state() == PromiseState::kFulfilled) {
+            return EvalResult::ok(outer_promise->result());
+        } else if (outer_promise->state() == PromiseState::kRejected) {
+            Value reason = outer_promise->result();
+            if (!call_stack_.empty()) {
+                call_stack_.back().pending_throw = reason;
+            } else {
+                native_pending_throw_ = reason;
+            }
+            if (reason.is_object()) {
+                RcObject* raw = reason.as_object_raw();
+                if (raw && raw->object_kind() == ObjectKind::kOrdinary) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    Value n = obj->get_property("name");
+                    Value m = obj->get_property("message");
+                    std::string name = n.is_string() ? n.as_string() : "Error";
+                    std::string message = m.is_string() ? m.as_string() : "";
+                    return EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
+                }
+            }
+            return EvalResult::err(Error(ErrorKind::Runtime, to_string_val(reason)));
+        } else {
+            return EvalResult::err(Error(ErrorKind::Runtime,
+                "Error: top-level await did not settle"));
+        }
+    }
+
     return result;
 }
 
