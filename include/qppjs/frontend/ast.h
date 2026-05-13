@@ -136,6 +136,11 @@ struct AwaitExpression {
     SourceRange range;
 };
 
+// import.meta 元属性（仅在模块上下文合法）
+struct MetaProperty {
+    SourceRange range;
+};
+
 // 动态 import() 表达式 import(specifier)
 struct ImportCallExpression {
     std::unique_ptr<ExprNode> specifier;
@@ -171,7 +176,7 @@ struct ExprNode {
                  BinaryExpression, LogicalExpression, AssignmentExpression,
                  ObjectExpression, MemberExpression, MemberAssignmentExpression,
                  FunctionExpression, CallExpression, NewExpression, ArrayExpression,
-                 AwaitExpression, AsyncFunctionExpression, ImportCallExpression>
+                 AwaitExpression, AsyncFunctionExpression, MetaProperty, ImportCallExpression>
             v;
 
     ExprNode() = default;

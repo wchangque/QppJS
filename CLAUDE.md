@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 ## 项目背景
 
 - 当前项目目标：基于 QuickJS 的设计思想，通过 AI 辅助，从零用 C++ 实现一个 JavaScript 引擎。
-- 参考仓库位于 `/home/wuzhen/code/QuickJS`，设计文档已整理至 `docs/quickjs/`。
+- 参考仓库位于 `/home/wuzhen/code/pc/QuickJS`，设计文档已整理至 `docs/quickjs/`。
 - 本仓库不是对 QuickJS 的简单封装，而是面向"理解并重建 JS 引擎关键机制"的独立实现项目。
 
 ## 计划与状态文档

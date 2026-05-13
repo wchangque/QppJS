@@ -2980,6 +2980,19 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const ArrayExpression& e) { return eval_array_expr(e); },
             [this](const AwaitExpression& e) { return eval_await_expr(e); },
             [this](const AsyncFunctionExpression& e) { return eval_async_function_expr(e); },
+            [this](const MetaProperty& /*e*/) {
+                // import.meta 是词法绑定：优先使用当前函数的定义模块
+                ModuleRecord* mod = nullptr;
+                if (current_function_ && current_function_->defining_module()) {
+                    mod = current_function_->defining_module();
+                } else {
+                    mod = current_module_;
+                }
+                if (mod && mod->meta_obj) {
+                    return EvalResult::ok(Value::object(ObjectPtr(mod->meta_obj)));
+                }
+                return EvalResult::ok(Value::undefined());
+            },
             [this](const ImportCallExpression& e) { return eval_import_call(e); },
         },
         expr.v);
@@ -3640,6 +3653,7 @@ Value Interpreter::make_function_value(std::optional<std::string> name, std::vec
     fn->set_body(std::move(body));
     fn->set_closure_env(std::move(closure_env));
     fn->set_is_named_expr(is_named_expr);
+    fn->set_defining_module(current_module_);
 
     // Eager prototype initialization: F.prototype = { constructor: F }
     Value fn_val = Value::object(ObjectPtr(fn));
@@ -3685,18 +3699,24 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
     ScopeGuard guard(*this, fn_env, fn_env, std::move(this_val), /*is_call=*/true);
     hoist_vars(*fn->body(), *fn_env);
 
+    JSFunction* saved_function = current_function_;
+    current_function_ = fn.get();
+
     Value result_val = Value::undefined();
     for (const auto& stmt : *fn->body()) {
         auto stmt_result = eval_stmt(stmt);
         if (!stmt_result.is_ok()) {
+            current_function_ = saved_function;
             return stmt_result;
         }
         const Completion& c = stmt_result.completion();
         if (c.is_return() || c.is_throw()) {
+            current_function_ = saved_function;
             return stmt_result;  // preserve kReturn/kThrow so callers can distinguish
         }
         result_val = c.value;
     }
+    current_function_ = saved_function;
     return StmtResult::ok(Completion::normal(result_val));
 }
 
@@ -4239,6 +4259,12 @@ EvalResult Interpreter::link_module(ModuleRecord& mod) {
     gc_heap_.Register(module_env.get());
     mod.module_env = module_env;
 
+    // 创建 import.meta 对象（[[Prototype]] = null）
+    auto meta = RcPtr<JSObject>::make();
+    gc_heap_.Register(meta.get());
+    meta->set_property("url", Value::string(mod.specifier));
+    mod.meta_obj = std::move(meta);
+
     // 建立导出变量 Binding（共享 Cell）
     for (const auto& stmt : mod.ast.body) {
         if (const auto* exp = std::get_if<ExportNamedDeclaration>(&stmt.v)) {
@@ -4634,6 +4660,7 @@ Value Interpreter::make_async_function_value(std::optional<std::string> name,
     fn->set_params(params);
     fn->set_body(body);
     fn->set_closure_env(closure_env);
+    fn->set_defining_module(current_module_);
 
     auto proto_obj = RcPtr<JSObject>::make();
     proto_obj->set_proto(object_prototype_);

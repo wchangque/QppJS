@@ -2677,6 +2677,7 @@ EvalResult VM::push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<V
     frame.this_val = std::move(this_val);
     frame.is_new_call = is_new;
     if (is_new) frame.new_instance = std::move(new_instance);
+    frame.current_module = fn->defining_module();
 
     call_stack_.push_back(std::move(frame));
     return EvalResult::ok(Value::undefined());
@@ -3187,6 +3188,7 @@ EvalResult VM::run(size_t exit_depth) {
             fn->set_bytecode(fn_bc);
             fn->set_closure_env(env);
             fn->set_is_named_expr(fn_bc->is_named_expr);
+            fn->set_defining_module(frame.current_module);
             auto proto_obj = RcPtr<JSObject>::make();
             proto_obj->set_proto(object_prototype_);
             proto_obj->set_constructor_property(fn.get());
@@ -3842,6 +3844,17 @@ EvalResult VM::run(size_t exit_depth) {
             break;
         }
 
+        case Opcode::kMetaProperty: {
+            // import.meta 是词法绑定：直接使用当前帧的 current_module
+            // （push_call_frame 已从 JSFunction::defining_module_ 设置）
+            if (frame.current_module && frame.current_module->meta_obj) {
+                stack.push_back(Value::object(ObjectPtr(frame.current_module->meta_obj)));
+            } else {
+                stack.push_back(Value::undefined());
+            }
+            break;
+        }
+
         case Opcode::kImportCall: {
             // Dynamic import(specifier): pop specifier, push Promise.
             // Synchronously loads the module (Load/Link/Evaluate) and returns a fulfilled
@@ -4087,6 +4100,12 @@ EvalResult VM::link_module(ModuleRecord& mod) {
     auto module_env = RcPtr<Environment>::make(global_env_);
     gc_heap_.Register(module_env.get());
     mod.module_env = module_env;
+
+    // 创建 import.meta 对象（[[Prototype]] = null）
+    auto meta = RcPtr<JSObject>::make();
+    gc_heap_.Register(meta.get());
+    meta->set_property("url", Value::string(mod.specifier));
+    mod.meta_obj = std::move(meta);
 
     // 建立导出变量 Binding（共享 Cell）
     for (const auto& stmt : mod.ast.body) {

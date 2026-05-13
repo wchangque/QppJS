@@ -6,10 +6,10 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | Array.prototype.join/reverse/flat/flatMap 全部完成 |
-| 测试计数 | 2488/2488 通过（coverage），0 LSan 泄漏 |
+| 当前阶段 | import.meta 词法绑定修复完成 |
+| 测试计数 | 2568/2568 通过（coverage），2566/2566 通过（run_ut ASAN），0 LSan 泄漏 |
 | 最近更新 | 2026-05-13 |
-| 下一步 | import.meta，或 QuickJS 风格优化调研 |
+| 下一步 | QuickJS 风格优化调研，或更多内建对象 |
 
 ## 已知遗留问题
 
@@ -22,6 +22,9 @@
 
 ## 最近完成
 
+- [x] import.meta 词法绑定修复：JSFunction 新增 `defining_module_` 字段；Interpreter `make_function_value`/`make_async_function_value` 捕获 `current_module_`；Interpreter 新增 `current_function_` 成员，`call_function` 中设置/恢复；`eval_expr` MetaProperty 优先使用 `current_function_->defining_module()`；VM `kMakeFunction` 捕获 `frame.current_module`；VM `push_call_frame` 将 `defining_module_` 赋值给新帧 `current_module`；VM `kMetaProperty` 直接使用 `frame.current_module`，移除调用栈搜索。更新 IM-14 测试为精确匹配 m.js 路径。2568/2568 通过（coverage），2566/2566 通过（run_ut ASAN），0 LSan 泄漏。
+- [x] import.meta 边界测试补充：新增 56 个测试（28 Interp + 28 VM，IM-13～IM-40）。覆盖：深层嵌套函数中 import.meta（VM 向上搜索调用栈）、闭包捕获 import.meta 跨模块调用、import.meta 作为函数参数传递、条件分支/循环/try-catch 中使用、url 属性可覆盖、re-export 链中 import.meta 指向自身、循环依赖模块顶层 import.meta、副作用导入模块中 import.meta、与动态 import() 组合、url 类型验证、二元表达式/return/async 函数中使用、TLA 挂起前后 import.meta 一致性、url 非空、Object.keys 仅含 url、instanceof Object 为 false、不继承 toString/valueOf、作为对象属性值/数组元素、逻辑表达式短路求值、条件分支 if-else、GC 后仍可用、多变量指向同一对象。2568/2568 通过（coverage），0 LSan 泄漏。
+- [x] import.meta：AST 新增 MetaProperty 节点；Parser nud Ident 分支检测 import.meta（in_module_context_ 标志，模块内任意位置合法）；ModuleRecord 新增 meta_obj 字段（Link 阶段创建，[[Prototype]]=null，注入 url 属性）；Interpreter eval_expr 新增 MetaProperty 分支（通过 current_module_ 返回缓存 meta_obj）；VM 新增 kMetaProperty 字节码，Compiler 编译 MetaProperty，VM run loop 向上搜索调用栈找模块帧；ast_dump 新增 MetaProperty 输出；parse_stmt 入口 peek 下一个 token 区分 import 声明与 import.meta/import[ 表达式。新增 24 个测试（IM-01～IM-12 × Interp+VM 对称）。2512/2512 通过（coverage），2510/2510 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] Array.prototype.join/reverse/flat/flatMap：在 interpreter.cpp 和 vm.cpp 的 array_prototype_ 注册区域各新增 4 个 NativeFn（Interp+VM 对称）。join：两遍扫描（先 reserve 后追加），String 值用 sv() 避免堆拷贝；reverse：原地交换 elements_ 条目，hole 处理（both/one/neither）；flat：递归辅助 flatten_into_array（vm 侧加 _vm 后缀），深度硬限制 10000 防栈溢出，支持 Infinity 深度；flatMap：depth=1 展开 callback 返回数组，非数组直接追加。新增 44 个测试（A-204～A-225 × Interp+VM 对称）。2488/2488 通过（coverage），0 LSan 泄漏。
 - [x] Top-Level Await：Parser 增加 `in_module_` 标志（模块上下文允许顶层 `await` 表达式，普通函数体内重置）；`parse_program` 增加 `bool is_module = false` 默认参数；`module_loader.cpp` 传入 `is_module=true`；Interpreter `exec_module_body` 检测 `kAsyncSuspendSentinel`，通过 `run_async_body` + `drain_job_queue` 同步等待 TLA 完成，从 outer_promise 读取最终结果；VM `exec_module_body` 类似，通过 `vm_handle_async_result` + `vm_drain_job_queue` 处理挂起；新增 23 个测试（TLA-01～TLA-12 × Interp+VM 对称）。2291/2291 通过（coverage），2289/2289 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] 动态 import() 实现：新增 `ImportCallExpression` AST 节点；Parser 在 nud Ident 分支和 parse_import_decl() 中识别 `import(` 语法；Interpreter `eval_import_call` 同步加载模块（Load/Link/Evaluate）并返回 fulfilled/rejected Promise（namespace 对象）；VM 新增 `kImportCall` 字节码，Compiler 编译 ImportCallExpression，VM run loop 处理 kImportCall；ast_dump 添加 ImportCallExpression 处理。新增 20 个测试（DI-01～DI-10 × Interp+VM）。2288/2288 通过（coverage），2286/2286 通过（run_ut ASAN），0 LSan 泄漏。
@@ -88,7 +91,6 @@
 
 ## 未开始
 
-- import.meta
 - QuickJS 风格优化调研
 
 ## 阻塞

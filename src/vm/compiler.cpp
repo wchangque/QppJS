@@ -527,6 +527,9 @@ void Compiler::compile_expr(const ExprNode& expr) {
                 compile_expr(*e.argument);
                 emit(Opcode::kAwait);
             },
+            [this](const MetaProperty& /*e*/) {
+                emit(Opcode::kMetaProperty);
+            },
             [this](const ImportCallExpression& e) { compile_import_call(e); },
         },
         expr.v);

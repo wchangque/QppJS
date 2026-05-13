@@ -14,6 +14,9 @@ Cell* ModuleRecord::find_export(const std::string& name) const {
 }
 
 void ModuleRecord::TraceRefs(GcHeap& heap) {
+    if (meta_obj) {
+        heap.MarkPending(meta_obj.get());
+    }
     if (module_env) {
         heap.MarkPending(module_env.get());
     }
@@ -34,6 +37,7 @@ void ModuleRecord::TraceRefs(GcHeap& heap) {
 }
 
 void ModuleRecord::ClearRefs() {
+    meta_obj = RcPtr<JSObject>();
     module_env = RcPtr<Environment>();
     dependencies.clear();
     for (auto& entry : exports) {

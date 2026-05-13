@@ -85,7 +85,9 @@ namespace qppjs {
     /* Array hole (elision) */          \
     X(ArrayHole, 0)                     \
     /* Dynamic import() */              \
-    X(ImportCall, 0)
+    X(ImportCall, 0)                    \
+    /* import.meta */                   \
+    X(MetaProperty, 0)
 
 enum class Opcode : uint8_t {
 #define X(name, _operand_bytes) k##name,

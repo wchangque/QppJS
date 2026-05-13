@@ -4,14 +4,15 @@
 
 ## 1. 下一阶段
 
-- 下一阶段：Phase 12 — Array.sort/splice/slice 内建方法
-- P3-1 JSString SSO 已完成（2266/2268 测试通过，0 LSan 泄漏）
+- 下一阶段：Phase 12 — Array.sort/splice/slice 内建方法，或 QuickJS 风格优化调研
+- import.meta 已完成（2512/2512 测试通过，0 LSan 泄漏）
 - 所有 Phase 1～11 已全部完成
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 
 ## 2. 候选目标
 
+- ~~**import.meta**：已完成（2026-05-13）~~
 - ~~**P2-A（遗留）**：已完成（2026-04-27）~~
 - ~~**export async function 解析**：已完成（2026-04-28）~~
 - ~~**P3-1**：已完成（2026-05-13）—— JSString SSO 布局~~

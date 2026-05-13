@@ -14,6 +14,7 @@
 //  11. 模块顶层 this === undefined
 //  12. export const 模块内重赋值 → TypeError
 
+#include "qppjs/frontend/parser.h"
 #include "qppjs/runtime/interpreter.h"
 #include "qppjs/vm/vm.h"
 
@@ -2340,6 +2341,1025 @@ result;
     auto res = vm_exec_module(tmp.abs("entry.js"));
     ASSERT_TRUE(res.is_ok()) << res.error().message();
     EXPECT_EQ(res.value().as_number(), 42.0);
+}
+
+// ============================================================
+// import.meta 测试（IM-01 ~ IM-12）
+// ============================================================
+
+// IM-01: 模块内 import.meta.url 返回模块文件绝对路径
+TEST(InterpModule, IM01_ImportMetaUrl) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.url;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_string());
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM01_ImportMetaUrl) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.url;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_string());
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+// IM-02: 模块内 import.meta 的 [[Prototype]] 为 null
+// 验证方式：import.meta 不继承 Object.prototype 的属性（如 hasOwnProperty）
+TEST(InterpModule, IM02_ImportMetaProtoNull) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.hasOwnProperty === undefined;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+TEST(VmModule, IM02_ImportMetaProtoNull) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.hasOwnProperty === undefined;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+// IM-03: 模块内 import.meta 的属性可写
+TEST(InterpModule, IM03_ImportMetaPropertyWritable) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.x = 1;
+import.meta.x;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 1.0);
+}
+
+TEST(VmModule, IM03_ImportMetaPropertyWritable) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.x = 1;
+import.meta.x;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_number(), 1.0);
+}
+
+// IM-04: 不同模块的 import.meta 是独立对象
+TEST(InterpModule, IM04_DifferentModulesIndependentMeta) {
+    TempDir tmp;
+    tmp.write("a.js", "import.meta.x = 1; export let ax = import.meta.x;");
+    tmp.write("b.js", "export let bx = import.meta.x;");
+    tmp.write("entry.js", R"(
+import { ax } from './a.js';
+import { bx } from './b.js';
+ax + ',' + bx;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), "1,undefined");
+}
+
+TEST(VmModule, IM04_DifferentModulesIndependentMeta) {
+    TempDir tmp;
+    tmp.write("a.js", "import.meta.x = 1; export let ax = import.meta.x;");
+    tmp.write("b.js", "export let bx = import.meta.x;");
+    tmp.write("entry.js", R"(
+import { ax } from './a.js';
+import { bx } from './b.js';
+ax + ',' + bx;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), "1,undefined");
+}
+
+// IM-05: Script 中使用 import.meta → SyntaxError
+TEST(InterpModule, IM05_ScriptImportMetaSyntaxError) {
+    auto parse_result = qppjs::parse_program("import.meta.url;", false);
+    EXPECT_FALSE(parse_result.ok());
+    EXPECT_NE(parse_result.error().message().find("only valid in modules"), std::string::npos);
+}
+
+TEST(VmModule, IM05_ScriptImportMetaSyntaxError) {
+    auto parse_result = qppjs::parse_program("import.meta.url;", false);
+    EXPECT_FALSE(parse_result.ok());
+    EXPECT_NE(parse_result.error().message().find("only valid in modules"), std::string::npos);
+}
+
+// IM-06: 模块内 import["meta"] 不是 import.meta（import 不是已定义的变量，报 ReferenceError）
+TEST(InterpModule, IM06_ImportBracketMetaIsUndefined) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let result = 'ok';
+try { import['meta']; } catch(e) { result = 'error'; }
+result;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), "error");
+}
+
+TEST(VmModule, IM06_ImportBracketMetaIsUndefined) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let result = 'ok';
+try { import['meta']; } catch(e) { result = 'error'; }
+result;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), "error");
+}
+
+// IM-07: 模块内 typeof import.meta === "object"
+TEST(InterpModule, IM07_TypeofImportMetaIsObject) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+typeof import.meta === 'object';
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+TEST(VmModule, IM07_TypeofImportMetaIsObject) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+typeof import.meta === 'object';
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+// IM-08: 模块内 import.meta 在函数体内使用
+TEST(InterpModule, IM08_ImportMetaInFunctionBody) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+function getUrl() { return import.meta.url; }
+getUrl();
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM08_ImportMetaInFunctionBody) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+function getUrl() { return import.meta.url; }
+getUrl();
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+// IM-09: 两个不同模块各自访问 import.meta.url
+TEST(InterpModule, IM09_TwoModulesOwnMetaUrl) {
+    TempDir tmp;
+    tmp.write("a.js", "export let aUrl = import.meta.url;");
+    tmp.write("b.js", "export let bUrl = import.meta.url;");
+    tmp.write("entry.js", R"(
+import { aUrl } from './a.js';
+import { bUrl } from './b.js';
+aUrl + '|' + bUrl;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("a.js") + "|" + tmp.abs("b.js"));
+}
+
+TEST(VmModule, IM09_TwoModulesOwnMetaUrl) {
+    TempDir tmp;
+    tmp.write("a.js", "export let aUrl = import.meta.url;");
+    tmp.write("b.js", "export let bUrl = import.meta.url;");
+    tmp.write("entry.js", R"(
+import { aUrl } from './a.js';
+import { bUrl } from './b.js';
+aUrl + '|' + bUrl;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("a.js") + "|" + tmp.abs("b.js"));
+}
+
+// IM-10: Object.keys(import.meta) 包含 "url"
+TEST(InterpModule, IM10_ObjectKeysContainsUrl) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let keys = Object.keys(import.meta);
+keys.indexOf('url') !== -1;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+TEST(VmModule, IM10_ObjectKeysContainsUrl) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let keys = Object.keys(import.meta);
+keys.indexOf('url') !== -1;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+// IM-11: 模块内 import.meta 赋值给变量
+TEST(InterpModule, IM11_AssignImportMetaToVariable) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let m = import.meta;
+m.url;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM11_AssignImportMetaToVariable) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let m = import.meta;
+m.url;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+// IM-12: 模块内多次访问 import.meta 返回同一对象
+TEST(InterpModule, IM12_MultipleAccessSameObject) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta === import.meta;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+TEST(VmModule, IM12_MultipleAccessSameObject) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta === import.meta;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+// ============================================================
+// import.meta 边界测试（IM-13 ~ IM-28）
+// ============================================================
+
+// IM-13: 模块内深层嵌套函数中访问 import.meta.url
+// 验证 VM 侧向上搜索调用栈找模块帧的逻辑
+TEST(InterpModule, IM13_DeepNestedFunctionImportMeta) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+function outer() {
+    function inner() {
+        return import.meta.url;
+    }
+    return inner();
+}
+outer();
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM13_DeepNestedFunctionImportMeta) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+function outer() {
+    function inner() {
+        return import.meta.url;
+    }
+    return inner();
+}
+outer();
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+// IM-14: 模块内闭包捕获 import.meta，在模块外（通过导出函数）调用
+// import.meta 是词法绑定，应返回定义模块（m.js）的 URL，而非调用者模块（entry.js）
+TEST(InterpModule, IM14_ClosureCapturesImportMeta) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export function getMetaUrl() { return import.meta.url; }
+)");
+    tmp.write("entry.js", R"(
+import { getMetaUrl } from './m.js';
+getMetaUrl();
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("m.js"));
+}
+
+TEST(VmModule, IM14_ClosureCapturesImportMeta) {
+    TempDir tmp;
+    tmp.write("m.js", R"(
+export function getMetaUrl() { return import.meta.url; }
+)");
+    tmp.write("entry.js", R"(
+import { getMetaUrl } from './m.js';
+getMetaUrl();
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("m.js"));
+}
+
+// IM-15: import.meta 作为函数参数传递
+TEST(InterpModule, IM15_ImportMetaAsArgument) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+function checkUrl(meta) { return meta.url; }
+checkUrl(import.meta);
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM15_ImportMetaAsArgument) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+function checkUrl(meta) { return meta.url; }
+checkUrl(import.meta);
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+// IM-16: import.meta 在条件分支中使用
+TEST(InterpModule, IM16_ImportMetaInConditional) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let result = '';
+if (import.meta.url.length > 0) {
+    result = 'has_url';
+} else {
+    result = 'no_url';
+}
+result;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), "has_url");
+}
+
+TEST(VmModule, IM16_ImportMetaInConditional) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let result = '';
+if (import.meta.url.length > 0) {
+    result = 'has_url';
+} else {
+    result = 'no_url';
+}
+result;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), "has_url");
+}
+
+// IM-17: import.meta 在循环中使用（多次访问，验证缓存一致性）
+TEST(InterpModule, IM17_ImportMetaInLoop) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let same = true;
+let first = import.meta;
+for (let i = 0; i < 5; i = i + 1) {
+    if (import.meta !== first) { same = false; }
+}
+same;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+TEST(VmModule, IM17_ImportMetaInLoop) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let same = true;
+let first = import.meta;
+for (let i = 0; i < 5; i = i + 1) {
+    if (import.meta !== first) { same = false; }
+}
+same;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+// IM-18: import.meta 在 try/catch 块中使用
+TEST(InterpModule, IM18_ImportMetaInTryCatch) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let result = '';
+try {
+    result = import.meta.url;
+} catch(e) {
+    result = 'error';
+}
+result;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM18_ImportMetaInTryCatch) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let result = '';
+try {
+    result = import.meta.url;
+} catch(e) {
+    result = 'error';
+}
+result;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+// IM-19: import.meta 属性可删除（delete 未实现，但属性覆盖验证）
+// 验证 import.meta.url 可被覆盖（属性 writable）
+TEST(InterpModule, IM19_ImportMetaUrlOverridable) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.url = '/custom/path';
+import.meta.url;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), "/custom/path");
+}
+
+TEST(VmModule, IM19_ImportMetaUrlOverridable) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.url = '/custom/path';
+import.meta.url;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), "/custom/path");
+}
+
+// IM-20: import.meta 在 re-export 链中的模块里使用
+// 验证中间模块的 import.meta.url 指向自身而非入口模块
+TEST(InterpModule, IM20_ImportMetaInReExportChain) {
+    TempDir tmp;
+    tmp.write("a.js", "export let aUrl = import.meta.url;");
+    tmp.write("b.js", "export { aUrl } from './a.js'; export let bUrl = import.meta.url;");
+    tmp.write("entry.js", R"(
+import { aUrl, bUrl } from './b.js';
+aUrl + '|' + bUrl;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("a.js") + "|" + tmp.abs("b.js"));
+}
+
+TEST(VmModule, IM20_ImportMetaInReExportChain) {
+    TempDir tmp;
+    tmp.write("a.js", "export let aUrl = import.meta.url;");
+    tmp.write("b.js", "export { aUrl } from './a.js'; export let bUrl = import.meta.url;");
+    tmp.write("entry.js", R"(
+import { aUrl, bUrl } from './b.js';
+aUrl + '|' + bUrl;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("a.js") + "|" + tmp.abs("b.js"));
+}
+
+// IM-21: import.meta 在循环依赖模块的顶层使用（非函数体内）
+// 验证循环依赖模块各自的 import.meta.url 指向自身
+TEST(InterpModule, IM21_ImportMetaInCircularDependency) {
+    TempDir tmp;
+    tmp.write("a.js", R"(
+import { bUrl } from './b.js';
+export let aUrl = import.meta.url;
+)");
+    tmp.write("b.js", R"(
+import { aUrl } from './a.js';
+export let bUrl = import.meta.url;
+)");
+    tmp.write("entry.js", R"(
+import { aUrl } from './a.js';
+import { bUrl } from './b.js';
+aUrl + '|' + bUrl;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("a.js") + "|" + tmp.abs("b.js"));
+}
+
+TEST(VmModule, IM21_ImportMetaInCircularDependency) {
+    TempDir tmp;
+    tmp.write("a.js", R"(
+import { bUrl } from './b.js';
+export let aUrl = import.meta.url;
+)");
+    tmp.write("b.js", R"(
+import { aUrl } from './a.js';
+export let bUrl = import.meta.url;
+)");
+    tmp.write("entry.js", R"(
+import { aUrl } from './a.js';
+import { bUrl } from './b.js';
+aUrl + '|' + bUrl;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("a.js") + "|" + tmp.abs("b.js"));
+}
+
+// IM-22: import.meta 在副作用导入模块中使用
+TEST(InterpModule, IM22_ImportMetaInSideEffectModule) {
+    TempDir tmp;
+    tmp.write("side.js", "export let sideUrl = import.meta.url;");
+    tmp.write("entry.js", R"(
+import './side.js';
+import { sideUrl } from './side.js';
+sideUrl;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("side.js"));
+}
+
+TEST(VmModule, IM22_ImportMetaInSideEffectModule) {
+    TempDir tmp;
+    tmp.write("side.js", "export let sideUrl = import.meta.url;");
+    tmp.write("entry.js", R"(
+import './side.js';
+import { sideUrl } from './side.js';
+sideUrl;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("side.js"));
+}
+
+// IM-23: import.meta 与动态 import() 组合使用
+TEST(InterpModule, IM23_ImportMetaWithDynamicImport) {
+    TempDir tmp;
+    tmp.write("m.js", "export let mUrl = import.meta.url;");
+    tmp.write("entry.js", R"(
+let result = '';
+import('./m.js').then(function(ns) { result = ns.mUrl; });
+result;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("m.js"));
+}
+
+TEST(VmModule, IM23_ImportMetaWithDynamicImport) {
+    TempDir tmp;
+    tmp.write("m.js", "export let mUrl = import.meta.url;");
+    tmp.write("entry.js", R"(
+let result = '';
+import('./m.js').then(function(ns) { result = ns.mUrl; });
+result;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("m.js"));
+}
+
+// IM-24: import.meta 的 url 属性是字符串类型
+TEST(InterpModule, IM24_ImportMetaUrlIsString) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+typeof import.meta.url;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), "string");
+}
+
+TEST(VmModule, IM24_ImportMetaUrlIsString) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+typeof import.meta.url;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), "string");
+}
+
+// IM-25: import.meta 在模块顶层作为表达式的一部分（二元运算）
+TEST(InterpModule, IM25_ImportMetaInBinaryExpression) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.url + '#hash';
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js") + "#hash");
+}
+
+TEST(VmModule, IM25_ImportMetaInBinaryExpression) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.url + '#hash';
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js") + "#hash");
+}
+
+// IM-26: import.meta 在 return 语句中直接返回
+TEST(InterpModule, IM26_ImportMetaInReturn) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+function f() { return import.meta; }
+f().url;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM26_ImportMetaInReturn) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+function f() { return import.meta; }
+f().url;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+// IM-27: import.meta 在 async 函数中使用
+TEST(InterpModule, IM27_ImportMetaInAsyncFunction) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+async function getUrl() { return import.meta.url; }
+getUrl();
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());  // async 返回 Promise
+}
+
+TEST(VmModule, IM27_ImportMetaInAsyncFunction) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+async function getUrl() { return import.meta.url; }
+getUrl();
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_TRUE(res.value().is_object());  // async 返回 Promise
+}
+
+// IM-28: import.meta 在模块顶层 await 之后使用
+// 验证 TLA 挂起/恢复后 import.meta 仍然可用
+TEST(InterpModule, IM28_ImportMetaAfterTopLevelAwait) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let v = await Promise.resolve(1);
+import.meta.url;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM28_ImportMetaAfterTopLevelAwait) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let v = await Promise.resolve(1);
+import.meta.url;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+// IM-29: import.meta 在模块顶层 await 挂起前的函数中使用
+// 验证 TLA 挂起/恢复后，函数内 import.meta 仍然正确
+TEST(InterpModule, IM29_ImportMetaInFunctionBeforeTLA) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+function getUrl() { return import.meta.url; }
+let url1 = getUrl();
+let v = await Promise.resolve(1);
+let url2 = getUrl();
+url1 + '|' + url2;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js") + "|" + tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM29_ImportMetaInFunctionBeforeTLA) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+function getUrl() { return import.meta.url; }
+let url1 = getUrl();
+let v = await Promise.resolve(1);
+let url2 = getUrl();
+url1 + '|' + url2;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js") + "|" + tmp.abs("entry.js"));
+}
+
+// IM-30: import.meta 的 url 属性不为空字符串
+TEST(InterpModule, IM30_ImportMetaUrlNotEmpty) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.url.length > 0;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+TEST(VmModule, IM30_ImportMetaUrlNotEmpty) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.url.length > 0;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+// IM-31: import.meta 在 Object.keys 中只有 "url" 一个属性（初始状态）
+TEST(InterpModule, IM31_ObjectKeysOnlyUrl) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let keys = Object.keys(import.meta);
+keys.length === 1 && keys[0] === 'url';
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+TEST(VmModule, IM31_ObjectKeysOnlyUrl) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let keys = Object.keys(import.meta);
+keys.length === 1 && keys[0] === 'url';
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+// IM-32: import.meta 的 [[Prototype]] 为 null
+// 通过 instanceof 验证：import.meta 不是 Object 的实例（原型链为 null）
+TEST(InterpModule, IM32_ImportMetaNotInstanceOfObject) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta instanceof Object === false;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+TEST(VmModule, IM32_ImportMetaNotInstanceOfObject) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta instanceof Object === false;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+// IM-33: import.meta 不继承 toString 方法
+TEST(InterpModule, IM33_ImportMetaNoToString) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.toString === undefined;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+TEST(VmModule, IM33_ImportMetaNoToString) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.toString === undefined;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+// IM-34: import.meta 不继承 valueOf 方法
+TEST(InterpModule, IM34_ImportMetaNoValueOf) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.valueOf === undefined;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+TEST(VmModule, IM34_ImportMetaNoValueOf) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta.valueOf === undefined;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+// IM-35: import.meta 在模块顶层作为对象属性值
+TEST(InterpModule, IM35_ImportMetaAsPropertyValue) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let obj = { meta: import.meta };
+obj.meta.url;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM35_ImportMetaAsPropertyValue) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let obj = { meta: import.meta };
+obj.meta.url;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+// IM-36: import.meta 在数组字面量中
+TEST(InterpModule, IM36_ImportMetaInArrayLiteral) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let arr = [import.meta.url, 'extra'];
+arr[0];
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM36_ImportMetaInArrayLiteral) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let arr = [import.meta.url, 'extra'];
+arr[0];
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+// IM-37: import.meta 在逻辑表达式中（短路求值）
+TEST(InterpModule, IM37_ImportMetaInLogicalExpression) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta && import.meta.url || 'fallback';
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM37_ImportMetaInLogicalExpression) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+import.meta && import.meta.url || 'fallback';
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+// IM-38: import.meta 在条件分支中（if-else 替代三元，三元运算符未实现）
+TEST(InterpModule, IM38_ImportMetaInConditionalBranch) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let result = '';
+if (import.meta) {
+    result = import.meta.url;
+} else {
+    result = 'no-meta';
+}
+result;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM38_ImportMetaInConditionalBranch) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let result = '';
+if (import.meta) {
+    result = import.meta.url;
+} else {
+    result = 'no-meta';
+}
+result;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+// IM-39: import.meta 在 GC 后仍然可用（验证 meta_obj 被正确追踪为 GC root）
+TEST(InterpModule, IM39_ImportMetaSurvivesGC) {
+    TempDir tmp;
+    // 创建大量临时对象触发 GC，然后验证 import.meta 仍然可用
+    tmp.write("entry.js", R"(
+let m = import.meta;
+m.x = 1;
+// 创建一些临时对象（GC 可能在 exec 末尾触发）
+let arr = [1,2,3];
+m.url;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+TEST(VmModule, IM39_ImportMetaSurvivesGC) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let m = import.meta;
+m.x = 1;
+let arr = [1,2,3];
+m.url;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_string(), tmp.abs("entry.js"));
+}
+
+// IM-40: import.meta 在模块顶层多次赋值给不同变量后仍指向同一对象
+TEST(InterpModule, IM40_MultipleVariablesSameImportMeta) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let a = import.meta;
+let b = import.meta;
+a === b;
+)");
+    auto res = interp_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
+}
+
+TEST(VmModule, IM40_MultipleVariablesSameImportMeta) {
+    TempDir tmp;
+    tmp.write("entry.js", R"(
+let a = import.meta;
+let b = import.meta;
+a === b;
+)");
+    auto res = vm_exec_module(tmp.abs("entry.js"));
+    ASSERT_TRUE(res.is_ok()) << res.error().message();
+    EXPECT_EQ(res.value().as_bool(), true);
 }
 
 }  // namespace

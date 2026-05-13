@@ -167,6 +167,7 @@ private:
     int call_depth_ = 0;
     static constexpr int kMaxCallDepth = 500;
     ModuleRecord* current_module_ = nullptr;  // 当前正在执行的模块（非拥有指针）
+    JSFunction* current_function_ = nullptr;  // 当前正在执行的函数（非拥有指针，用于 import.meta 词法绑定）
 
     // Error prototype cache: indexed by NativeErrorType
     std::array<RcPtr<JSObject>, static_cast<size_t>(NativeErrorType::kCount)> error_protos_;

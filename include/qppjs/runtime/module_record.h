@@ -3,6 +3,7 @@
 #include "qppjs/frontend/ast.h"
 #include "qppjs/runtime/environment.h"
 #include "qppjs/runtime/gc_heap.h"
+#include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/rc_object.h"
 #include "qppjs/runtime/value.h"
 
@@ -53,6 +54,7 @@ public:
     };
     std::vector<ReExportEntry> re_exports;
 
+    RcPtr<JSObject> meta_obj;  // import.meta 对象，Link 阶段创建
     RcPtr<Environment> module_env;
     std::vector<RcPtr<ModuleRecord>> dependencies;
     std::optional<Value> eval_exception;  // 执行失败时缓存的错误值（kErrored 状态）

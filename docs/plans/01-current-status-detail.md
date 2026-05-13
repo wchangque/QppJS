@@ -4,6 +4,35 @@
 
 ## 1. 已完成任务
 
+- [x] **import.meta 词法绑定修复**（2026-05-13）：修复 import.meta 的词法绑定语义——当模块 A 中定义的函数被模块 B 调用时，函数体内的 import.meta 应返回定义模块 A 的元数据，而非调用者模块 B。改动：JSFunction 新增 `defining_module_` 字段（ModuleRecord*，默认 nullptr）+ getter/setter；Interpreter `make_function_value`/`make_async_function_value` 中捕获 `current_module_` 设置到 `defining_module_`；Interpreter 新增 `current_function_` 成员，`call_function` 中设置/恢复；`eval_expr` MetaProperty 分支优先使用 `current_function_->defining_module()`，nullptr 时回退到 `current_module_`；VM `kMakeFunction` 中捕获 `frame.current_module` 设置到 `defining_module_`；VM `push_call_frame` 中将 `fn->defining_module()` 赋值给新帧 `current_module`；VM `kMetaProperty` 直接使用 `frame.current_module`，移除调用栈搜索逻辑。更新 IM-14 测试断言为精确匹配 m.js 路径。2568/2568 通过（coverage），2566/2566 通过（run_ut ASAN），0 LSan 泄漏。
+
+- [x] **import.meta 边界测试补充**（2026-05-13）：在 `tests/unit/module_test.cpp` 新增 56 个测试（28 Interp + 28 VM，IM-13～IM-40）。覆盖范围：
+  - **深层嵌套**：IM-13 深层嵌套函数中 import.meta（验证 VM 向上搜索调用栈找模块帧）
+  - **跨模块闭包**：IM-14 闭包捕获 import.meta 跨模块调用（验证函数可正常调用且返回有效 url）
+  - **参数传递**：IM-15 import.meta 作为函数参数传递
+  - **控制流**：IM-16 条件分支中使用、IM-17 循环中多次访问验证缓存一致性、IM-18 try/catch 块中使用、IM-38 if-else 条件分支
+  - **属性可变性**：IM-19 url 属性可覆盖
+  - **模块拓扑**：IM-20 re-export 链中 import.meta 指向自身、IM-21 循环依赖模块顶层 import.meta、IM-22 副作用导入模块中 import.meta
+  - **动态 import 组合**：IM-23 import.meta 与动态 import() 组合
+  - **类型验证**：IM-24 url 是字符串类型、IM-30 url 非空字符串
+  - **表达式上下文**：IM-25 二元表达式、IM-26 return 语句、IM-35 对象属性值、IM-36 数组元素、IM-37 逻辑表达式短路求值
+  - **async/TLA**：IM-27 async 函数中使用、IM-28 TLA 挂起后 import.meta 仍可用、IM-29 TLA 挂起前后函数内 import.meta 一致性
+  - **原型链验证**：IM-31 Object.keys 仅含 "url"、IM-32 instanceof Object 为 false、IM-33 不继承 toString、IM-34 不继承 valueOf
+  - **GC 安全**：IM-39 GC 后 import.meta 仍可用（验证 meta_obj 被正确追踪为 GC root）
+  - **对象同一性**：IM-40 多变量指向同一对象
+  - 测试过程中发现并记录了以下边界行为：(1) Interpreter 侧 `current_module_` 指向当前正在执行的模块，从 entry.js 调用 m.js 导出函数时，函数体内 import.meta 返回 entry.js 的 meta（非词法绑定）；(2) 三元运算符 `?:` 未实现；(3) `Object.getPrototypeOf` 未实现；(4) 模块顶层 `var` 声明的 for 循环变量在 Interpreter 侧循环体外不可见。2568/2568 通过（coverage），0 LSan 泄漏。
+
+- [x] **import.meta 元属性支持**（2026-05-13）：为 ESM 模块系统实现 `import.meta` 元属性。涉及 8 个模块改动：
+  - **AST**（`ast.h`）：新增 `MetaProperty{SourceRange range}` 表达式节点，加入 `ExprNode` variant
+  - **Opcode**（`opcode.h`）：新增 `kMetaProperty` 字节码（0 操作数），在 `ImportCall` 之后
+  - **Parser**（`parser.cpp`）：nud Ident 分支在 `import(` 动态调用检测之后、普通标识符返回之前，检测 `import.meta`（tok_text=="import" && cur.kind==Dot → advance → 检查 Ident "meta" → 检查 `in_module_context_` → advance → 返回 MetaProperty）；新增 `in_module_context_` 标志（模块解析时设 true，函数体内不重置），与 `in_module_`（TLA 用）分离；`parse_stmt()` 入口 peek 下一个 token 区分 `import.meta`/`import[` 表达式与 import 声明；`expr_range` 添加 MetaProperty 分支
+  - **ModuleRecord**（`module_record.h/cpp`）：新增 `RcPtr<JSObject> meta_obj` 字段；`TraceRefs` 添加 `meta_obj` 追踪；`ClearRefs` 添加 `meta_obj` 清理
+  - **Interpreter**（`interpreter.cpp`）：`eval_expr` 新增 MetaProperty 分支，通过 `current_module_->meta_obj` 返回缓存对象；`link_module` 在模块环境创建后创建 `meta_obj`（`RcPtr<JSObject>::make()`，proto=nullptr，`set_property("url", mod.specifier)`，`gc_heap_.Register`）
+  - **VM Compiler**（`compiler.cpp`）：`compile_expr` 新增 MetaProperty 分支，emit `kMetaProperty`
+  - **VM**（`vm.cpp`）：run loop 新增 `kMetaProperty` case，向上搜索调用栈找模块帧的 `meta_obj`；`link_module` 对称创建 `meta_obj`
+  - **ast_dump**（`ast_dump.cpp`）：新增 MetaProperty 输出 `"MetaProperty\n"`
+  - **测试**：新增 24 个测试（IM-01～IM-12 × Interp+VM 对称），覆盖：url 返回绝对路径、[[Prototype]] 为 null（不继承 Object.prototype）、属性可写、不同模块独立对象、Script 中 SyntaxError、`import["meta"]` 不等同于 import.meta、typeof 为 "object"、函数体内使用、两个模块各自 url、Object.keys 包含 "url"、赋值给变量、多次访问返回同一对象。2512/2512 通过（coverage），2510/2510 通过（run_ut ASAN），0 LSan 泄漏。
+
 - [x] **NM49 修复（Math.max/min 的 +0/-0 语义）**（2026-05-13）：`std::fmax`/`std::fmin` 不能正确区分 `+0` 和 `-0`（C++ 标准规定 `+0.0 == -0.0`，`std::fmax` 若参数等价则返回第一个），导致 `Math.min(-0, 0)` 返回 `0` 而非 `-0`，`Math.max(-0, 0)` 返回 `-0` 而非 `0`。修复方案：interpreter.cpp 和 vm.cpp 两侧各替换 `std::fmax(result, v)` 和 `std::fmin(result, v)` 为手动比较：(1) Math.max：`v > result || (v == 0.0 && !std::signbit(v) && std::signbit(result))` 时取 `v`；(2) Math.min：`v < result || (v == 0.0 && std::signbit(v))` 时取 `v`。共改 4 行（每侧 4 行）。2268/2268 通过（coverage），2266/2266 通过（run_ut ASAN），0 LSan 泄漏。
 
 - [x] **P3-1 JSString SSO Review 修复（M-1/M-2）**（2026-05-13）：M-1：String.prototype indexOf/lastIndexOf/slice/substring 四个方法在 null/undefined 检查之后，若 this 不是字符串则通过 `to_string_val` 转换后取 `js_string_raw()`，修复 `String.prototype.indexOf.call(42, "2")` 类调用的 assert 崩溃/UB（interpreter.cpp + vm.cpp 两侧各 4 处，共 8 处）；M-2：`JSString` 堆分配路径 `malloc` 返回 nullptr 时 `std::abort()`（rc_object.h 1 处）。2266/2268 通过（coverage，2 个预存 NM49 失败），0 LSan 泄漏。

@@ -69,7 +69,7 @@ description: 编排 QppJS 的 agent team 完成一个具体语言特性或模块
 **quickjs-research prompt 模板：**
 ```
 主题：<topic>
-请优先查阅 docs/quickjs/ 下的本地整理文档，不清晰再去 /home/wuzhen/code/QuickJS 源码中查找。
+请优先查阅 docs/quickjs/ 下的本地整理文档，不清晰再去 /home/wuzhen/code/pc/QuickJS 源码中查找。
 按你的固定输出格式输出实现路径、关键结构、可借鉴点、不建议照搬点。
 ```
 

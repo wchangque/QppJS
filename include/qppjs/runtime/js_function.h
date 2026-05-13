@@ -17,6 +17,7 @@
 namespace qppjs {
 
 class JSObject;
+class ModuleRecord;
 struct BytecodeFunction;
 
 // Native function signature: receives this_val, evaluated args; is_new_call is true when called via new.
@@ -61,6 +62,10 @@ public:
     const Value& bound_this_val() const { return bound_this_; }
     const std::vector<Value>& bound_args() const { return bound_args_; }
 
+    // import.meta 词法绑定：记录函数是在哪个模块中创建的
+    ModuleRecord* defining_module() const { return defining_module_; }
+    void set_defining_module(ModuleRecord* mod) { defining_module_ = mod; }
+
     // Static properties on the function object itself (e.g., Object.keys, Array.isArray).
     void set_property(const std::string& key, Value value);
     Value get_property(const std::string& key) const;
@@ -83,6 +88,9 @@ private:
     Value bound_target_;
     Value bound_this_;
     std::vector<Value> bound_args_;
+
+    // import.meta 词法绑定：函数定义时所在的模块（非拥有指针）
+    ModuleRecord* defining_module_ = nullptr;
 };
 
 }  // namespace qppjs

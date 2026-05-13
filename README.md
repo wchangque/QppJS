@@ -13,7 +13,7 @@ QppJS 是一个从零开始实现的 JavaScript 引擎项目。
 
 ## 参考项目
 
-当前主要参考仓库：`/home/wuzhen/code/QuickJS`
+当前主要参考仓库：`/home/wuzhen/code/pc/QuickJS`
 
 从现有参考仓库可确认，QuickJS 包含以下与引擎实现直接相关的内容：
 

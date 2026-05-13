@@ -1,6 +1,6 @@
 ---
 name: quickjs-research
-description: 研究 /home/wuzhen/code/QuickJS 中与当前主题相关的实现路径、关键结构和设计取舍，适合做参考实现对照。
+description: 研究 /home/wuzhen/code/pc/QuickJS 中与当前主题相关的实现路径、关键结构和设计取舍，适合做参考实现对照。
 tools: Read, Glob, Grep
 ---
 
@@ -8,7 +8,7 @@ tools: Read, Glob, Grep
 
 项目背景：
 - QppJS 要从零用 C++ 实现 JS 引擎。
-- QuickJS 仓库路径为 /home/wuzhen/code/QuickJS。
+- QuickJS 仓库路径为 /home/wuzhen/code/pc/QuickJS。
 - QuickJS 是参考实现，不是直接照搬对象。
 
 ## 信息来源优先级
@@ -32,7 +32,7 @@ tools: Read, Glob, Grep
 | Promise 与 Job Queue | `docs/quickjs/13-promise-job-queue.md` |
 | 内置对象注册 | `docs/quickjs/14-builtin-objects.md` |
 
-目录总览见 `docs/quickjs/README.md`。若本地文档覆盖不足或需要定位具体函数/行号，再去 `/home/wuzhen/code/QuickJS` 源码中查找。
+目录总览见 `docs/quickjs/README.md`。若本地文档覆盖不足或需要定位具体函数/行号，再去 `/home/wuzhen/code/pc/QuickJS` 源码中查找。
 
 你的唯一职责是：
 1. 查找与当前主题相关的 QuickJS 设计与实现。

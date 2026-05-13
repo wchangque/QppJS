@@ -229,6 +229,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const ArrayExpression& n) { return n.range; },
                               [](const AwaitExpression& n) { return n.range; },
                               [](const AsyncFunctionExpression& n) { return n.range; },
+                              [](const MetaProperty& n) { return n.range; },
                               [](const ImportCallExpression& n) { return n.range; },
                       },
                       e.v);
@@ -268,10 +269,12 @@ struct Parser {
     bool is_top_level_; // import/export 只允许在顶层
     bool in_async_function_; // P2-E: await 只在 async 函数体内有效
     bool in_module_;         // TLA: 模块顶层上下文，允许 await 表达式
+    bool in_module_context_; // import.meta: 模块内任意位置（含函数体）均合法
 
     explicit Parser(std::string_view src, bool is_module = false)
         : source(src), lex(lexer_init(src)), cur{TokenKind::Eof, {0, 0}}, got_lf(false),
-          is_top_level_(true), in_async_function_(false), in_module_(is_module) {
+          is_top_level_(true), in_async_function_(false), in_module_(is_module),
+          in_module_context_(is_module) {
         advance();  // 载入第一个 token
     }
 
@@ -427,6 +430,20 @@ struct Parser {
                     return ParseResult<ExprNode>::Ok(ExprNode{ImportCallExpression{
                         std::make_unique<ExprNode>(std::move(spec.value())),
                         span(tok.range.offset, end)}});
+                }
+                // import.meta — 元属性（仅在模块上下文合法）
+                if (tok_text == "import" && cur.kind == TokenKind::Dot) {
+                    advance();  // 消费 '.'
+                    if (cur.kind != TokenKind::Ident || token_text(cur) != "meta") {
+                        return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, cur, "expected 'meta' after 'import.'"));
+                    }
+                    if (!in_module_context_) {
+                        return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, tok, "'import.meta' is only valid in modules"));
+                    }
+                    advance();  // 消费 'meta'
+                    return ParseResult<ExprNode>::Ok(ExprNode{MetaProperty{span(tok.range.offset, range_end(cur.range))}});
                 }
                 std::string name{tok_text};
                 return ParseResult<ExprNode>::Ok(ExprNode{Identifier{std::move(name), tok.range}});
@@ -1616,8 +1633,27 @@ struct Parser {
         // when at top level; otherwise they are ordinary identifiers.
         if (is_top_level_ && cur.kind == TokenKind::Ident) {
             auto text = token_text(cur);
-            if (text == "import") return parse_import_decl();
-            if (text == "export") return parse_export_decl();
+            if (text == "import") {
+                // peek 下一个 token：import.meta / import['meta'] 是表达式，不是 import 声明
+                LexerState saved_lex = lex;
+                Token saved_cur = cur;
+                bool saved_got_lf = got_lf;
+                advance();
+                if (cur.kind == TokenKind::Dot || cur.kind == TokenKind::LBracket) {
+                    // import.xxx / import[xxx] — 作为表达式语句解析
+                    lex = saved_lex;
+                    cur = saved_cur;
+                    got_lf = saved_got_lf;
+                } else {
+                    // 普通 import 声明
+                    lex = saved_lex;
+                    cur = saved_cur;
+                    got_lf = saved_got_lf;
+                    return parse_import_decl();
+                }
+            } else if (text == "export") {
+                return parse_export_decl();
+            }
         }
         switch (cur.kind) {
             case TokenKind::KwLet:
