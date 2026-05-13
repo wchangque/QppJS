@@ -229,6 +229,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const ArrayExpression& n) { return n.range; },
                               [](const AwaitExpression& n) { return n.range; },
                               [](const AsyncFunctionExpression& n) { return n.range; },
+                              [](const ImportCallExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -413,6 +414,18 @@ struct Parser {
                             std::make_unique<ExprNode>(std::move(arg.value())),
                             span(tok.range.offset, end)}});
                     }
+                }
+                // import(specifier) — 动态 import 表达式
+                if (tok_text == "import" && cur.kind == TokenKind::LParen) {
+                    advance();  // 消费 (
+                    auto spec = parse_expr(2);  // 解析 specifier 表达式
+                    if (!spec.ok()) return spec;
+                    auto rp = expect(TokenKind::RParen);
+                    if (!rp.ok()) return ParseResult<ExprNode>::Err(rp.error());
+                    uint32_t end = range_end(rp.value().range);
+                    return ParseResult<ExprNode>::Ok(ExprNode{ImportCallExpression{
+                        std::make_unique<ExprNode>(std::move(spec.value())),
+                        span(tok.range.offset, end)}});
                 }
                 std::string name{tok_text};
                 return ParseResult<ExprNode>::Ok(ExprNode{Identifier{std::move(name), tok.range}});
@@ -1262,6 +1275,37 @@ struct Parser {
         // cur 是 Ident("import")，由 parse_stmt 的上下文关键字检查分发至此
         Token kw = cur;
         advance();  // 消费 import
+
+        // import(specifier) — 动态 import 表达式语句（顶层或非顶层均可）
+        if (cur.kind == TokenKind::LParen) {
+            advance();  // 消费 (
+            auto spec = parse_expr(2);
+            if (!spec.ok()) return ParseResult<StmtNode>::Err(spec.error());
+            auto rp = expect(TokenKind::RParen);
+            if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
+            uint32_t call_end = range_end(rp.value().range);
+            ExprNode import_call{ImportCallExpression{
+                std::make_unique<ExprNode>(std::move(spec.value())),
+                span(kw.range.offset, call_end)}};
+            // 继续解析可能的 .then() 等方法调用（作为 led 处理）
+            while (true) {
+                int bp = lbp(cur.kind);
+                if (bp <= 0) break;
+                Token op_tok = cur;
+                advance();
+                auto res = led(op_tok, std::move(import_call));
+                if (!res.ok()) return ParseResult<StmtNode>::Err(res.error());
+                import_call = std::move(res.value());
+            }
+            auto semi = consume_semicolon();
+            if (!semi.ok()) return ParseResult<StmtNode>::Err(semi.error());
+            uint32_t es_end = range_end(semi.value().range);
+            if (es_end == semi.value().range.offset) {
+                es_end = range_end(expr_range(import_call));
+            }
+            return ParseResult<StmtNode>::Ok(StmtNode{ExpressionStatement{
+                std::move(import_call), span(kw.range.offset, es_end)}});
+        }
 
         if (!is_top_level_) {
             return ParseResult<StmtNode>::Err(

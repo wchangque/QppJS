@@ -3665,6 +3665,84 @@ EvalResult VM::run(size_t exit_depth) {
             break;
         }
 
+        case Opcode::kImportCall: {
+            // Dynamic import(specifier): pop specifier, push Promise.
+            // Synchronously loads the module (Load/Link/Evaluate) and returns a fulfilled
+            // Promise wrapping the namespace object, or a rejected Promise on error.
+            Value spec_val = std::move(stack.back());
+            stack.pop_back();
+            std::string specifier = to_string_val(spec_val);
+
+            // Resolve base_dir from the nearest module frame in the call stack
+            std::string base_dir;
+            ModuleRecord* mod_ctx = frame.current_module;
+            if (!mod_ctx) {
+                for (int i = static_cast<int>(call_stack_.size()) - 1; i >= 0; --i) {
+                    if (call_stack_[i].current_module) {
+                        mod_ctx = call_stack_[i].current_module;
+                        break;
+                    }
+                }
+            }
+            if (mod_ctx) {
+                base_dir = std::filesystem::path(mod_ctx->specifier).parent_path().string();
+            } else {
+                base_dir = std::filesystem::current_path().string();
+            }
+
+            auto promise = RcPtr<JSPromise>::make();
+            gc_heap_.Register(promise.get());
+
+            auto load_result = module_loader_.Load(specifier, base_dir);
+            if (!load_result.ok()) {
+                Value err_val = make_error_value(NativeErrorType::kError,
+                    "Cannot load module '" + specifier + "': " + load_result.error().message());
+                promise->Reject(err_val, job_queue_);
+                stack.push_back(Value::object(ObjectPtr(promise)));
+                break;
+            }
+            auto mod = load_result.value();
+
+            auto link_result = link_module(*mod);
+            if (!link_result.is_ok()) {
+                Value err_val = make_error_value(NativeErrorType::kError,
+                    link_result.error().message());
+                promise->Reject(err_val, job_queue_);
+                stack.push_back(Value::object(ObjectPtr(promise)));
+                break;
+            }
+
+            auto eval_result_mod = evaluate_module(*mod);
+            if (!eval_result_mod.is_ok()) {
+                // evaluate_module may set frame.pending_throw for cached errors
+                Value err_val;
+                if (frame.pending_throw.has_value()) {
+                    err_val = std::move(*frame.pending_throw);
+                    frame.pending_throw = std::nullopt;
+                } else {
+                    err_val = make_error_value(NativeErrorType::kError,
+                        eval_result_mod.error().message());
+                }
+                promise->Reject(err_val, job_queue_);
+                stack.push_back(Value::object(ObjectPtr(promise)));
+                break;
+            }
+
+            // Build namespace object from module exports
+            auto ns_obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(ns_obj.get());
+            for (const auto& entry : mod->exports) {
+                if (entry.cell && entry.cell->initialized) {
+                    ns_obj->set_property(entry.name, entry.cell->value);
+                } else if (entry.cell) {
+                    ns_obj->set_property(entry.name, Value::undefined());
+                }
+            }
+            promise->Fulfill(Value::object(ObjectPtr(ns_obj)), job_queue_);
+            stack.push_back(Value::object(ObjectPtr(promise)));
+            break;
+        }
+
         case Opcode::kAwait: {
             // Suspend the async function: move the current frame out, store inner_promise,
             // and signal suspension to the async wrapper via vm_async_suspended_.

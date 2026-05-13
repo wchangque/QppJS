@@ -527,6 +527,7 @@ void Compiler::compile_expr(const ExprNode& expr) {
                 compile_expr(*e.argument);
                 emit(Opcode::kAwait);
             },
+            [this](const ImportCallExpression& e) { compile_import_call(e); },
         },
         expr.v);
 }
@@ -1080,6 +1081,11 @@ void Compiler::compile_for_stmt(const ForStatement& stmt, std::optional<std::str
     loop_env_stack_.pop_back();
 
     emit(Opcode::kPopScope);
+}
+
+void Compiler::compile_import_call(const ImportCallExpression& expr) {
+    compile_expr(*expr.specifier);  // push specifier string onto stack
+    emit(Opcode::kImportCall);      // pops specifier, pushes Promise
 }
 
 }  // namespace qppjs

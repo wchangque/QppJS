@@ -136,6 +136,12 @@ struct AwaitExpression {
     SourceRange range;
 };
 
+// 动态 import() 表达式 import(specifier)
+struct ImportCallExpression {
+    std::unique_ptr<ExprNode> specifier;
+    SourceRange range;
+};
+
 // async 函数表达式 async function [name](params) { body }
 struct AsyncFunctionExpression {
     std::optional<std::string> name;
@@ -165,7 +171,7 @@ struct ExprNode {
                  BinaryExpression, LogicalExpression, AssignmentExpression,
                  ObjectExpression, MemberExpression, MemberAssignmentExpression,
                  FunctionExpression, CallExpression, NewExpression, ArrayExpression,
-                 AwaitExpression, AsyncFunctionExpression>
+                 AwaitExpression, AsyncFunctionExpression, ImportCallExpression>
             v;
 
     ExprNode() = default;

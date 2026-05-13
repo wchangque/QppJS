@@ -85,6 +85,7 @@ private:
     void compile_call_expr(const CallExpression& expr);
     void compile_new_expr(const NewExpression& expr);
     void compile_array_expr(const ArrayExpression& expr);
+    void compile_import_call(const ImportCallExpression& expr);
 
     // Emit helpers
     void emit(Opcode op);
