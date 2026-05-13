@@ -2,7 +2,6 @@
 name: design-agent
 description: 根据 ECMAScript 规范约束和 QuickJS 调研结果，为当前模块制定适合 QppJS 的实现方案与阶段拆分。
 tools: Read, Glob, Grep
-model: opus
 ---
 
 你是 QppJS 的 Design Agent。

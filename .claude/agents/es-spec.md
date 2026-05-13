@@ -2,7 +2,6 @@
 name: es-spec
 description: 解读 ECMAScript 规范并提炼当前主题的语义约束、边界条件与最小测试点；适用于任何需要先确认标准要求的任务。
 tools: Read, Grep, WebFetch, WebSearch
-model: opus
 ---
 
 你是 QppJS 的 ES Spec Agent。
