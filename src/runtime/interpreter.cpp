@@ -4062,12 +4062,21 @@ EvalResult Interpreter::exec_module_body(ModuleRecord& mod) {
     Value last = Value::undefined();
     EvalResult final_result = EvalResult::ok(Value::undefined());
     bool has_error = false;
+    bool tla_suspended = false;
+    size_t tla_suspend_index = 0;
 
-    for (const auto& stmt : mod.ast.body) {
-        auto result = eval_stmt(stmt);
+    const auto& stmts = mod.ast.body;
+    for (size_t i = 0; i < stmts.size(); ++i) {
+        auto result = eval_stmt(stmts[i]);
         if (!result.is_ok()) {
-            // C++ 错误
             const std::string& emsg = result.error().message();
+            // TLA: 顶层 await 挂起
+            if (emsg == kAsyncSuspendSentinel) {
+                tla_suspended = true;
+                tla_suspend_index = i;
+                break;
+            }
+            // C++ 错误
             if (emsg == kPendingThrowSentinel && pending_throw_.has_value()) {
                 Value thrown = std::move(*pending_throw_);
                 pending_throw_ = std::nullopt;
@@ -4116,6 +4125,49 @@ EvalResult Interpreter::exec_module_body(ModuleRecord& mod) {
         }
         if (c.is_normal()) {
             last = c.value;
+        }
+    }
+
+    // TLA: 顶层 await 挂起，通过 run_async_body 机制异步执行剩余语句
+    if (tla_suspended) {
+        // 将 mod.ast.body 包装为 shared_ptr（no-op deleter，生命周期由 ModuleRecord 管理）
+        auto body_ptr = std::shared_ptr<std::vector<StmtNode>>(
+            const_cast<std::vector<StmtNode>*>(&stmts),
+            [](std::vector<StmtNode>*) {});
+
+        auto outer_promise = RcPtr<JSPromise>::make();
+        gc_heap_.Register(outer_promise.get());
+
+        // run_async_body 会切换到 mod.module_env，继续从 tla_suspend_index 执行
+        run_async_body(body_ptr, tla_suspend_index, mod.module_env, Value::undefined(),
+                       outer_promise);
+
+        // 等待所有微任务完成
+        drain_job_queue();
+
+        // 从 outer_promise 读取最终结果
+        current_module_ = saved_module;
+        if (outer_promise->state() == PromiseState::kFulfilled) {
+            return EvalResult::ok(outer_promise->result());
+        } else if (outer_promise->state() == PromiseState::kRejected) {
+            Value reason = outer_promise->result();
+            pending_throw_ = reason;
+            if (reason.is_object()) {
+                RcObject* raw = reason.as_object_raw();
+                if (raw && raw->object_kind() == ObjectKind::kOrdinary) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    Value n = obj->get_property("name");
+                    Value m = obj->get_property("message");
+                    std::string name = n.is_string() ? n.as_string() : "Error";
+                    std::string message = m.is_string() ? m.as_string() : "";
+                    return EvalResult::err(Error(ErrorKind::Runtime, name + ": " + message));
+                }
+            }
+            return EvalResult::err(Error(ErrorKind::Runtime, to_string_val(reason)));
+        } else {
+            // Promise 仍 pending（不应发生，drain 后应已 settled）
+            return EvalResult::err(Error(ErrorKind::Runtime,
+                "Error: top-level await did not settle"));
         }
     }
 

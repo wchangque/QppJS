@@ -6,8 +6,8 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | P3-1 JSString SSO 优化 + Review 修复（M-1/M-2）已完成 |
-| 测试计数 | 2268/2268 通过（coverage），2266/2266 通过（run_ut ASAN），0 LSan 泄漏 |
+| 当前阶段 | Top-Level Await 已完成 |
+| 测试计数 | 2291/2291 通过（coverage），2289/2289 通过（run_ut ASAN），0 LSan 泄漏 |
 | 最近更新 | 2026-05-13 |
 | 下一步 | Array.sort/splice/slice 内建方法，或 dynamic import() |
 
@@ -22,6 +22,7 @@
 
 ## 最近完成
 
+- [x] Top-Level Await：Parser 增加 `in_module_` 标志（模块上下文允许顶层 `await` 表达式，普通函数体内重置）；`parse_program` 增加 `bool is_module = false` 默认参数；`module_loader.cpp` 传入 `is_module=true`；Interpreter `exec_module_body` 检测 `kAsyncSuspendSentinel`，通过 `run_async_body` + `drain_job_queue` 同步等待 TLA 完成，从 outer_promise 读取最终结果；VM `exec_module_body` 类似，通过 `vm_handle_async_result` + `vm_drain_job_queue` 处理挂起；新增 23 个测试（TLA-01～TLA-12 × Interp+VM 对称，含基础顶层 await、多 await 串行、导出后 await 值正确、链式依赖 TLA、错误传播、try/catch 捕获、await 非 Promise 值、非模块上下文 await 是普通标识符）。2291/2291 通过（coverage），2289/2289 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] NM49 修复（Math.max/min 的 +0/-0 语义）：`std::fmax`/`std::fmin` 无法区分 `+0` 和 `-0`（C++ 标准认为两者相等），改为手动比较：Math.max 在 `v` 为 `+0` 且 `result` 为 `-0` 时取 `v`；Math.min 在 `v` 为 `-0` 时取 `v`。interpreter.cpp + vm.cpp 两侧对称修复（各 4 行）。2268/2268 通过（coverage），2266/2266 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] P3-1 JSString SSO Review 修复（M-1/M-2）：M-1：String.prototype indexOf/lastIndexOf/slice/substring 四个方法在 null/undefined 检查之后，若 this 不是字符串则通过 `to_string_val` 转换后取 `js_string_raw()`（interpreter.cpp + vm.cpp 两侧各 4 处，共 8 处）；M-2：`JSString` 堆分配路径 `malloc` 返回 nullptr 时 `std::abort()`（rc_object.h 1 处），同步添加 `<cstdlib>` include。2264/2266 通过（run_ut ASAN，2 个预先存在失败 NM49），0 LSan 泄漏。
 - [x] P3-1 JSString SSO 优化：`JSString` 改为 union SSO 布局（32 字节 inline_buf_ / heap_ptr_，`sizeof(JSString)==48`，`static_assert` 保证）；`Value` 新增 `sv()` 返回 `std::string_view`、`js_string_raw()` 返回 `JSString*`；`as_string()` 改为返回 `std::string`（值）；`Value::string()` 工厂接受 `std::string_view`；工具函数 `utf8_cu_to_byte`/`utf8_substr`/`utf8_trim_impl`/`str_index_of`/`str_last_index_of` 及 vm.cpp 对应函数参数全部改为 `std::string_view`；消除 interpreter.cpp 5 处 + vm.cpp 6 处 `JSString tmp_str(str)` 二次堆分配（indexOf/lastIndexOf/slice/substring/length 计算）；修复 `const std::string& = as_string()` 悬空引用（to_number_double、abstract_eq 共 6 处）；新增 12 个 SSO 单元测试（JSStringSSOTest 系列）。2239/2241 通过（coverage，2 个预先存在失败 NM49），0 LSan 泄漏。
@@ -87,7 +88,6 @@
 
 - Array.sort/splice/slice 内建方法
 - 动态 import()
-- Top-Level Await
 
 ## 阻塞
 

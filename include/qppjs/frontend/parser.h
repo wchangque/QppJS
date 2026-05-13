@@ -7,6 +7,6 @@
 
 namespace qppjs {
 
-ParseResult<Program> parse_program(std::string_view source);
+ParseResult<Program> parse_program(std::string_view source, bool is_module = false);
 
 }  // namespace qppjs

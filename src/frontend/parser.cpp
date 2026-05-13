@@ -266,10 +266,11 @@ struct Parser {
     bool got_lf;       // cur 前是否有换行（ASI 用）
     bool is_top_level_; // import/export 只允许在顶层
     bool in_async_function_; // P2-E: await 只在 async 函数体内有效
+    bool in_module_;         // TLA: 模块顶层上下文，允许 await 表达式
 
-    explicit Parser(std::string_view src)
+    explicit Parser(std::string_view src, bool is_module = false)
         : source(src), lex(lexer_init(src)), cur{TokenKind::Eof, {0, 0}}, got_lf(false),
-          is_top_level_(true), in_async_function_(false) {
+          is_top_level_(true), in_async_function_(false), in_module_(is_module) {
         advance();  // 载入第一个 token
     }
 
@@ -401,8 +402,8 @@ struct Parser {
                         std::move(fn_name), std::move(params_result.value()),
                         std::move(body_ptr), span(tok.range.offset, fn_end)}});
                 }
-                // await expr — await 表达式（只在 async 函数体内有效）
-                if (tok_text == "await" && !got_lf && in_async_function_) {
+                // await expr — 在 async 函数体内或模块顶层有效
+                if (tok_text == "await" && !got_lf && (in_async_function_ || in_module_)) {
                     // 只有当后续不是分号/}时才解析为 await 表达式
                     if (cur.kind != TokenKind::Semicolon && cur.kind != TokenKind::RBrace &&
                         cur.kind != TokenKind::Eof) {
@@ -508,10 +509,14 @@ struct Parser {
                 auto params_result = parse_function_params();
                 if (!params_result.ok()) return ParseResult<ExprNode>::Err(params_result.error());
                 // P2-E: non-async function body resets in_async_function_ context
+                // TLA: also reset in_module_ so await inside a plain function is not allowed
                 bool saved_in_async_fe = in_async_function_;
+                bool saved_in_module_fe = in_module_;
                 in_async_function_ = false;
+                in_module_ = false;
                 auto body_result = parse_function_body();
                 in_async_function_ = saved_in_async_fe;
+                in_module_ = saved_in_module_fe;
                 if (!body_result.ok()) return ParseResult<ExprNode>::Err(body_result.error());
                 uint32_t fn_end = range_end(body_result.value().second);
                 auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
@@ -1052,10 +1057,14 @@ struct Parser {
         auto params_result = parse_function_params();
         if (!params_result.ok()) return ParseResult<StmtNode>::Err(params_result.error());
         // P2-E: non-async function body resets in_async_function_ context
+        // TLA: also reset in_module_ so await inside a plain function is not allowed
         bool saved_in_async_fd = in_async_function_;
+        bool saved_in_module_fd = in_module_;
         in_async_function_ = false;
+        in_module_ = false;
         auto body_result = parse_function_body();
         in_async_function_ = saved_in_async_fd;
+        in_module_ = saved_in_module_fd;
         if (!body_result.ok()) return ParseResult<StmtNode>::Err(body_result.error());
         uint32_t fn_end = range_end(body_result.value().second);
         auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
@@ -1736,8 +1745,8 @@ struct Parser {
     }
 };
 
-ParseResult<Program> parse_program(std::string_view source) {
-    Parser p(source);
+ParseResult<Program> parse_program(std::string_view source, bool is_module) {
+    Parser p(source, is_module);
     return p.parse();
 }
 

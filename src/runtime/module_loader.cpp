@@ -61,8 +61,8 @@ ModuleLoader::LoadResult ModuleLoader::Load(const std::string& specifier,
     ss << file.rdbuf();
     std::string source = ss.str();
 
-    // 解析 AST
-    auto parse_result = parse_program(source);
+    // 解析 AST（模块上下文：允许顶层 await）
+    auto parse_result = parse_program(source, /*is_module=*/true);
     if (!parse_result.ok()) {
         cache_.erase(resolved);
         return LoadResult::Err(parse_result.error());
