@@ -4,9 +4,9 @@
 
 ## 1. 下一阶段
 
-- 下一阶段：Phase 12 — Array.sort/splice/slice 内建方法，或 QuickJS 风格优化调研
-- import.meta 已完成（2512/2512 测试通过，0 LSan 泄漏）
-- 所有 Phase 1～11 已全部完成
+- 下一阶段：QuickJS 风格优化调研，或更多内建对象
+- Array.sort/splice/slice 规范对齐修复已完成（2638/2638 测试通过，0 LSan 泄漏）
+- 所有 Phase 1～12 已全部完成
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 
@@ -20,9 +20,10 @@
 - ~~**Array.find/findIndex/some/every/indexOf/includes**：已完成（2026-04-28）~~
 - ~~**String.prototype 8 个方法**：已完成（2026-04-29）~~
 - ~~**Number/Math 内建对象**：已完成（2026-04-29）~~
-- 更多内建对象（Array.sort/splice/slice 等）
+- ~~**Array.sort/splice/slice**：已完成（2026-05-14）~~
 - ~~动态 import()（依赖 Phase 11 Promise）~~（已完成 2026-05-13）
-- Top-Level Await
+- ~~Top-Level Await~~（已完成 2026-05-13）
+- QuickJS 风格优化调研
 
 ## 3. 进入前提
 

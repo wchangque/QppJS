@@ -957,6 +957,11 @@ void Interpreter::init_runtime() {
         }
         deleted->array_length_ = static_cast<uint32_t>(del_count);
         int64_t new_len = len - del_count + static_cast<int64_t>(item_count);
+        if (new_len > 9007199254740991LL) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "splice: new length exceeds 2^53-1");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
         if (item_count < static_cast<uint32_t>(del_count)) {
             int64_t shift = del_count - static_cast<int64_t>(item_count);
             for (int64_t k = start + static_cast<int64_t>(item_count); k < new_len; k++) {
@@ -1013,13 +1018,23 @@ void Interpreter::init_runtime() {
         struct Slot {
             Value val;
             uint32_t pos;
+            std::string str_cache;
         };
         std::vector<Slot> slots;
-        slots.reserve(arr->elements_.size());
+        slots.reserve(len);
+        uint32_t undef_count = 0;
         for (uint32_t i = 0; i < len; i++) {
             auto it = arr->elements_.find(i);
-            if (it != arr->elements_.end()) {
-                slots.push_back({it->second, i});
+            if (it == arr->elements_.end()) {
+            } else if (it->second.is_undefined()) {
+                undef_count++;
+            } else {
+                slots.push_back({it->second, i, {}});
+            }
+        }
+        if (!has_cmp) {
+            for (auto& s : slots) {
+                s.str_cache = Interpreter::to_string_val(s.val);
             }
         }
         Value cmp_fn = has_cmp ? args[0] : Value::undefined();
@@ -1037,17 +1052,22 @@ void Interpreter::init_runtime() {
                 }
                 double cmp = to_number_double(res.value());
                 if (std::isnan(cmp)) cmp = 0.0;
-                return cmp < 0.0;
+                if (cmp != 0.0) return cmp < 0.0;
+                return a.pos < b.pos;
             } else {
-                std::string sa = Interpreter::to_string_val(a.val);
-                std::string sb = Interpreter::to_string_val(b.val);
-                return sa < sb;
+                int cmp = a.str_cache.compare(b.str_cache);
+                if (cmp != 0) return cmp < 0;
+                return a.pos < b.pos;
             }
         });
         if (had_error) return sort_err;
         arr->elements_.clear();
-        for (uint32_t i = 0; i < static_cast<uint32_t>(slots.size()); i++) {
-            arr->elements_[i] = std::move(slots[i].val);
+        uint32_t idx = 0;
+        for (auto& s : slots) {
+            arr->elements_[idx++] = std::move(s.val);
+        }
+        for (uint32_t i = 0; i < undef_count; i++) {
+            arr->elements_[idx++] = Value::undefined();
         }
         return EvalResult::ok(this_val);
     });

@@ -3956,4 +3956,673 @@ TEST(VMArray, FlatMapThenFilter) {
     EXPECT_EQ(v.as_number(), 4.0);
 }
 
+// ============================================================
+// Array.prototype.slice — 规范对齐修复测试 (A-261 ~ A-270)
+// ============================================================
+
+// A-261 Interp: slice 保留 hole 语义 — 结果数组 hole 位置读取为 undefined
+TEST(InterpArray, SlicePreservesHoles) {
+    // [1,,3].slice() → length=3, index 1 是 hole (读取为 undefined)
+    auto vlen = interp_ok("[1,,3].slice().length");
+    EXPECT_TRUE(vlen.is_number());
+    EXPECT_EQ(vlen.as_number(), 3.0);
+
+    auto vhole = interp_ok("[1,,3].slice()[1]");
+    EXPECT_TRUE(vhole.is_undefined());
+
+    // 非 hole 位置正确复制
+    auto v0 = interp_ok("[1,,3].slice()[0]");
+    EXPECT_TRUE(v0.is_number());
+    EXPECT_EQ(v0.as_number(), 1.0);
+
+    auto v2 = interp_ok("[1,,3].slice()[2]");
+    EXPECT_TRUE(v2.is_number());
+    EXPECT_EQ(v2.as_number(), 3.0);
+}
+
+// A-262 Interp: slice 结果独立 — 修改结果不影响原数组
+TEST(InterpArray, SliceResultIndependent) {
+    auto v = interp_ok("var a=[1,2,3]; var b=a.slice(); b[0]=99; a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-263 Interp: slice(-0) 等同于 slice(0)
+TEST(InterpArray, SliceNegativeZero) {
+    auto v = interp_ok("var a=[1,2,3]; a.slice(-0)[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-264 Interp: slice 非整数参数 — 小数被截断
+TEST(InterpArray, SliceNonIntegerArgs) {
+    auto v = interp_ok("[1,2,3,4,5].slice(1.5, 3.5).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-265 Interp: slice 负数超长 — 负 start 绝对值超过 length 等同 0
+TEST(InterpArray, SliceNegativeOverflow) {
+    auto v = interp_ok("[1,2,3].slice(-10)[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-266 Interp: slice 非数组 TypeError
+TEST(InterpArray, SliceNonArrayThrows) {
+    EXPECT_TRUE(interp_err("var x={}; Array.prototype.slice.call(x)"));
+}
+
+// A-267 Interp: slice NaN 参数等同 0
+TEST(InterpArray, SliceNaNArg) {
+    auto v = interp_ok("[1,2,3].slice(NaN, 2).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-268 Interp: slice start > end 返回空数组
+TEST(InterpArray, SliceStartGreaterThanEnd) {
+    auto v = interp_ok("[1,2,3].slice(2, 0).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// A-269 Interp: slice 无参数返回完整副本（含 hole）
+TEST(InterpArray, SliceNoArgsFullCopy) {
+    auto v = interp_ok("var a=[1,,3]; var b=a.slice(); b.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-270 Interp: slice 仅 start 参数（正数）
+TEST(InterpArray, SliceOnlyStart) {
+    auto v = interp_ok("[1,2,3,4].slice(2).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// ============================================================
+// Array.prototype.slice VM 镜像 (A-261b ~ A-270b)
+// ============================================================
+
+TEST(VMArray, SlicePreservesHoles) {
+    auto vlen = vm_ok("[1,,3].slice().length");
+    EXPECT_TRUE(vlen.is_number());
+    EXPECT_EQ(vlen.as_number(), 3.0);
+
+    auto vhole = vm_ok("[1,,3].slice()[1]");
+    EXPECT_TRUE(vhole.is_undefined());
+
+    auto v0 = vm_ok("[1,,3].slice()[0]");
+    EXPECT_TRUE(v0.is_number());
+    EXPECT_EQ(v0.as_number(), 1.0);
+
+    auto v2 = vm_ok("[1,,3].slice()[2]");
+    EXPECT_TRUE(v2.is_number());
+    EXPECT_EQ(v2.as_number(), 3.0);
+}
+
+TEST(VMArray, SliceResultIndependent) {
+    auto v = vm_ok("var a=[1,2,3]; var b=a.slice(); b[0]=99; a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+TEST(VMArray, SliceNegativeZero) {
+    auto v = vm_ok("var a=[1,2,3]; a.slice(-0)[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+TEST(VMArray, SliceNonIntegerArgs) {
+    auto v = vm_ok("[1,2,3,4,5].slice(1.5, 3.5).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+TEST(VMArray, SliceNegativeOverflow) {
+    auto v = vm_ok("[1,2,3].slice(-10)[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+TEST(VMArray, SliceNonArrayThrows) {
+    EXPECT_TRUE(vm_err("var x={}; Array.prototype.slice.call(x)"));
+}
+
+TEST(VMArray, SliceNaNArg) {
+    auto v = vm_ok("[1,2,3].slice(NaN, 2).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+TEST(VMArray, SliceStartGreaterThanEnd) {
+    auto v = vm_ok("[1,2,3].slice(2, 0).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+TEST(VMArray, SliceNoArgsFullCopy) {
+    auto v = vm_ok("var a=[1,,3]; var b=a.slice(); b.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+TEST(VMArray, SliceOnlyStart) {
+    auto v = vm_ok("[1,2,3,4].slice(2).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// ============================================================
+// Array.prototype.splice — 规范对齐修复测试 (A-271 ~ A-282)
+// ============================================================
+
+// A-271 Interp: splice 无参 — 不删除不插入
+TEST(InterpArray, SpliceNoArgs) {
+    auto v = interp_ok("var a=[1,2,3]; var d=a.splice(); a.length + d.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-272 Interp: splice 仅 start — 删除从 start 到末尾
+TEST(InterpArray, SpliceOnlyStart) {
+    auto v = interp_ok("var a=[1,2,3,4]; var d=a.splice(2); d.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-273 Interp: splice hole 保留 — 被删除的 hole 在 deleted 数组中也是 hole
+TEST(InterpArray, SplicePreservesHoles) {
+    auto v = interp_ok("var a=[1,,3]; var d=a.splice(0); d.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+
+    auto vhole = interp_ok("var a=[1,,3]; var d=a.splice(0); d[1]");
+    EXPECT_TRUE(vhole.is_undefined());
+}
+
+// A-274 Interp: splice 插入多于删除
+TEST(InterpArray, SpliceInsertMoreThanDelete) {
+    auto v = interp_ok("var a=[1,5]; a.splice(1,0,2,3,4); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 5.0);
+}
+
+// A-275 Interp: splice 删除多于插入
+TEST(InterpArray, SpliceDeleteMoreThanInsert) {
+    auto v = interp_ok("var a=[1,2,3,4,5]; a.splice(1,3,'x'); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-276 Interp: splice 负数超长 — start 负且绝对值超 length 等同 0
+TEST(InterpArray, SpliceNegativeOverflow) {
+    auto v = interp_ok("var a=[1,2,3]; var d=a.splice(-10, 1); d[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-277 Interp: splice deleteCount 负数等同 0
+TEST(InterpArray, SpliceNegativeDeleteCount) {
+    auto v = interp_ok("var a=[1,2,3]; a.splice(1, -5); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-278 Interp: splice deleteCount NaN 等同 0
+TEST(InterpArray, SpliceNaNDeleteCount) {
+    auto v = interp_ok("var a=[1,2,3]; a.splice(1, NaN); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-279 Interp: splice 非数组 TypeError
+TEST(InterpArray, SpliceNonArrayThrows) {
+    EXPECT_TRUE(interp_err("var x={}; Array.prototype.splice.call(x)"));
+}
+
+// A-280 Interp: splice newLen 溢出检查 — 超过 2^53-1 抛 TypeError
+TEST(InterpArray, SpliceOverflowThrows) {
+    // 设置 length 为 2^53-1，然后尝试插入元素使 newLen 溢出
+    EXPECT_TRUE(interp_err("var a=[]; a.length=9007199254740991; a.splice(0,0,1)"));
+}
+
+// A-281 Interp: splice 插入元素后原数组元素正确
+TEST(InterpArray, SpliceInsertElementsCorrect) {
+    auto v = interp_ok("var a=[1,4]; a.splice(1,0,2,3); a[1]+a[2]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 5.0);
+}
+
+// A-282 Interp: splice 删除元素后返回的 deleted 数组正确
+TEST(InterpArray, SpliceDeletedElementsCorrect) {
+    auto v = interp_ok("var a=[1,2,3,4]; var d=a.splice(1,2); d[0]+d[1]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 5.0);
+}
+
+// ============================================================
+// Array.prototype.splice VM 镜像 (A-271b ~ A-282b)
+// ============================================================
+
+TEST(VMArray, SpliceNoArgs) {
+    auto v = vm_ok("var a=[1,2,3]; var d=a.splice(); a.length + d.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+TEST(VMArray, SpliceOnlyStart) {
+    auto v = vm_ok("var a=[1,2,3,4]; var d=a.splice(2); d.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+TEST(VMArray, SplicePreservesHoles) {
+    auto v = vm_ok("var a=[1,,3]; var d=a.splice(0); d.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+
+    auto vhole = vm_ok("var a=[1,,3]; var d=a.splice(0); d[1]");
+    EXPECT_TRUE(vhole.is_undefined());
+}
+
+TEST(VMArray, SpliceInsertMoreThanDelete) {
+    auto v = vm_ok("var a=[1,5]; a.splice(1,0,2,3,4); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 5.0);
+}
+
+TEST(VMArray, SpliceDeleteMoreThanInsert) {
+    auto v = vm_ok("var a=[1,2,3,4,5]; a.splice(1,3,'x'); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+TEST(VMArray, SpliceNegativeOverflow) {
+    auto v = vm_ok("var a=[1,2,3]; var d=a.splice(-10, 1); d[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+TEST(VMArray, SpliceNegativeDeleteCount) {
+    auto v = vm_ok("var a=[1,2,3]; a.splice(1, -5); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+TEST(VMArray, SpliceNaNDeleteCount) {
+    auto v = vm_ok("var a=[1,2,3]; a.splice(1, NaN); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+TEST(VMArray, SpliceNonArrayThrows) {
+    EXPECT_TRUE(vm_err("var x={}; Array.prototype.splice.call(x)"));
+}
+
+TEST(VMArray, SpliceOverflowThrows) {
+    EXPECT_TRUE(vm_err("var a=[]; a.length=9007199254740991; a.splice(0,0,1)"));
+}
+
+TEST(VMArray, SpliceInsertElementsCorrect) {
+    auto v = vm_ok("var a=[1,4]; a.splice(1,0,2,3); a[1]+a[2]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 5.0);
+}
+
+TEST(VMArray, SpliceDeletedElementsCorrect) {
+    auto v = vm_ok("var a=[1,2,3,4]; var d=a.splice(1,2); d[0]+d[1]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 5.0);
+}
+
+// ============================================================
+// Array.prototype.sort — 规范对齐修复测试 (A-283 ~ A-295)
+// ============================================================
+
+// A-283 Interp: sort undefined 排到末尾
+TEST(InterpArray, SortUndefinedToEnd) {
+    auto v = interp_ok("[3,undefined,1].sort(function(a,b){return a-b;})[2]");
+    EXPECT_TRUE(v.is_undefined());
+}
+
+// A-284 Interp: sort 多个 undefined 稳定排在末尾
+TEST(InterpArray, SortMultipleUndefined) {
+    auto v = interp_ok("var a=[undefined,3,undefined,1]; a.sort(function(a,b){return a-b;}); a[2] === undefined && a[3] === undefined");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-285 Interp: sort holes 排在 undefined 之后（不写入 elements_）
+TEST(InterpArray, SortHolesAfterUndefined) {
+    // [1,,undefined,2] → defined 排前，undefined 中间，holes 最后
+    // 排序后: [1,2,undefined,,] (length=4, index 2=undefined, index 3=hole)
+    auto v = interp_ok("var a=[1,,undefined,2]; a.sort(function(a,b){return a-b;}); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
+// A-286 Interp: sort 全 undefined 数组 — 保持原样
+TEST(InterpArray, SortAllUndefined) {
+    auto v = interp_ok("[undefined,undefined].sort(function(a,b){return a-b;}).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+// A-287 Interp: sort 全 hole 数组 — 保持原样
+TEST(InterpArray, SortAllHoles) {
+    auto v = interp_ok("[,,,].sort().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-288 Interp: sort comparefn 返回 NaN 视为相等（保持稳定顺序）
+TEST(InterpArray, SortCompareFnNaN) {
+    auto v = interp_ok("[3,1,2].sort(function(a,b){return NaN;})[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-289 Interp: sort comparefn 抛异常 — 异常传播
+TEST(InterpArray, SortCompareFnThrows) {
+    EXPECT_TRUE(interp_err("[1,2,3].sort(function(a,b){throw 'err';})"));
+}
+
+// A-290 Interp: sort 非函数 comparefn TypeError（回归验证）
+TEST(InterpArray, SortNonFunctionThrowsRegression) {
+    EXPECT_TRUE(interp_err("[1,2,3].sort(42)"));
+}
+
+// A-291 Interp: sort 默认字符串排序（回归验证）
+TEST(InterpArray, SortDefaultStringCompareRegression) {
+    auto v = interp_ok("[10,2,1].sort()[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-292 Interp: sort 返回原引用（回归验证）
+TEST(InterpArray, SortReturnsOriginalRefRegression) {
+    auto v = interp_ok("var a=[3,1,2]; a.sort() === a");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+// A-293 Interp: sort 非数组 TypeError（回归验证）
+TEST(InterpArray, SortNonArrayThrowsRegression) {
+    EXPECT_TRUE(interp_err("var x={}; Array.prototype.sort.call(x)"));
+}
+
+// A-294 Interp: sort 混合 undefined + holes + defined
+TEST(InterpArray, SortMixedUndefinedHolesDefined) {
+    // [3,undefined,,1] → defined [1,3], undefined, hole
+    auto v = interp_ok("var a=[3,undefined,,1]; a.sort(function(a,b){return a-b;}); a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-295 Interp: sort 空数组（回归验证）
+TEST(InterpArray, SortEmptyArrayRegression) {
+    auto v = interp_ok("[].sort().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// ============================================================
+// Array.prototype.sort VM 镜像 (A-283b ~ A-295b)
+// ============================================================
+
+TEST(VMArray, SortUndefinedToEnd) {
+    auto v = vm_ok("[3,undefined,1].sort(function(a,b){return a-b;})[2]");
+    EXPECT_TRUE(v.is_undefined());
+}
+
+TEST(VMArray, SortMultipleUndefined) {
+    auto v = vm_ok("var a=[undefined,3,undefined,1]; a.sort(function(a,b){return a-b;}); a[2] === undefined && a[3] === undefined");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+TEST(VMArray, SortHolesAfterUndefined) {
+    auto v = vm_ok("var a=[1,,undefined,2]; a.sort(function(a,b){return a-b;}); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 4.0);
+}
+
+TEST(VMArray, SortAllUndefined) {
+    auto v = vm_ok("[undefined,undefined].sort(function(a,b){return a-b;}).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+}
+
+TEST(VMArray, SortAllHoles) {
+    auto v = vm_ok("[,,,].sort().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+TEST(VMArray, SortCompareFnNaN) {
+    auto v = vm_ok("[3,1,2].sort(function(a,b){return NaN;})[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+TEST(VMArray, SortCompareFnThrows) {
+    EXPECT_TRUE(vm_err("[1,2,3].sort(function(a,b){throw 'err';})"));
+}
+
+TEST(VMArray, SortNonFunctionThrowsRegression) {
+    EXPECT_TRUE(vm_err("[1,2,3].sort(42)"));
+}
+
+TEST(VMArray, SortDefaultStringCompareRegression) {
+    auto v = vm_ok("[10,2,1].sort()[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+TEST(VMArray, SortReturnsOriginalRefRegression) {
+    auto v = vm_ok("var a=[3,1,2]; a.sort() === a");
+    EXPECT_TRUE(v.is_bool());
+    EXPECT_TRUE(v.as_bool());
+}
+
+TEST(VMArray, SortNonArrayThrowsRegression) {
+    EXPECT_TRUE(vm_err("var x={}; Array.prototype.sort.call(x)"));
+}
+
+TEST(VMArray, SortMixedUndefinedHolesDefined) {
+    auto v = vm_ok("var a=[3,undefined,,1]; a.sort(function(a,b){return a-b;}); a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+TEST(VMArray, SortEmptyArrayRegression) {
+    auto v = vm_ok("[].sort().length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+}
+
+// ============================================================
+// Array.prototype.slice/splice/sort 边界补测 (A-296 ~ A-305)
+// ============================================================
+
+// A-296 Interp: slice Infinity 参数 — +Infinity 等同 length, -Infinity 等同 0
+TEST(InterpArray, SliceInfinityArgs) {
+    auto v = interp_ok("[1,2,3].slice(Infinity).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+
+    auto v2 = interp_ok("[1,2,3].slice(-Infinity)[0]");
+    EXPECT_TRUE(v2.is_number());
+    EXPECT_EQ(v2.as_number(), 1.0);
+}
+
+// A-297 Interp: slice 负数 end — end 为负时 clamp 到 0
+TEST(InterpArray, SliceNegativeEnd) {
+    auto v = interp_ok("[1,2,3].slice(0, -1).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+
+    auto v2 = interp_ok("[1,2,3].slice(1, -1)[0]");
+    EXPECT_TRUE(v2.is_number());
+    EXPECT_EQ(v2.as_number(), 2.0);
+}
+
+// A-298 Interp: slice undefined 参数 — undefined 等同缺失（使用默认值）
+TEST(InterpArray, SliceUndefinedArgs) {
+    auto v = interp_ok("[1,2,3].slice(undefined).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+
+    auto v2 = interp_ok("[1,2,3].slice(0, undefined).length");
+    EXPECT_TRUE(v2.is_number());
+    EXPECT_EQ(v2.as_number(), 3.0);
+}
+
+// A-299 Interp: splice Infinity deleteCount — +Infinity 删除到末尾
+TEST(InterpArray, SpliceInfinityDeleteCount) {
+    auto v = interp_ok("var a=[1,2,3,4]; a.splice(1, Infinity); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+// A-300 Interp: splice undefined deleteCount — undefined 等同 0（不删除）
+TEST(InterpArray, SpliceUndefinedDeleteCount) {
+    auto v = interp_ok("var a=[1,2,3]; a.splice(1, undefined); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-301 Interp: splice 负 start 删除 — 从末尾倒数位置删除
+TEST(InterpArray, SpliceNegativeStartDelete) {
+    auto v = interp_ok("var a=[1,2,3,4]; var d=a.splice(-2, 1); d[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-302 Interp: sort 单元素数组 — 不调用 comparefn（comparefn 抛异常验证不被调用）
+TEST(InterpArray, SortSingleElementNoCall) {
+    auto v = interp_ok("[42].sort(function(a,b){throw 'should not call';})[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 42.0);
+}
+
+// A-303 Interp: sort comparefn 返回 +0/-0 — 视为相等，pos tie-breaker 保持稳定
+TEST(InterpArray, SortCompareFnSignedZero) {
+    auto v = interp_ok("[3,1,2].sort(function(a,b){return +0;})[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+
+    auto v2 = interp_ok("[3,1,2].sort(function(a,b){return -0;})[0]");
+    EXPECT_TRUE(v2.is_number());
+    EXPECT_EQ(v2.as_number(), 3.0);
+}
+
+// A-304 Interp: sort comparefn 返回非数字 — 通过 ToNumber 转换
+TEST(InterpArray, SortCompareFnNonNumber) {
+    // true → 1 (a > b, 即 a 不应排在 b 前 → 降序), false → 0 (equal, pos tie-breaker)
+    // [3,1,2] 降序 → [3,2,1], [0]=3
+    auto v = interp_ok("[3,1,2].sort(function(a,b){return a>b;})[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// A-305 Interp: sort 稀疏数组 + comparefn — holes 排在 undefined 之后
+TEST(InterpArray, SortSparseWithCompareFn) {
+    // [3,,1] → defined [1,3], holes 最后
+    auto v = interp_ok("var a=[3,,1]; a.sort(function(a,b){return a-b;}); a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+
+    auto vlen = interp_ok("var a=[3,,1]; a.sort(function(a,b){return a-b;}); a.length");
+    EXPECT_TRUE(vlen.is_number());
+    EXPECT_EQ(vlen.as_number(), 3.0);
+}
+
+// ============================================================
+// Array.prototype.slice/splice/sort VM 镜像 (A-296b ~ A-305b)
+// ============================================================
+
+TEST(VMArray, SliceInfinityArgs) {
+    auto v = vm_ok("[1,2,3].slice(Infinity).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 0.0);
+
+    auto v2 = vm_ok("[1,2,3].slice(-Infinity)[0]");
+    EXPECT_TRUE(v2.is_number());
+    EXPECT_EQ(v2.as_number(), 1.0);
+}
+
+TEST(VMArray, SliceNegativeEnd) {
+    auto v = vm_ok("[1,2,3].slice(0, -1).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 2.0);
+
+    auto v2 = vm_ok("[1,2,3].slice(1, -1)[0]");
+    EXPECT_TRUE(v2.is_number());
+    EXPECT_EQ(v2.as_number(), 2.0);
+}
+
+TEST(VMArray, SliceUndefinedArgs) {
+    auto v = vm_ok("[1,2,3].slice(undefined).length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+
+    auto v2 = vm_ok("[1,2,3].slice(0, undefined).length");
+    EXPECT_TRUE(v2.is_number());
+    EXPECT_EQ(v2.as_number(), 3.0);
+}
+
+TEST(VMArray, SpliceInfinityDeleteCount) {
+    auto v = vm_ok("var a=[1,2,3,4]; a.splice(1, Infinity); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+}
+
+TEST(VMArray, SpliceUndefinedDeleteCount) {
+    auto v = vm_ok("var a=[1,2,3]; a.splice(1, undefined); a.length");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+TEST(VMArray, SpliceNegativeStartDelete) {
+    auto v = vm_ok("var a=[1,2,3,4]; var d=a.splice(-2, 1); d[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+TEST(VMArray, SortSingleElementNoCall) {
+    auto v = vm_ok("[42].sort(function(a,b){throw 'should not call';})[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 42.0);
+}
+
+TEST(VMArray, SortCompareFnSignedZero) {
+    auto v = vm_ok("[3,1,2].sort(function(a,b){return +0;})[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+
+    auto v2 = vm_ok("[3,1,2].sort(function(a,b){return -0;})[0]");
+    EXPECT_TRUE(v2.is_number());
+    EXPECT_EQ(v2.as_number(), 3.0);
+}
+
+TEST(VMArray, SortCompareFnNonNumber) {
+    // true → 1 (a > b, 即 a 不应排在 b 前 → 降序), false → 0 (equal, pos tie-breaker)
+    auto v = vm_ok("[3,1,2].sort(function(a,b){return a>b;})[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+TEST(VMArray, SortSparseWithCompareFn) {
+    auto v = vm_ok("var a=[3,,1]; a.sort(function(a,b){return a-b;}); a[0]");
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 1.0);
+
+    auto vlen = vm_ok("var a=[3,,1]; a.sort(function(a,b){return a-b;}); a.length");
+    EXPECT_TRUE(vlen.is_number());
+    EXPECT_EQ(vlen.as_number(), 3.0);
+}
+
 }  // namespace

@@ -4,6 +4,16 @@
 
 ## 1. 已完成任务
 
+- [x] **Array.prototype.sort/splice/slice 边界补测**（2026-05-14）：在规范对齐修复基础上补充 20 个边界测试（10 组 Interp+VM 对称，A-296～A-305）。覆盖：slice Infinity 参数（+Infinity 等同 length，-Infinity 等同 0）、slice 负数 end（clamp 到 0）、slice undefined 参数（等同缺失使用默认值）、splice Infinity deleteCount（删除到末尾）、splice undefined deleteCount（等同 0 不删除）、splice 负 start 删除（从末尾倒数位置删除）、sort 单元素数组不调用 comparefn（comparefn 抛异常验证不被调用）、sort comparefn 返回 +0/-0 视为相等（pos tie-breaker 保持稳定）、sort comparefn 返回非数字（boolean 通过 ToNumber 转换，true→1 降序）、sort 稀疏数组 + comparefn（holes 排在 undefined 之后）。2658/2658 通过（coverage），2658/2658 通过（run_ut ASAN），0 LSan 泄漏。
+
+- [x] **Array.prototype.sort/splice/slice 规范对齐修复**（2026-05-14）：对三个 Array.prototype 方法进行规范对齐修复。
+  - **sort**：分离 undefined 元素和 holes。收集阶段遍历 [0, array_length_)，对每个索引 find()：不存在（hole）→ hole_count++，is_undefined() → undef_count++，否则收集到 slots（含 val、pos、str_cache）。默认排序时收集阶段一次性对所有 defined 元素 ToString 存入 str_cache，避免比较阶段重复转换。排序使用 std::stable_sort，comparefn 返回 NaN 视为相等（cmp=0），cmp!=0 时用 cmp<0 判断，cmp==0 时用 pos tie-breaker 保持稳定。回写阶段：clear elements_，先写入 defined 元素，再写入 undefined 元素，holes 不写入，保持 array_length_ 不变。
+  - **splice**：在 newLen 计算后新增溢出检查，若 `new_len > 9007199254740991LL`（2^53-1）则抛 TypeError。
+  - **slice**：现有实现已正确处理 hole 语义（hole 不写入 elements_，保留稀疏语义），无需修改。
+  - 改动文件：`src/runtime/interpreter.cpp`（sort 重写 + splice 溢出检查）、`src/vm/vm.cpp`（sort 重写 + splice 溢出检查）、`tests/unit/array_test.cpp`（新增 70 个测试）。
+  - 新增 70 个测试（35 组 Interp+VM 对称，A-261～A-295）：slice hole 保留/结果独立/-0/NaN/非整数参数/负数超长/非数组 TypeError（A-261～A-270）；splice 无参/仅 start/hole 保留/插入多于删除/删除多于插入/负数超长/deleteCount 负数/NaN/非数组 TypeError/溢出检查/插入元素正确/删除元素正确（A-271～A-282）；sort undefined 排末尾/多 undefined 稳定/holes 排 undefined 后/全 undefined/全 hole/comparefn NaN 视为相等/comparefn 抛异常/非函数 TypeError/默认字符串排序/返回原引用/非数组 TypeError/混合 undefined+holes+defined/空数组（A-283～A-295）。
+  - 2638/2638 通过（coverage），2638/2638 通过（run_ut ASAN），0 LSan 泄漏。
+
 - [x] **import.meta 词法绑定修复**（2026-05-13）：修复 import.meta 的词法绑定语义——当模块 A 中定义的函数被模块 B 调用时，函数体内的 import.meta 应返回定义模块 A 的元数据，而非调用者模块 B。改动：JSFunction 新增 `defining_module_` 字段（ModuleRecord*，默认 nullptr）+ getter/setter；Interpreter `make_function_value`/`make_async_function_value` 中捕获 `current_module_` 设置到 `defining_module_`；Interpreter 新增 `current_function_` 成员，`call_function` 中设置/恢复；`eval_expr` MetaProperty 分支优先使用 `current_function_->defining_module()`，nullptr 时回退到 `current_module_`；VM `kMakeFunction` 中捕获 `frame.current_module` 设置到 `defining_module_`；VM `push_call_frame` 中将 `fn->defining_module()` 赋值给新帧 `current_module`；VM `kMetaProperty` 直接使用 `frame.current_module`，移除调用栈搜索逻辑。更新 IM-14 测试断言为精确匹配 m.js 路径。2568/2568 通过（coverage），2566/2566 通过（run_ut ASAN），0 LSan 泄漏。
 
 - [x] **import.meta 边界测试补充**（2026-05-13）：在 `tests/unit/module_test.cpp` 新增 56 个测试（28 Interp + 28 VM，IM-13～IM-40）。覆盖范围：
