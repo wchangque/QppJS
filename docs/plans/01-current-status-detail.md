@@ -4,6 +4,8 @@
 
 ## 1. 已完成任务
 
+- [x] **命令行工具完善**（2026-05-14）：完善 `src/main/main.cpp` 命令行工具。新增 `--help`/`-h` 帮助信息、`-e`/`--eval` 内联表达式执行、`-m`/`--module` ES 模块执行、stdin 读取（无参数时从标准输入读取）、文件执行（位置参数作为文件路径）。保持 `--vm` 兼容。错误处理：文件不存在、-e 缺少参数、未知选项均输出清晰错误信息。更新 CLI 测试（`qppjs_cli_help`、`qppjs_cli_eval`）适配新用法。2658/2658 通过（coverage），2658/2658 通过（run_ut ASAN），0 LSan 泄漏。
+
 - [x] **Array.prototype.sort/splice/slice 边界补测**（2026-05-14）：在规范对齐修复基础上补充 20 个边界测试（10 组 Interp+VM 对称，A-296～A-305）。覆盖：slice Infinity 参数（+Infinity 等同 length，-Infinity 等同 0）、slice 负数 end（clamp 到 0）、slice undefined 参数（等同缺失使用默认值）、splice Infinity deleteCount（删除到末尾）、splice undefined deleteCount（等同 0 不删除）、splice 负 start 删除（从末尾倒数位置删除）、sort 单元素数组不调用 comparefn（comparefn 抛异常验证不被调用）、sort comparefn 返回 +0/-0 视为相等（pos tie-breaker 保持稳定）、sort comparefn 返回非数字（boolean 通过 ToNumber 转换，true→1 降序）、sort 稀疏数组 + comparefn（holes 排在 undefined 之后）。2658/2658 通过（coverage），2658/2658 通过（run_ut ASAN），0 LSan 泄漏。
 
 - [x] **Array.prototype.sort/splice/slice 规范对齐修复**（2026-05-14）：对三个 Array.prototype 方法进行规范对齐修复。
