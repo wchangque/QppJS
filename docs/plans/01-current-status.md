@@ -6,10 +6,11 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | 命令行工具完善完成 |
+| 当前阶段 | test262 测试框架引入完成 |
 | 测试计数 | 2658/2658 通过（coverage），2658/2658 通过（run_ut ASAN），0 LSan 泄漏 |
 | 最近更新 | 2026-05-14 |
-| 下一步 | QuickJS 风格优化调研，或更多内建对象 |
+| 下一步 | 提升 test262 通过率，或 QuickJS 风格优化调研 |
+| test262 | Array 类别 190/2984（6.4%），Interpreter 模式 |
 
 ## 已知遗留问题
 
@@ -21,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] test262 测试框架引入：创建 `tests/test262/harness.js`（assert.sameValue/notSameValue/throws/compareArray + Test262Error + $262 最小实现，避免 QppJS 不支持的 ++/?:/函数属性赋值等特性）；新增 `scripts/run_test262.py`（Python 运行器，支持 --vm/--filter/--verbose/--list，解析 YAML frontmatter 元数据，处理 negative 测试）；test262 套件浅克隆到 `/home/wuzhen/code/pc/test262`。基线：Array 类别 190/2984（6.4%，Interpreter 模式）。2658/2658 单元测试无回归。
 
 - [x] 命令行工具完善：--help/-h 帮助信息、-e/--eval 内联表达式、-m/--module ES 模块执行、stdin 读取、文件执行，保持 --vm 兼容。2658/2658 通过，0 LSan 泄漏。
 - [x] Array.prototype.sort/splice/slice 规范对齐修复：sort 分离 undefined 元素（排到末尾）和 holes（排到 undefined 之后），默认排序惰性字符串缓存（收集阶段一次性 ToString 避免比较阶段重复转换），comparefn 返回 NaN 视为相等 + pos tie-breaker 保持稳定；splice 新增 newLen 溢出检查（> 2^53-1 抛 TypeError）；slice hole 语义确认正确（hole 不写入 elements_ 保留稀疏语义）。新增 70 个测试（35 组 Interp+VM 对称，A-261～A-295）+ 20 个边界补测（10 组 Interp+VM 对称，A-296～A-305）。2658/2658 通过（coverage），2658/2658 通过（run_ut ASAN），0 LSan 泄漏。
