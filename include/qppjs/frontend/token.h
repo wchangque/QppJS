@@ -86,6 +86,8 @@ enum class TokenKind {
     MinusMinus,
     Arrow,
 
+    Regex,  // /pattern/flags
+
     Invalid,
 };
 

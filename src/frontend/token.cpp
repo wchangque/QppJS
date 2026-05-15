@@ -148,6 +148,8 @@ std::string_view token_kind_name(TokenKind kind) {
             return "MinusMinus";
         case TokenKind::Arrow:
             return "Arrow";
+        case TokenKind::Regex:
+            return "Regex";
         case TokenKind::Invalid:
             return "Invalid";
     }

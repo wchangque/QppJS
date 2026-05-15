@@ -11,6 +11,7 @@ struct LexerState {
     uint32_t pos;             // 当前扫描字节偏移
     uint32_t line;            // 当前行号（1-based）
     bool got_lf;              // 当前 token 前是否有换行（ASI 用）
+    bool scan_regex{false};   // 下一个 / 是否应扫描为正则字面量
 };
 
 LexerState lexer_init(std::string_view source);

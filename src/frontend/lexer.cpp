@@ -288,6 +288,39 @@ static Token scan_string(LexerState& state, uint32_t start) {
     return make_invalid();
 }
 
+static Token scan_regex(LexerState& state, uint32_t start) {
+    // state.pos 已经跳过起始的 '/'
+    const auto& src = state.source;
+    bool in_class = false;
+    while (state.pos < src.size()) {
+        auto ch = src[state.pos];
+        if (ch == '\\') {
+            state.pos += 2;  // skip escaped char
+            continue;
+        }
+        if (ch == '[' && !in_class) {
+            in_class = true;
+        } else if (ch == ']' && in_class) {
+            in_class = false;
+        } else if (ch == '/' && !in_class) {
+            ++state.pos;  // skip closing '/'
+            break;
+        }
+        if (ch == '\n' || ch == '\r') return {TokenKind::Invalid, {start, state.pos - start}};
+        ++state.pos;
+    }
+    // 扫描 flags
+    while (state.pos < src.size()) {
+        auto ch = src[state.pos];
+        if (ch == 'g' || ch == 'i' || ch == 'm' || ch == 's' || ch == 'u' || ch == 'y' || ch == 'd') {
+            ++state.pos;
+        } else {
+            break;
+        }
+    }
+    return {TokenKind::Regex, {start, static_cast<uint32_t>(state.pos - start)}};
+}
+
 Token next_token(LexerState& state) {
     state.got_lf = false;
 
@@ -478,9 +511,48 @@ Token next_token(LexerState& state) {
             return {TokenKind::Star, {start, 1}};
 
         case '/':
+            if (state.scan_regex) {
+                state.scan_regex = false;
+                return scan_regex(state, start);
+            }
             if (peek(1) == '=') {
                 state.pos += 2;
                 return {TokenKind::SlashEq, {start, 2}};
+            }
+            if (peek(1) == '/') {
+                // 单行注释
+                state.pos += 2;
+                while (state.pos < state.source.size() && state.source[state.pos] != '\n' &&
+                       state.source[state.pos] != '\r') {
+                    ++state.pos;
+                }
+                return next_token(state);
+            }
+            if (peek(1) == '*') {
+                // 块注释
+                state.pos += 2;
+                int depth = 1;
+                while (state.pos < state.source.size() && depth > 0) {
+                    auto ch = state.source[state.pos];
+                    if (ch == '\n') {
+                        state.line++;
+                        state.got_lf = true;
+                    }
+                    if (ch == '/' && state.pos + 1 < state.source.size() &&
+                        state.source[state.pos + 1] == '*') {
+                        depth++;
+                        state.pos += 2;
+                        continue;
+                    }
+                    if (ch == '*' && state.pos + 1 < state.source.size() &&
+                        state.source[state.pos + 1] == '/') {
+                        depth--;
+                        state.pos += 2;
+                        continue;
+                    }
+                    ++state.pos;
+                }
+                return next_token(state);
             }
             ++state.pos;
             return {TokenKind::Slash, {start, 1}};
