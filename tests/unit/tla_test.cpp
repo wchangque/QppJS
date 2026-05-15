@@ -51,7 +51,7 @@ public:
     }
 
     std::string abs(const std::string& filename) const {
-        return (dir_ / filename).string();
+        return fs::weakly_canonical(dir_ / filename).string();
     }
 
 private:
