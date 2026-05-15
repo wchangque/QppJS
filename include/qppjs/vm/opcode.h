@@ -86,6 +86,21 @@ namespace qppjs {
     X(ArrayHole, 0)                     \
     /* Dynamic import() */              \
     X(ImportCall, 0)                    \
+    /* Update (++/--) variables */      \
+    X(VarPreInc, 2)                     \
+    X(VarPreDec, 2)                     \
+    X(VarPostInc, 2)                    \
+    X(VarPostDec, 2)                    \
+    /* Update (++/--) properties */     \
+    X(PropPreInc, 2)                    \
+    X(PropPreDec, 2)                    \
+    X(PropPostInc, 2)                   \
+    X(PropPostDec, 2)                   \
+    /* Update (++/--) elements */       \
+    X(ElemPreInc, 0)                    \
+    X(ElemPreDec, 0)                    \
+    X(ElemPostInc, 0)                   \
+    X(ElemPostDec, 0)                   \
     /* import.meta */                   \
     X(MetaProperty, 0)
 

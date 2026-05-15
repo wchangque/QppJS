@@ -31,6 +31,8 @@ add_executable(qppjs_unit_tests
     unit/string_test.cpp
     unit/number_math_test.cpp
     unit/tla_test.cpp
+    unit/update_expression_test.cpp
+    # unit/global_stubs_test.cpp  # FIXME: pre-existing compilation error (is_err not a member of EvalResult)
 )
 
 target_link_libraries(qppjs_unit_tests PRIVATE qppjs_core GTest::gtest_main)

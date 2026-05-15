@@ -523,6 +523,7 @@ void Compiler::compile_expr(const ExprNode& expr) {
             [this](const NewExpression& e) { compile_new_expr(e); },
             [this](const ArrayExpression& e) { compile_array_expr(e); },
             [this](const AsyncFunctionExpression& e) { compile_async_function_expr(e); },
+            [this](const UpdateExpression& e) { compile_update_expr(e); },
             [this](const AwaitExpression& e) {
                 compile_expr(*e.argument);
                 emit(Opcode::kAwait);
@@ -1084,6 +1085,47 @@ void Compiler::compile_for_stmt(const ForStatement& stmt, std::optional<std::str
     loop_env_stack_.pop_back();
 
     emit(Opcode::kPopScope);
+}
+
+void Compiler::compile_update_expr(const UpdateExpression& expr) {
+    auto is_member = std::holds_alternative<MemberExpression>(expr.operand->v);
+
+    if (is_member) {
+        const auto& member = std::get<MemberExpression>(expr.operand->v);
+
+        if (member.computed) {
+            // Element update: compile object, compile key
+            compile_expr(*member.object);
+            compile_expr(*member.property);
+            // Emit appropriate elem opcode
+            if (expr.op == UpdateOp::Inc) {
+                emit(expr.prefix ? Opcode::kElemPreInc : Opcode::kElemPostInc);
+            } else {
+                emit(expr.prefix ? Opcode::kElemPreDec : Opcode::kElemPostDec);
+            }
+        } else {
+            // Property update: compile object, emit prop opcode with name_idx
+            compile_expr(*member.object);
+            const auto& prop = std::get<StringLiteral>(member.property->v);
+            uint16_t name_idx = add_name(prop.value);
+            if (expr.op == UpdateOp::Inc) {
+                emit(expr.prefix ? Opcode::kPropPreInc : Opcode::kPropPostInc);
+            } else {
+                emit(expr.prefix ? Opcode::kPropPreDec : Opcode::kPropPostDec);
+            }
+            emit_u16(name_idx);
+        }
+    } else {
+        // Variable update: emit var opcode with name_idx
+        const auto& ident = std::get<Identifier>(expr.operand->v);
+        uint16_t name_idx = add_name(ident.name);
+        if (expr.op == UpdateOp::Inc) {
+            emit(expr.prefix ? Opcode::kVarPreInc : Opcode::kVarPostInc);
+        } else {
+            emit(expr.prefix ? Opcode::kVarPreDec : Opcode::kVarPostDec);
+        }
+        emit_u16(name_idx);
+    }
 }
 
 void Compiler::compile_import_call(const ImportCallExpression& expr) {

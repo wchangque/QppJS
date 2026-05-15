@@ -4,26 +4,19 @@
 
 ## 1. 下一阶段
 
-- 下一阶段：QuickJS 风格优化调研，或更多内建对象
-- Array.sort/splice/slice 规范对齐修复已完成（2638/2638 测试通过，0 LSan 泄漏）
-- 所有 Phase 1～12 已全部完成
+- 下一阶段：test262 通过率提升（按优先级逐项实现缺失特性）
+- `++`/`--` 运算符已完成（2708/2708 测试通过，0 LSan 泄漏）
 - 对应路线图：`docs/plans/00-roadmap.md`
 - 当前事实源：`docs/plans/01-current-status.md`
 
-## 2. 候选目标
+## 2. test262 通过率提升候选目标（按优先级）
 
-- ~~**import.meta**：已完成（2026-05-13）~~
-- ~~**P2-A（遗留）**：已完成（2026-04-27）~~
-- ~~**export async function 解析**：已完成（2026-04-28）~~
-- ~~**P3-1**：已完成（2026-05-13）—— JSString SSO 布局~~
-- ~~**Array.map/filter/reduce/reduceRight**：已完成（2026-04-28）~~
-- ~~**Array.find/findIndex/some/every/indexOf/includes**：已完成（2026-04-28）~~
-- ~~**String.prototype 8 个方法**：已完成（2026-04-29）~~
-- ~~**Number/Math 内建对象**：已完成（2026-04-29）~~
-- ~~**Array.sort/splice/slice**：已完成（2026-05-14）~~
-- ~~动态 import()（依赖 Phase 11 Promise）~~（已完成 2026-05-13）
-- ~~Top-Level Await~~（已完成 2026-05-13）
-- QuickJS 风格优化调研
+1. **`Array` + `String` + `Boolean` 全局构造函数** — 修复 1383 个 ReferenceError（预计提升 ~5%）
+2. **`delete` 运算符** — 修复 117 个 SyntaxError
+3. **`Symbol` 基础支持** — 修复 149 个 ReferenceError
+4. **`arguments` 对象** — 修复 137 个 ReferenceError
+5. **`Object.defineProperty` / `Object.getOwnPropertyDescriptor`** — 解锁 propertyHelper.js harness
+6. **箭头函数 `()=>`** — 修复 82+ 个 SyntaxError
 
 ## 3. 进入前提
 

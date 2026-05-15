@@ -2166,6 +2166,34 @@ void Interpreter::init_runtime() {
     global_env_->define_initialized("Number");
     global_env_->set("Number", Value::object(ObjectPtr(number_constructor_)));
 
+    // ---- Boolean constructor ----
+
+    boolean_constructor_ = RcPtr<JSFunction>::make();
+    boolean_constructor_->set_name(std::string("Boolean"));
+    boolean_constructor_->set_native_fn([](Value /*this_val*/, std::vector<Value> args,
+                                           bool /*is_new*/) -> EvalResult {
+        bool b = args.empty() ? false : to_boolean(args[0]);
+        return EvalResult::ok(Value::boolean(b));
+    });
+
+    gc_heap_.Register(boolean_constructor_.get());
+    global_env_->define_initialized("Boolean");
+    global_env_->set("Boolean", Value::object(ObjectPtr(boolean_constructor_)));
+
+    // ---- String constructor ----
+
+    string_constructor_ = RcPtr<JSFunction>::make();
+    string_constructor_->set_name(std::string("String"));
+    string_constructor_->set_native_fn([](Value /*this_val*/, std::vector<Value> args,
+                                          bool /*is_new*/) -> EvalResult {
+        std::string s = args.empty() ? std::string("") : to_string_val(args[0]);
+        return EvalResult::ok(Value::string(s));
+    });
+
+    gc_heap_.Register(string_constructor_.get());
+    global_env_->define_initialized("String");
+    global_env_->set("String", Value::object(ObjectPtr(string_constructor_)));
+
     // ---- Math object ----
 
     // Initialize PRNG state
@@ -2730,6 +2758,8 @@ EvalResult Interpreter::exec(const Program& program) {
         add_obj(number_prototype_.get());
         add_obj(object_constructor_.get());
         add_obj(number_constructor_.get());
+        add_obj(boolean_constructor_.get());
+        add_obj(string_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
         if (pending_throw_.has_value()) add_val(*pending_throw_);
@@ -2754,6 +2784,8 @@ EvalResult Interpreter::exec(const Program& program) {
     if (number_prototype_) number_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     if (number_constructor_) number_constructor_->clear_own_properties();
+    if (boolean_constructor_) boolean_constructor_->clear_own_properties();
+    if (string_constructor_) string_constructor_->clear_own_properties();
 
     return final_result;
 }
@@ -2999,6 +3031,7 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const NewExpression& e) { return eval_new_expr(e); },
             [this](const ArrayExpression& e) { return eval_array_expr(e); },
             [this](const AwaitExpression& e) { return eval_await_expr(e); },
+            [this](const UpdateExpression& e) { return eval_update_expr(e); },
             [this](const AsyncFunctionExpression& e) { return eval_async_function_expr(e); },
             [this](const MetaProperty& /*e*/) {
                 // import.meta 是词法绑定：优先使用当前函数的定义模块
@@ -4209,6 +4242,8 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
         add_obj(number_prototype_.get());
         add_obj(object_constructor_.get());
         add_obj(number_constructor_.get());
+        add_obj(boolean_constructor_.get());
+        add_obj(string_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
         if (pending_throw_.has_value()) add_val(*pending_throw_);
@@ -4232,6 +4267,8 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
     if (number_prototype_) number_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     if (number_constructor_) number_constructor_->clear_own_properties();
+    if (boolean_constructor_) boolean_constructor_->clear_own_properties();
+    if (string_constructor_) string_constructor_->clear_own_properties();
     // 清理所有模块环境中的函数引用（打破 module_env ↔ JSFunction 循环引用）
     module_loader_.ClearModuleEnvs();
     module_loader_.Clear();
@@ -4666,6 +4703,77 @@ EvalResult Interpreter::eval_import_call(const ImportCallExpression& expr) {
 
     promise->Fulfill(Value::object(ObjectPtr(ns_obj)), job_queue_);
     return EvalResult::ok(Value::object(ObjectPtr(promise)));
+}
+
+// ---- ++/-- update expressions ----
+
+EvalResult Interpreter::eval_update_expr(const UpdateExpression& expr) {
+    if (std::holds_alternative<MemberExpression>(expr.operand->v)) {
+        const auto& member = std::get<MemberExpression>(expr.operand->v);
+
+        auto obj_result = eval_expr(*member.object);
+        if (!obj_result.is_ok()) return obj_result;
+        if (!obj_result.value().is_object()) return EvalResult::ok(Value::undefined());
+        ObjectPtr obj = obj_result.value().as_object();
+        RcObject* raw = obj.get();
+
+        std::string key;
+        if (member.computed) {
+            auto key_result = eval_expr(*member.property);
+            if (!key_result.is_ok()) return key_result;
+            key = to_string_val(key_result.value());
+        } else {
+            key = std::get<StringLiteral>(member.property->v).value;
+        }
+
+        Value old_val;
+        if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+            old_val = static_cast<JSObject*>(raw)->get_property(key);
+        } else {
+            return EvalResult::ok(Value::undefined());
+        }
+
+        auto old_num = to_number(old_val);
+        if (!old_num.is_ok()) return old_num;
+        double old_d = old_num.value().as_number();
+        double delta = (expr.op == UpdateOp::Inc) ? 1.0 : -1.0;
+        double new_d = old_d + delta;
+
+        if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+            auto set_ex_res = static_cast<JSObject*>(raw)->set_property_ex(key, Value::number(new_d));
+            if (!set_ex_res.is_ok()) {
+                const std::string& msg = set_ex_res.error().message();
+                NativeErrorType err_type = NativeErrorType::kRangeError;
+                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                pending_throw_ = make_error_value(err_type, strip_error_prefix(msg));
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+        }
+
+        return EvalResult::ok(Value::number(expr.prefix ? new_d : old_d));
+    }
+
+    const auto& ident = std::get<Identifier>(expr.operand->v);
+    auto get_result = current_env_->get(ident.name);
+    if (!get_result.is_ok()) {
+        return get_result;
+    }
+    Value old_val = get_result.value();
+    auto old_num = to_number(old_val);
+    if (!old_num.is_ok()) return old_num;
+    double old_d = old_num.value().as_number();
+    double delta = (expr.op == UpdateOp::Inc) ? 1.0 : -1.0;
+    double new_d = old_d + delta;
+
+    auto set_result = current_env_->set(ident.name, Value::number(new_d));
+    if (!set_result.is_ok()) {
+        const std::string& msg = set_result.error().message();
+        NativeErrorType err_type = NativeErrorType::kTypeError;
+        if (msg.rfind("ReferenceError:", 0) == 0) err_type = NativeErrorType::kReferenceError;
+        pending_throw_ = make_error_value(err_type, strip_error_prefix(msg));
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+    return EvalResult::ok(Value::number(expr.prefix ? new_d : old_d));
 }
 
 // ---- async/await ----

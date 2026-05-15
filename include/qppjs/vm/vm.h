@@ -127,6 +127,8 @@ private:
     RcPtr<JSObject> number_prototype_;   // Number.prototype
     RcPtr<JSFunction> object_constructor_;  // global Object function
     RcPtr<JSFunction> number_constructor_;  // global Number function
+    RcPtr<JSFunction> boolean_constructor_;  // global Boolean function
+    RcPtr<JSFunction> string_constructor_;  // global String function
     uint64_t math_random_state_ = 1;    // xorshift64* PRNG state
     RcPtr<Environment> global_env_;
 

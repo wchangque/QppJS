@@ -6,11 +6,11 @@
 
 | 项目 | 值 |
 |------|----|
-| 当前阶段 | test262 测试框架引入完成 |
-| 测试计数 | 2658/2658 通过（coverage），2658/2658 通过（run_ut ASAN），0 LSan 泄漏 |
-| 最近更新 | 2026-05-14 |
-| 下一步 | 提升 test262 通过率，或 QuickJS 风格优化调研 |
-| test262 | Array 类别 190/2984（6.4%），Interpreter 模式 |
+| 当前阶段 | test262 通过率提升 |
+| 测试计数 | 2708/2708 通过（coverage），2706/2706 通过（run_ut ASAN），0 LSan 泄漏 |
+| 最近更新 | 2026-05-15 |
+| 下一步 | 继续提升 test262 通过率（全局构造函数 + 更多语言特性） |
+| test262 | Array 190/2984（6.4%），Number 87/340（25.6%），Math 47/327（14.4%），String 88/1334（6.6%），Interpreter 模式 |
 
 ## 已知遗留问题
 
@@ -23,7 +23,7 @@
 
 ## 最近完成
 
-- [x] test262 测试框架引入：创建 `tests/test262/harness.js`（assert.sameValue/notSameValue/throws/compareArray + Test262Error + $262 最小实现，避免 QppJS 不支持的 ++/?:/函数属性赋值等特性）；新增 `scripts/run_test262.py`（Python 运行器，支持 --vm/--filter/--verbose/--list，解析 YAML frontmatter 元数据，处理 negative 测试）；test262 套件浅克隆到 `/home/wuzhen/code/pc/test262`。基线：Array 类别 190/2984（6.4%，Interpreter 模式）。2658/2658 单元测试无回归。
+- [x] **++/-- 前缀/后缀自增自减运算符**（2026-05-15）：AST 新增 UpdateExpression 节点（UpdateOp 枚举，prefix 标志）；Parser nud 前缀(15) + led 后缀(17)，got_lf 检查，左值校验；Interpreter eval_update_expr 变量（env->get/set）+ 成员（对象/Key 单次求值）；VM 12 个新 opcode（kVar/kProp/kElem 各 PreInc/PreDec/PostInc/PostDec）；Compiler compile_update_expr 变量 emit 直接 opcode + 成员 emit 复合 opcode；ast_dump 输出；Review 修复（H-1 成员单次求值、H-2 const set 错误传播、H-3 VM receiver 校验、M-1/2 set_property_ex 错误传播、M-3 got_lf 时序）。新增 50 个测试（UpdateExpression 系列）。2708/2708 通过（coverage），2706/2706 通过（run_ut ASAN），0 LSan 泄漏。
 
 - [x] 命令行工具完善：--help/-h 帮助信息、-e/--eval 内联表达式、-m/--module ES 模块执行、stdin 读取、文件执行，保持 --vm 兼容。2658/2658 通过，0 LSan 泄漏。
 - [x] Array.prototype.sort/splice/slice 规范对齐修复：sort 分离 undefined 元素（排到末尾）和 holes（排到 undefined 之后），默认排序惰性字符串缓存（收集阶段一次性 ToString 避免比较阶段重复转换），comparefn 返回 NaN 视为相等 + pos tie-breaker 保持稳定；splice 新增 newLen 溢出检查（> 2^53-1 抛 TypeError）；slice hole 语义确认正确（hole 不写入 elements_ 保留稀疏语义）。新增 70 个测试（35 组 Interp+VM 对称，A-261～A-295）+ 20 个边界补测（10 组 Interp+VM 对称，A-296～A-305）。2658/2658 通过（coverage），2658/2658 通过（run_ut ASAN），0 LSan 泄漏。

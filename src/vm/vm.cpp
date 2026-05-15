@@ -152,7 +152,7 @@ static double to_number_double_vm(const Value& v) {
         if (first == std::string_view::npos) return 0.0;
         size_t last = sv.find_last_not_of(" \t\n\r\f\v");
         // strtod requires a null-terminated string; build one from the trimmed range.
-        std::string s(sv.substr(first, last - first + 1));
+        std::string s(sv.data() + first, last - first + 1);
         char* end = nullptr;
         double r = std::strtod(s.c_str(), &end);
         if (end == s.c_str() || *end != '\0') return std::numeric_limits<double>::quiet_NaN();
@@ -2173,6 +2173,34 @@ void VM::init_global_env() {
     global_env_->define_initialized("Number");
     global_env_->set("Number", Value::object(ObjectPtr(number_constructor_)));
 
+    // ---- Boolean constructor ----
+
+    boolean_constructor_ = RcPtr<JSFunction>::make();
+    boolean_constructor_->set_name(std::string("Boolean"));
+    boolean_constructor_->set_native_fn([](Value /*this_val*/, std::vector<Value> args,
+                                           bool /*is_new*/) -> EvalResult {
+        bool b = args.empty() ? false : to_boolean(args[0]);
+        return EvalResult::ok(Value::boolean(b));
+    });
+
+    gc_heap_.Register(boolean_constructor_.get());
+    global_env_->define_initialized("Boolean");
+    global_env_->set("Boolean", Value::object(ObjectPtr(boolean_constructor_)));
+
+    // ---- String constructor ----
+
+    string_constructor_ = RcPtr<JSFunction>::make();
+    string_constructor_->set_name(std::string("String"));
+    string_constructor_->set_native_fn([](Value /*this_val*/, std::vector<Value> args,
+                                          bool /*is_new*/) -> EvalResult {
+        std::string s = args.empty() ? std::string("") : to_string_val(args[0]);
+        return EvalResult::ok(Value::string(s));
+    });
+
+    gc_heap_.Register(string_constructor_.get());
+    global_env_->define_initialized("String");
+    global_env_->set("String", Value::object(ObjectPtr(string_constructor_)));
+
     // ---- Math object ----
 
     // Initialize PRNG state
@@ -2320,6 +2348,76 @@ void VM::init_global_env() {
 
     // Register the global environment with GcHeap.
     gc_heap_.Register(global_env_.get());
+
+    // ---- RegExp constructor stub ----
+    {
+        auto regexp_fn = RcPtr<JSFunction>::make();
+        regexp_fn->set_name(std::string("RegExp"));
+        regexp_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> /*args*/, bool /*is_new_call*/) -> EvalResult {
+            auto obj = RcPtr<JSObject>::make();
+            obj->set_proto(object_prototype_);
+            gc_heap_.Register(obj.get());
+            return EvalResult::ok(Value::object(ObjectPtr(obj)));
+        });
+        gc_heap_.Register(regexp_fn.get());
+        global_env_->define("RegExp", VarKind::Const);
+        global_env_->initialize("RegExp", Value::object(ObjectPtr(regexp_fn)));
+    }
+
+    // ---- Date constructor stub ----
+    {
+        auto date_fn = RcPtr<JSFunction>::make();
+        date_fn->set_name(std::string("Date"));
+        date_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> /*args*/, bool is_new_call) -> EvalResult {
+            if (is_new_call) {
+                auto obj = RcPtr<JSObject>::make();
+                obj->set_proto(object_prototype_);
+                gc_heap_.Register(obj.get());
+                return EvalResult::ok(Value::object(ObjectPtr(obj)));
+            }
+            auto now = std::chrono::system_clock::now();
+            auto time_t_now = std::chrono::system_clock::to_time_t(now);
+            std::string date_str = std::ctime(&time_t_now);
+            if (!date_str.empty() && date_str.back() == '\n') date_str.pop_back();
+            return EvalResult::ok(Value::string(date_str));
+        });
+        gc_heap_.Register(date_fn.get());
+        global_env_->define("Date", VarKind::Const);
+        global_env_->initialize("Date", Value::object(ObjectPtr(date_fn)));
+    }
+
+    // ---- JSON object stub ----
+    {
+        auto json_obj = RcPtr<JSObject>::make();
+        json_obj->set_proto(object_prototype_);
+
+        auto stringify_fn = RcPtr<JSFunction>::make();
+        stringify_fn->set_name(std::string("stringify"));
+        stringify_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+            if (args.empty()) return EvalResult::ok(Value::undefined());
+            const auto& v = args[0];
+            if (v.is_string()) {
+                std::string s = v.as_string();
+                return EvalResult::ok(Value::string("\"" + s + "\""));
+            }
+            if (v.is_number()) {
+                return EvalResult::ok(Value::string(VM::to_string_val(v)));
+            }
+            return EvalResult::ok(Value::string("{}"));
+        });
+        json_obj->set_property("stringify", Value::object(ObjectPtr(stringify_fn)));
+
+        auto parse_fn = RcPtr<JSFunction>::make();
+        parse_fn->set_name(std::string("parse"));
+        parse_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> /*args*/, bool) -> EvalResult {
+            return EvalResult::err(Error{ErrorKind::Runtime, "JSON.parse not implemented"});
+        });
+        json_obj->set_property("parse", Value::object(ObjectPtr(parse_fn)));
+
+        gc_heap_.Register(json_obj.get());
+        global_env_->define("JSON", VarKind::Const);
+        global_env_->initialize("JSON", Value::object(ObjectPtr(json_obj)));
+    }
 }
 
 // ---- VM Promise helpers ----
@@ -2588,6 +2686,8 @@ EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
         add_obj(number_prototype_.get());
         add_obj(object_constructor_.get());
         add_obj(number_constructor_.get());
+        add_obj(boolean_constructor_.get());
+        add_obj(string_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         // Include call stack frames
         for (auto& cf : call_stack_) {
@@ -2618,6 +2718,8 @@ EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
     if (number_prototype_) number_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     if (number_constructor_) number_constructor_->clear_own_properties();
+    if (boolean_constructor_) boolean_constructor_->clear_own_properties();
+    if (string_constructor_) string_constructor_->clear_own_properties();
 
     return result;
 }
@@ -2996,6 +3098,435 @@ EvalResult VM::run(size_t exit_depth) {
                     arr->array_length_++;
                 }
             }
+            break;
+        }
+
+        // ---- Variable update (++/--) ----
+
+        case Opcode::kVarPreInc: {
+            uint16_t idx = read_u16(bc, pc);
+            const std::string& name = bc->names[idx];
+            auto get_result = env->get(name);
+            if (!get_result.is_ok()) {
+                const std::string& msg = get_result.error().message();
+                NativeErrorType err_type = NativeErrorType::kReferenceError;
+                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
+            double old_d = to_number_double_vm(get_result.value());
+            double new_d = old_d + 1.0;
+            auto set_result = env->set(name, Value::number(new_d));
+            if (!set_result.is_ok()) {
+                const std::string& msg = set_result.error().message();
+                NativeErrorType err_type = NativeErrorType::kTypeError;
+                if (msg.rfind("RangeError:", 0) == 0) err_type = NativeErrorType::kRangeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
+            stack.push_back(Value::number(new_d));
+            break;
+        }
+        case Opcode::kVarPreDec: {
+            uint16_t idx = read_u16(bc, pc);
+            const std::string& name = bc->names[idx];
+            auto get_result = env->get(name);
+            if (!get_result.is_ok()) {
+                const std::string& msg = get_result.error().message();
+                NativeErrorType err_type = NativeErrorType::kReferenceError;
+                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
+            double old_d = to_number_double_vm(get_result.value());
+            double new_d = old_d - 1.0;
+            auto set_result = env->set(name, Value::number(new_d));
+            if (!set_result.is_ok()) {
+                const std::string& msg = set_result.error().message();
+                NativeErrorType err_type = NativeErrorType::kTypeError;
+                if (msg.rfind("RangeError:", 0) == 0) err_type = NativeErrorType::kRangeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
+            stack.push_back(Value::number(new_d));
+            break;
+        }
+        case Opcode::kVarPostInc: {
+            uint16_t idx = read_u16(bc, pc);
+            const std::string& name = bc->names[idx];
+            auto get_result = env->get(name);
+            if (!get_result.is_ok()) {
+                const std::string& msg = get_result.error().message();
+                NativeErrorType err_type = NativeErrorType::kReferenceError;
+                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
+            double old_d = to_number_double_vm(get_result.value());
+            double new_d = old_d + 1.0;
+            auto set_result = env->set(name, Value::number(new_d));
+            if (!set_result.is_ok()) {
+                const std::string& msg = set_result.error().message();
+                NativeErrorType err_type = NativeErrorType::kTypeError;
+                if (msg.rfind("RangeError:", 0) == 0) err_type = NativeErrorType::kRangeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
+            stack.push_back(Value::number(old_d));
+            break;
+        }
+        case Opcode::kVarPostDec: {
+            uint16_t idx = read_u16(bc, pc);
+            const std::string& name = bc->names[idx];
+            auto get_result = env->get(name);
+            if (!get_result.is_ok()) {
+                const std::string& msg = get_result.error().message();
+                NativeErrorType err_type = NativeErrorType::kReferenceError;
+                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
+            double old_d = to_number_double_vm(get_result.value());
+            double new_d = old_d - 1.0;
+            auto set_result = env->set(name, Value::number(new_d));
+            if (!set_result.is_ok()) {
+                const std::string& msg = set_result.error().message();
+                NativeErrorType err_type = NativeErrorType::kTypeError;
+                if (msg.rfind("RangeError:", 0) == 0) err_type = NativeErrorType::kRangeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
+            stack.push_back(Value::number(old_d));
+            break;
+        }
+
+        // ---- Property update (++/--) ----
+
+        case Opcode::kPropPreInc: {
+            uint16_t idx = read_u16(bc, pc);
+            const std::string& name = bc->names[idx];
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            if (obj_val.is_undefined() || obj_val.is_null()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot read property '" + name + "' of " + to_string_val(obj_val));
+                continue;
+            }
+            if (!obj_val.is_object()) {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            RcObject* raw = obj_val.as_object_raw();
+            Value old_val = Value::undefined();
+            if (raw->object_kind() == ObjectKind::kFunction) {
+                auto* fn = static_cast<JSFunction*>(raw);
+                old_val = fn->get_property(name);
+                if (old_val.is_undefined() && function_prototype_) {
+                    old_val = function_prototype_->get_property(name);
+                }
+            } else if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                old_val = static_cast<JSObject*>(raw)->get_property(name);
+            } else {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            double old_d = to_number_double_vm(old_val);
+            double new_d = old_d + 1.0;
+            if (raw->object_kind() == ObjectKind::kFunction) {
+                static_cast<JSFunction*>(raw)->set_property(name, Value::number(new_d));
+            } else {
+                auto set_ex_res = static_cast<JSObject*>(raw)->set_property_ex(name, Value::number(new_d));
+                if (!set_ex_res.is_ok()) {
+                    const std::string& msg = set_ex_res.error().message();
+                    NativeErrorType err_type = NativeErrorType::kRangeError;
+                    if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                    frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                    continue;
+                }
+            }
+            stack.push_back(Value::number(new_d));
+            break;
+        }
+        case Opcode::kPropPreDec: {
+            uint16_t idx = read_u16(bc, pc);
+            const std::string& name = bc->names[idx];
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            if (obj_val.is_undefined() || obj_val.is_null()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot read property '" + name + "' of " + to_string_val(obj_val));
+                continue;
+            }
+            if (!obj_val.is_object()) {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            RcObject* raw = obj_val.as_object_raw();
+            Value old_val = Value::undefined();
+            if (raw->object_kind() == ObjectKind::kFunction) {
+                auto* fn = static_cast<JSFunction*>(raw);
+                old_val = fn->get_property(name);
+                if (old_val.is_undefined() && function_prototype_) {
+                    old_val = function_prototype_->get_property(name);
+                }
+            } else if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                old_val = static_cast<JSObject*>(raw)->get_property(name);
+            } else {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            double old_d = to_number_double_vm(old_val);
+            double new_d = old_d - 1.0;
+            if (raw->object_kind() == ObjectKind::kFunction) {
+                static_cast<JSFunction*>(raw)->set_property(name, Value::number(new_d));
+            } else {
+                auto set_ex_res = static_cast<JSObject*>(raw)->set_property_ex(name, Value::number(new_d));
+                if (!set_ex_res.is_ok()) {
+                    const std::string& msg = set_ex_res.error().message();
+                    NativeErrorType err_type = NativeErrorType::kRangeError;
+                    if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                    frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                    continue;
+                }
+            }
+            stack.push_back(Value::number(new_d));
+            break;
+        }
+        case Opcode::kPropPostInc: {
+            uint16_t idx = read_u16(bc, pc);
+            const std::string& name = bc->names[idx];
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            if (obj_val.is_undefined() || obj_val.is_null()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot read property '" + name + "' of " + to_string_val(obj_val));
+                continue;
+            }
+            if (!obj_val.is_object()) {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            RcObject* raw = obj_val.as_object_raw();
+            Value old_val = Value::undefined();
+            if (raw->object_kind() == ObjectKind::kFunction) {
+                auto* fn = static_cast<JSFunction*>(raw);
+                old_val = fn->get_property(name);
+                if (old_val.is_undefined() && function_prototype_) {
+                    old_val = function_prototype_->get_property(name);
+                }
+            } else if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                old_val = static_cast<JSObject*>(raw)->get_property(name);
+            } else {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            double old_d = to_number_double_vm(old_val);
+            double new_d = old_d + 1.0;
+            if (raw->object_kind() == ObjectKind::kFunction) {
+                static_cast<JSFunction*>(raw)->set_property(name, Value::number(new_d));
+            } else {
+                auto set_ex_res = static_cast<JSObject*>(raw)->set_property_ex(name, Value::number(new_d));
+                if (!set_ex_res.is_ok()) {
+                    const std::string& msg = set_ex_res.error().message();
+                    NativeErrorType err_type = NativeErrorType::kRangeError;
+                    if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                    frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                    continue;
+                }
+            }
+            stack.push_back(Value::number(old_d));
+            break;
+        }
+        case Opcode::kPropPostDec: {
+            uint16_t idx = read_u16(bc, pc);
+            const std::string& name = bc->names[idx];
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            if (obj_val.is_undefined() || obj_val.is_null()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot read property '" + name + "' of " + to_string_val(obj_val));
+                continue;
+            }
+            if (!obj_val.is_object()) {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            RcObject* raw = obj_val.as_object_raw();
+            Value old_val = Value::undefined();
+            if (raw->object_kind() == ObjectKind::kFunction) {
+                auto* fn = static_cast<JSFunction*>(raw);
+                old_val = fn->get_property(name);
+                if (old_val.is_undefined() && function_prototype_) {
+                    old_val = function_prototype_->get_property(name);
+                }
+            } else if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                old_val = static_cast<JSObject*>(raw)->get_property(name);
+            } else {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            double old_d = to_number_double_vm(old_val);
+            double new_d = old_d - 1.0;
+            if (raw->object_kind() == ObjectKind::kFunction) {
+                static_cast<JSFunction*>(raw)->set_property(name, Value::number(new_d));
+            } else {
+                auto set_ex_res = static_cast<JSObject*>(raw)->set_property_ex(name, Value::number(new_d));
+                if (!set_ex_res.is_ok()) {
+                    const std::string& msg = set_ex_res.error().message();
+                    NativeErrorType err_type = NativeErrorType::kRangeError;
+                    if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                    frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                    continue;
+                }
+            }
+            stack.push_back(Value::number(old_d));
+            break;
+        }
+
+        // ---- Element update (++/--) ----
+
+        case Opcode::kElemPreInc: {
+            Value key_val = std::move(stack.back());
+            stack.pop_back();
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            if (obj_val.is_undefined() || obj_val.is_null()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot read property '" + to_string_val(key_val) + "' of " + to_string_val(obj_val));
+                continue;
+            }
+            if (!obj_val.is_object()) {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            std::string key = to_string_val(key_val);
+            RcObject* raw = obj_val.as_object_raw();
+            Value old_val = Value::undefined();
+            if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                old_val = static_cast<JSObject*>(raw)->get_property(key);
+            } else {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            double old_d = to_number_double_vm(old_val);
+            double new_d = old_d + 1.0;
+            auto set_ex_res = static_cast<JSObject*>(raw)->set_property_ex(key, Value::number(new_d));
+            if (!set_ex_res.is_ok()) {
+                const std::string& msg = set_ex_res.error().message();
+                NativeErrorType err_type = NativeErrorType::kRangeError;
+                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
+            stack.push_back(Value::number(new_d));
+            break;
+        }
+        case Opcode::kElemPreDec: {
+            Value key_val = std::move(stack.back());
+            stack.pop_back();
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            if (obj_val.is_undefined() || obj_val.is_null()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot read property '" + to_string_val(key_val) + "' of " + to_string_val(obj_val));
+                continue;
+            }
+            if (!obj_val.is_object()) {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            std::string key = to_string_val(key_val);
+            RcObject* raw = obj_val.as_object_raw();
+            Value old_val = Value::undefined();
+            if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                old_val = static_cast<JSObject*>(raw)->get_property(key);
+            } else {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            double old_d = to_number_double_vm(old_val);
+            double new_d = old_d - 1.0;
+            auto set_ex_res = static_cast<JSObject*>(raw)->set_property_ex(key, Value::number(new_d));
+            if (!set_ex_res.is_ok()) {
+                const std::string& msg = set_ex_res.error().message();
+                NativeErrorType err_type = NativeErrorType::kRangeError;
+                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
+            stack.push_back(Value::number(new_d));
+            break;
+        }
+        case Opcode::kElemPostInc: {
+            Value key_val = std::move(stack.back());
+            stack.pop_back();
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            if (obj_val.is_undefined() || obj_val.is_null()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot read property '" + to_string_val(key_val) + "' of " + to_string_val(obj_val));
+                continue;
+            }
+            if (!obj_val.is_object()) {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            std::string key = to_string_val(key_val);
+            RcObject* raw = obj_val.as_object_raw();
+            Value old_val = Value::undefined();
+            if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                old_val = static_cast<JSObject*>(raw)->get_property(key);
+            } else {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            double old_d = to_number_double_vm(old_val);
+            double new_d = old_d + 1.0;
+            auto set_ex_res = static_cast<JSObject*>(raw)->set_property_ex(key, Value::number(new_d));
+            if (!set_ex_res.is_ok()) {
+                const std::string& msg = set_ex_res.error().message();
+                NativeErrorType err_type = NativeErrorType::kRangeError;
+                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
+            stack.push_back(Value::number(old_d));
+            break;
+        }
+        case Opcode::kElemPostDec: {
+            Value key_val = std::move(stack.back());
+            stack.pop_back();
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            if (obj_val.is_undefined() || obj_val.is_null()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot read property '" + to_string_val(key_val) + "' of " + to_string_val(obj_val));
+                continue;
+            }
+            if (!obj_val.is_object()) {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            std::string key = to_string_val(key_val);
+            RcObject* raw = obj_val.as_object_raw();
+            Value old_val = Value::undefined();
+            if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                old_val = static_cast<JSObject*>(raw)->get_property(key);
+            } else {
+                stack.push_back(Value::number(std::numeric_limits<double>::quiet_NaN()));
+                continue;
+            }
+            double old_d = to_number_double_vm(old_val);
+            double new_d = old_d - 1.0;
+            auto set_ex_res = static_cast<JSObject*>(raw)->set_property_ex(key, Value::number(new_d));
+            if (!set_ex_res.is_ok()) {
+                const std::string& msg = set_ex_res.error().message();
+                NativeErrorType err_type = NativeErrorType::kRangeError;
+                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
+            stack.push_back(Value::number(old_d));
             break;
         }
 
@@ -4045,6 +4576,8 @@ EvalResult VM::exec_module(const std::string& entry_path) {
         add_obj(number_prototype_.get());
         add_obj(object_constructor_.get());
         add_obj(number_constructor_.get());
+        add_obj(boolean_constructor_.get());
+        add_obj(string_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         for (auto& cf : call_stack_) {
             add_obj(cf.env.get());
@@ -4074,6 +4607,8 @@ EvalResult VM::exec_module(const std::string& entry_path) {
     if (number_prototype_) number_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     if (number_constructor_) number_constructor_->clear_own_properties();
+    if (boolean_constructor_) boolean_constructor_->clear_own_properties();
+    if (string_constructor_) string_constructor_->clear_own_properties();
     // 清理所有模块环境中的函数引用（打破 module_env ↔ JSFunction 循环引用）
     module_loader_.ClearModuleEnvs();
     module_loader_.Clear();

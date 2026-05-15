@@ -220,6 +220,15 @@ std::string dump_expr(const ExprNode& node, int indent) {
                                }
                            }
                        },
+                       [&](const UpdateExpression& ue) {
+                           result = prefix + "UpdateExpression(";
+                           result += (ue.op == UpdateOp::Inc ? "Inc" : "Dec");
+                           result += ", ";
+                           result += (ue.prefix ? "prefix" : "postfix");
+                           result += ")\n";
+                           result += ind(indent + 1) + "operand:\n";
+                           result += dump_expr(*ue.operand, indent + 2);
+                       },
                        [&](const AwaitExpression& aw) {
                            result = prefix + "AwaitExpression\n";
                            result += ind(indent + 1) + "argument:\n";

@@ -22,6 +22,7 @@ overloaded(Ts...) -> overloaded<Ts...>;
 // ---- 枚举 ----
 
 enum class UnaryOp { Minus, Plus, Bang, Typeof, Void };
+enum class UpdateOp { Inc, Dec };
 enum class BinaryOp { Add, Sub, Mul, Div, Mod, Lt, Gt, LtEq, GtEq, EqEq, NotEq, EqEqEq, NotEqEq, Instanceof };
 enum class LogicalOp { And, Or };
 enum class AssignOp { Assign, AddAssign, SubAssign, MulAssign, DivAssign, ModAssign };
@@ -147,6 +148,14 @@ struct ImportCallExpression {
     SourceRange range;
 };
 
+// ++/-- 前缀或后缀自增/自减表达式
+struct UpdateExpression {
+    UpdateOp op;
+    std::unique_ptr<ExprNode> operand;
+    bool prefix;  // true=++x, false=x++
+    SourceRange range;
+};
+
 // async 函数表达式 async function [name](params) { body }
 struct AsyncFunctionExpression {
     std::optional<std::string> name;
@@ -176,7 +185,8 @@ struct ExprNode {
                  BinaryExpression, LogicalExpression, AssignmentExpression,
                  ObjectExpression, MemberExpression, MemberAssignmentExpression,
                  FunctionExpression, CallExpression, NewExpression, ArrayExpression,
-                 AwaitExpression, AsyncFunctionExpression, MetaProperty, ImportCallExpression>
+                 AwaitExpression, UpdateExpression, AsyncFunctionExpression,
+                 MetaProperty, ImportCallExpression>
             v;
 
     ExprNode() = default;

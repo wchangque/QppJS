@@ -73,6 +73,7 @@ private:
     EvalResult eval_array_expr(const ArrayExpression& expr);
     EvalResult eval_async_function_expr(const AsyncFunctionExpression& expr);
     EvalResult eval_await_expr(const AwaitExpression& expr);
+    EvalResult eval_update_expr(const UpdateExpression& expr);
     EvalResult eval_import_call(const ImportCallExpression& expr);
 
     // Type conversions (static)
@@ -163,6 +164,8 @@ private:
     RcPtr<JSObject> number_prototype_;   // Number.prototype
     RcPtr<JSFunction> object_constructor_;  // global Object function
     RcPtr<JSFunction> number_constructor_;  // global Number function
+    RcPtr<JSFunction> boolean_constructor_;  // global Boolean function
+    RcPtr<JSFunction> string_constructor_;  // global String function
     uint64_t math_random_state_ = 1;    // xorshift64* PRNG state
     int call_depth_ = 0;
     static constexpr int kMaxCallDepth = 500;

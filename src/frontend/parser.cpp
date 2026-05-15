@@ -228,6 +228,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const NewExpression& n) { return n.range; },
                               [](const ArrayExpression& n) { return n.range; },
                               [](const AwaitExpression& n) { return n.range; },
+                              [](const UpdateExpression& n) { return n.range; },
                               [](const AsyncFunctionExpression& n) { return n.range; },
                               [](const MetaProperty& n) { return n.range; },
                               [](const ImportCallExpression& n) { return n.range; },
@@ -348,6 +349,9 @@ struct Parser {
             case TokenKind::Plus:
             case TokenKind::Minus:
                 return 12;
+            case TokenKind::PlusPlus:
+            case TokenKind::MinusMinus:
+                return 17;
             case TokenKind::Star:
             case TokenKind::Slash:
             case TokenKind::Percent:
@@ -492,6 +496,23 @@ struct Parser {
                 auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
                 return ParseResult<ExprNode>::Ok(ExprNode{
                         UnaryExpression{UnaryOp::Void, std::make_unique<ExprNode>(std::move(operand.value())), r}});
+            }
+            // 前缀自增/自减：++x / --x
+            case TokenKind::PlusPlus:
+            case TokenKind::MinusMinus: {
+                UpdateOp uop = (tok.kind == TokenKind::PlusPlus) ? UpdateOp::Inc : UpdateOp::Dec;
+                auto operand = parse_expr(15);
+                if (!operand.ok()) return operand;
+                // operand must be a valid assignment target (Identifier or MemberExpression)
+                if (!std::holds_alternative<Identifier>(operand.value().v) &&
+                    !std::holds_alternative<MemberExpression>(operand.value().v)) {
+                    return ParseResult<ExprNode>::Err(
+                        make_parse_error(source, tok,
+                            "invalid left-hand side expression in prefix operation (expected assignment target)"));
+                }
+                auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
+                return ParseResult<ExprNode>::Ok(ExprNode{UpdateExpression{
+                    uop, std::make_unique<ExprNode>(std::move(operand.value())), true, r}});
             }
             case TokenKind::KwNew: {
                 // new callee(args)
@@ -641,6 +662,25 @@ struct Parser {
     ParseResult<ExprNode> led(Token op_tok, ExprNode left) {
         auto kind = op_tok.kind;
         int bp = lbp(kind);
+
+        // 后缀自增/自减：x++ / x--
+        if (kind == TokenKind::PlusPlus || kind == TokenKind::MinusMinus) {
+            if (got_lf) {
+                return ParseResult<ExprNode>::Err(
+                    make_parse_error(source, op_tok, "unexpected line break after operand"));
+            }
+            // left must be a valid assignment target (Identifier or MemberExpression)
+            if (!std::holds_alternative<Identifier>(left.v) &&
+                !std::holds_alternative<MemberExpression>(left.v)) {
+                return ParseResult<ExprNode>::Err(
+                    make_parse_error(source, op_tok,
+                        "invalid left-hand side expression in postfix operation (expected assignment target)"));
+            }
+            UpdateOp uop = (kind == TokenKind::PlusPlus) ? UpdateOp::Inc : UpdateOp::Dec;
+            auto r = span(expr_range(left).offset, range_end(op_tok.range));
+            return ParseResult<ExprNode>::Ok(ExprNode{UpdateExpression{
+                uop, std::make_unique<ExprNode>(std::move(left)), false, r}});
+        }
 
         // 调用表达式：callee(args)
         if (kind == TokenKind::LParen) {
@@ -844,7 +884,14 @@ struct Parser {
             int bp = lbp(cur.kind);
             if (bp <= min_bp) break;
             Token op_tok = cur;
+            // got_lf at this point is "before the operator". Save it for led()
+            // handlers (suffix ++/--) that need the LF state between operand and operator.
+            bool op_got_lf = got_lf;
             advance();
+            // advance() overwrites got_lf to "before the token after the operator".
+            // Set it back to pre-operator state for led(); led's internal recursive
+            // parsing will update got_lf correctly, so we don't need to restore.
+            got_lf = op_got_lf;
             auto result = led(op_tok, std::move(left.value()));
             if (!result.ok()) return result;
             left = std::move(result);
