@@ -1246,6 +1246,230 @@ void Interpreter::init_runtime() {
     });
     array_prototype_->set_property("flatMap", Value::object(ObjectPtr(flat_map_fn)));
 
+    // Array.prototype.concat
+    auto concat_fn = RcPtr<JSFunction>::make();
+    concat_fn->set_name(std::string("concat"));
+    concat_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        auto* this_raw = this_val.as_object_raw();
+        if (!this_raw) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "Array.prototype.concat called on null or undefined");
+            return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+        }
+        auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(result.get());
+        result->set_proto(array_prototype_);
+        uint32_t n = 0;
+        // Spread this array
+        if (this_raw->object_kind() == ObjectKind::kArray) {
+            auto* arr = static_cast<JSObject*>(this_raw);
+            for (uint32_t i = 0; i < arr->array_length_; ++i) {
+                auto it = arr->elements_.find(i);
+                if (it != arr->elements_.end()) {
+                    result->elements_[n] = it->second;
+                }
+                n++;
+            }
+        } else {
+            result->elements_[n++] = this_val;
+        }
+        // Append args
+        for (auto& arg : args) {
+            if (arg.is_object() && arg.as_object_raw() &&
+                arg.as_object_raw()->object_kind() == ObjectKind::kArray) {
+                auto* arr = static_cast<JSObject*>(arg.as_object_raw());
+                for (uint32_t i = 0; i < arr->array_length_; ++i) {
+                    auto it = arr->elements_.find(i);
+                    if (it != arr->elements_.end()) {
+                        result->elements_[n] = it->second;
+                    }
+                    n++;
+                }
+            } else {
+                result->elements_[n++] = arg;
+            }
+        }
+        result->array_length_ = n;
+        return EvalResult::ok(Value::object(ObjectPtr(result)));
+    });
+    array_prototype_->set_property("concat", Value::object(ObjectPtr(concat_fn)));
+
+    // Array.prototype.fill
+    auto fill_fn = RcPtr<JSFunction>::make();
+    fill_fn->set_name(std::string("fill"));
+    fill_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        auto* this_raw = this_val.as_object_raw();
+        if (!this_raw) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "Array.prototype.fill called on null or undefined");
+            return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+        }
+        double len_d = 0;
+        if (this_raw->object_kind() == ObjectKind::kArray) {
+            len_d = static_cast<double>(static_cast<JSObject*>(this_raw)->array_length_);
+        }
+        auto len = static_cast<int64_t>(len_d);
+        auto rel_start = args.size() > 1 ? to_number_double(args[1]) : 0;
+        auto k = rel_start < 0 ? std::max(len + static_cast<int64_t>(rel_start), INT64_C(0))
+                               : std::min(static_cast<int64_t>(rel_start), len);
+        auto rel_end = args.size() > 2 ? to_number_double(args[2]) : len_d;
+        auto final_end = rel_end < 0 ? std::max(len + static_cast<int64_t>(rel_end), INT64_C(0))
+                                     : std::min(static_cast<int64_t>(rel_end), len);
+        Value fill_val = args.empty() ? Value::undefined() : args[0];
+        if (this_raw->object_kind() == ObjectKind::kArray) {
+            auto* arr = static_cast<JSObject*>(this_raw);
+            for (auto i = k; i < final_end; ++i) {
+                arr->elements_[static_cast<uint32_t>(i)] = fill_val;
+            }
+        }
+        return EvalResult::ok(this_val);
+    });
+    array_prototype_->set_property("fill", Value::object(ObjectPtr(fill_fn)));
+
+    // Array.prototype.copyWithin
+    auto copywithin_fn = RcPtr<JSFunction>::make();
+    copywithin_fn->set_name(std::string("copyWithin"));
+    copywithin_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        auto* raw = this_val.as_object_raw();
+        if (!raw) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "Array.prototype.copyWithin called on null or undefined");
+            return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+        }
+        if (raw->object_kind() != ObjectKind::kArray) return EvalResult::ok(this_val);
+        auto* arr = static_cast<JSObject*>(raw);
+        int64_t len = arr->array_length_;
+        int64_t target = args.size() > 0 ? static_cast<int64_t>(to_number_double(args[0])) : 0;
+        if (target < 0) target = std::max(len + target, INT64_C(0));
+        else target = std::min(target, len);
+        int64_t start = args.size() > 1 ? static_cast<int64_t>(to_number_double(args[1])) : 0;
+        if (start < 0) start = std::max(len + start, INT64_C(0));
+        else start = std::min(start, len);
+        int64_t end = len;
+        if (args.size() > 2 && !args[2].is_undefined()) {
+            end = static_cast<int64_t>(to_number_double(args[2]));
+            if (end < 0) end = std::max(len + end, INT64_C(0));
+            else end = std::min(end, len);
+        }
+        int64_t count = std::min(end - start, len - target);
+        if (count > 0) {
+            if (target < start || target >= start + count) {
+                for (int64_t i = 0; i < count; ++i) {
+                    auto it = arr->elements_.find(static_cast<uint32_t>(start + i));
+                    if (it != arr->elements_.end()) {
+                        arr->elements_[static_cast<uint32_t>(target + i)] = it->second;
+                    } else {
+                        arr->elements_.erase(static_cast<uint32_t>(target + i));
+                    }
+                }
+            } else {
+                for (int64_t i = count - 1; i >= 0; --i) {
+                    auto it = arr->elements_.find(static_cast<uint32_t>(start + i));
+                    if (it != arr->elements_.end()) {
+                        arr->elements_[static_cast<uint32_t>(target + i)] = it->second;
+                    } else {
+                        arr->elements_.erase(static_cast<uint32_t>(target + i));
+                    }
+                }
+            }
+        }
+        return EvalResult::ok(this_val);
+    });
+    array_prototype_->set_property("copyWithin", Value::object(ObjectPtr(copywithin_fn)));
+
+    // Array.prototype.shift
+    auto shift_fn = RcPtr<JSFunction>::make();
+    shift_fn->set_name(std::string("shift"));
+    shift_fn->set_native_fn([this](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+        auto* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "Array.prototype.shift called on null or undefined");
+            return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        if (arr->array_length_ == 0) return EvalResult::ok(Value::undefined());
+        auto it = arr->elements_.find(0);
+        Value first = (it != arr->elements_.end()) ? std::move(it->second) : Value::undefined();
+        arr->elements_.erase(0);
+        // Shift remaining elements down
+        std::vector<std::pair<uint32_t, Value>> shifted;
+        for (auto& [idx, val] : arr->elements_) {
+            if (idx > 0) shifted.emplace_back(idx - 1, std::move(val));
+        }
+        arr->elements_.clear();
+        for (auto& [idx, val] : shifted) {
+            arr->elements_[idx] = std::move(val);
+        }
+        arr->array_length_--;
+        return EvalResult::ok(first);
+    });
+    array_prototype_->set_property("shift", Value::object(ObjectPtr(shift_fn)));
+
+    // Array.prototype.unshift
+    auto unshift_fn = RcPtr<JSFunction>::make();
+    unshift_fn->set_name(std::string("unshift"));
+    unshift_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        auto* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "Array.prototype.unshift called on null or undefined");
+            return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        uint32_t arg_count = static_cast<uint32_t>(args.size());
+        if (arg_count > 0) {
+            // Shift existing elements up
+            std::vector<std::pair<uint32_t, Value>> shifted;
+            for (auto& [idx, val] : arr->elements_) {
+                shifted.emplace_back(idx + arg_count, std::move(val));
+            }
+            arr->elements_.clear();
+            for (auto& [idx, val] : shifted) {
+                arr->elements_[idx] = std::move(val);
+            }
+            // Insert new elements at the front
+            for (uint32_t i = 0; i < arg_count; ++i) {
+                arr->elements_[i] = std::move(args[i]);
+            }
+        }
+        arr->array_length_ += arg_count;
+        return EvalResult::ok(Value::number(static_cast<double>(arr->array_length_)));
+    });
+    array_prototype_->set_property("unshift", Value::object(ObjectPtr(unshift_fn)));
+
+    // Array.prototype.lastIndexOf
+    auto lastindexof_fn = RcPtr<JSFunction>::make();
+    lastindexof_fn->set_name(std::string("lastIndexOf"));
+    lastindexof_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        auto* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "Array.prototype.lastIndexOf called on null or undefined");
+            return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        if (args.empty()) return EvalResult::ok(Value::number(-1));
+        Value search = args[0];
+        int64_t len = arr->array_length_;
+        if (len == 0) return EvalResult::ok(Value::number(-1));
+        int64_t from = len - 1;
+        if (args.size() > 1) {
+            double d = to_number_double(args[1]);
+            from = std::isnan(d) ? 0 : static_cast<int64_t>(std::trunc(d));
+            if (from < 0) from = std::max(len + from, INT64_C(0));
+            else from = std::min(from, len - 1);
+        }
+        for (int64_t k = from; k >= 0; --k) {
+            auto it = arr->elements_.find(static_cast<uint32_t>(k));
+            if (it != arr->elements_.end() && strict_eq_values(it->second, search)) {
+                return EvalResult::ok(Value::number(static_cast<double>(k)));
+            }
+        }
+        return EvalResult::ok(Value::number(-1));
+    });
+    array_prototype_->set_property("lastIndexOf", Value::object(ObjectPtr(lastindexof_fn)));
+
     // Build Array constructor
     auto array_constructor = RcPtr<JSFunction>::make();
     array_constructor->set_name(std::string("Array"));
