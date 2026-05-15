@@ -2,11 +2,14 @@
 """QppJS test262 测试运行器
 
 用法:
-  python3 scripts/run_test262.py <test262_dir> [--qppjs <path>] [--vm] [--filter <pattern>] [--verbose]
+  python3 scripts/run_test262.py [test262_dir] [--qppjs <path>] [--vm] [--filter <pattern>] [--verbose]
+
+如果不指定 test262_dir，默认使用 tests/test262/test262 (git submodule)。
 
 示例:
+  python3 scripts/run_test262.py --filter Array/prototype
+  python3 scripts/run_test262.py --vm --filter Array
   python3 scripts/run_test262.py ~/test262 --filter Array/prototype
-  python3 scripts/run_test262.py ~/test262 --vm --filter Array
 """
 
 import argparse
@@ -18,6 +21,7 @@ import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_TEST262_DIR = PROJECT_ROOT / "tests" / "test262" / "test262"
 HARNESS_PATH = PROJECT_ROOT / "tests" / "test262" / "harness.js"
 
 
@@ -130,7 +134,8 @@ def run_test(qppjs_path, source, use_vm, is_module):
 
 def main():
     parser = argparse.ArgumentParser(description="QppJS test262 runner")
-    parser.add_argument("test262_dir", help="test262 测试套件根目录")
+    parser.add_argument("test262_dir", nargs="?", default=None,
+                        help="test262 测试套件根目录（默认: tests/test262/test262）")
     parser.add_argument("--qppjs", default=None, help="QppJS 可执行文件路径")
     parser.add_argument("--vm", action="store_true", help="使用字节码 VM")
     parser.add_argument("--filter", default=None, help="过滤测试路径（子串匹配）")
@@ -138,21 +143,27 @@ def main():
     parser.add_argument("--list", action="store_true", help="仅列出匹配的测试文件")
     args = parser.parse_args()
 
-    test262_dir = args.test262_dir
+    test262_dir = args.test262_dir or str(DEFAULT_TEST262_DIR)
     test_dir = os.path.join(test262_dir, "test")
 
     if not os.path.isdir(test_dir):
         print(f"错误: test262 测试目录不存在: {test_dir}")
+        print(f"提示: 请确保已初始化 git submodule (git submodule update --init)")
         sys.exit(1)
 
     # 查找 QppJS 可执行文件
     if args.qppjs:
         qppjs_path = args.qppjs
     else:
-        qppjs_path = str(PROJECT_ROOT / "build" / "debug" / "src" / "qppjs")
-        if not os.path.exists(qppjs_path):
-            qppjs_path = str(PROJECT_ROOT / "build" / "release" / "src" / "qppjs")
-        if not os.path.exists(qppjs_path):
+        for candidate in [
+            PROJECT_ROOT / "build" / "debug" / "src" / "qppjs",
+            PROJECT_ROOT / "build" / "release" / "src" / "qppjs",
+            PROJECT_ROOT / "build" / "test" / "src" / "qppjs",
+        ]:
+            if candidate.exists():
+                qppjs_path = str(candidate)
+                break
+        else:
             print("错误: 找不到 QppJS 可执行文件，请先构建或通过 --qppjs 指定路径")
             sys.exit(1)
 
