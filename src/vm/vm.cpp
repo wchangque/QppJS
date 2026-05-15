@@ -3006,6 +3006,20 @@ EvalResult VM::push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<V
         fn_env->initialize(params[i], std::move(arg));
     }
 
+    // Build arguments object
+    {
+        auto arg_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(arg_obj.get());
+        arg_obj->set_proto(object_prototype_);
+        for (size_t i = 0; i < args.size(); ++i) {
+            arg_obj->elements_[static_cast<uint32_t>(i)] = args[i];
+        }
+        arg_obj->array_length_ = static_cast<uint32_t>(args.size());
+        arg_obj->set_property("length", Value::number(static_cast<double>(args.size())));
+        fn_env->define("arguments", VarKind::Var);
+        fn_env->initialize("arguments", Value::object(ObjectPtr(arg_obj)));
+    }
+
     // Pre-define var_decls bindings
     for (uint16_t idx : bc->var_decls) {
         fn_env->define_initialized(bc->names[idx]);

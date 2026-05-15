@@ -4010,6 +4010,18 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
         fn_env->initialize(params[i], std::move(arg_val));
     }
 
+    // Build arguments object
+    auto arg_obj = RcPtr<JSObject>::make();
+    gc_heap_.Register(arg_obj.get());
+    arg_obj->set_proto(object_prototype_);
+    for (size_t i = 0; i < args.size(); ++i) {
+        arg_obj->elements_[static_cast<uint32_t>(i)] = args[i];
+    }
+    arg_obj->array_length_ = static_cast<uint32_t>(args.size());
+    arg_obj->set_property("length", Value::number(static_cast<double>(args.size())));
+    fn_env->define("arguments", VarKind::Var);
+    fn_env->initialize("arguments", Value::object(ObjectPtr(arg_obj)));
+
     ScopeGuard guard(*this, fn_env, fn_env, std::move(this_val), /*is_call=*/true);
     hoist_vars(*fn->body(), *fn_env);
 
