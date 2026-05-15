@@ -1246,6 +1246,43 @@ void Interpreter::init_runtime() {
     });
     array_prototype_->set_property("flatMap", Value::object(ObjectPtr(flat_map_fn)));
 
+    // Build Array constructor
+    auto array_constructor = RcPtr<JSFunction>::make();
+    array_constructor->set_name(std::string("Array"));
+    array_constructor->set_prototype_obj(array_prototype_);
+    {
+        auto isarray_fn = RcPtr<JSFunction>::make();
+        isarray_fn->set_name(std::string("isArray"));
+        isarray_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+            if (args.empty() || !args[0].is_object()) return EvalResult::ok(Value::number(0));
+            RcObject* raw = args[0].as_object_raw();
+            return EvalResult::ok(Value::number(raw && raw->object_kind() == ObjectKind::kArray ? 1 : 0));
+        });
+        array_constructor->set_property("isArray", Value::object(ObjectPtr(isarray_fn)));
+    }
+    array_constructor->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+        auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(arr.get());
+        arr->set_proto(array_prototype_);
+        if (args.size() == 1 && args[0].is_number()) {
+            double v = args[0].as_number();
+            uint32_t len = static_cast<uint32_t>(v);
+            if (static_cast<double>(len) != v || len > UINT32_MAX) {
+                return EvalResult::err(Error{ErrorKind::Runtime, "RangeError: Invalid array length"});
+            }
+            arr->array_length_ = len;
+        } else {
+            for (size_t i = 0; i < args.size(); ++i) {
+                arr->elements_[static_cast<uint32_t>(i)] = std::move(args[i]);
+            }
+            arr->array_length_ = static_cast<uint32_t>(args.size());
+        }
+        return EvalResult::ok(Value::object(ObjectPtr(arr)));
+    });
+
+    global_env_->define_initialized("Array");
+    global_env_->set("Array", Value::object(ObjectPtr(array_constructor)));
+
     // Build Object.keys
     auto keys_fn = RcPtr<JSFunction>::make();
     keys_fn->set_name(std::string("keys"));
