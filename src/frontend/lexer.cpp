@@ -292,6 +292,7 @@ static Token scan_regex(LexerState& state, uint32_t start) {
     // state.pos 已经跳过起始的 '/'
     const auto& src = state.source;
     bool in_class = false;
+    bool closed = false;
     while (state.pos < src.size()) {
         auto ch = src[state.pos];
         if (ch == '\\') {
@@ -304,11 +305,13 @@ static Token scan_regex(LexerState& state, uint32_t start) {
             in_class = false;
         } else if (ch == '/' && !in_class) {
             ++state.pos;  // skip closing '/'
+            closed = true;
             break;
         }
         if (ch == '\n' || ch == '\r') return {TokenKind::Invalid, {start, state.pos - start}};
         ++state.pos;
     }
+    if (!closed) return {TokenKind::Invalid, {start, static_cast<uint32_t>(state.pos - start)}};
     // 扫描 flags
     while (state.pos < src.size()) {
         auto ch = src[state.pos];
@@ -513,6 +516,7 @@ Token next_token(LexerState& state) {
         case '/':
             if (state.scan_regex) {
                 state.scan_regex = false;
+                ++state.pos;  // skip opening '/'
                 return scan_regex(state, start);
             }
             if (peek(1) == '=') {

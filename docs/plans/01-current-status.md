@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 2708/2708 通过（coverage），2706/2706 通过（run_ut ASAN），0 LSan 泄漏 |
+| 测试计数 | 2731/2731 通过（coverage），2729/2729 通过（run_ut ASAN），0 LSan 泄漏 |
 | 最近更新 | 2026-05-15 |
-| 下一步 | 继续提升 test262 通过率（正则表达式 Parser 集成 + 模板字符串） |
+| 下一步 | 继续提升 test262 通过率（模板字符串 + RegExp 运行时） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
@@ -23,6 +23,7 @@
 
 ## 最近完成
 
+- [x] **正则表达式字面量的 Parser 集成**（2026-05-15）：新增 RegexLiteral AST 节点（pattern/flags/range）；扩展 ExprNode variant；Parser advance() 添加 is_expr_end_token() 依据上下文设置 lex.scan_regex；nud 添加 Regex 分支解析 pattern 和 flags；expr_range() 添加 RegexLiteral 分支；ast_dump 添加 RegexLiteral 输出；interpreter/compiler 添加 RegexLiteral stub（返回 undefined/LoadUndefined）；修复 lexer.cpp scan_regex 入口未跳过起始 / 的 bug；新增 regex_literal_test.cpp 中 24 个测试（14 Parser + 2 Dump + 4 Interpreter + 4 VM）。2731/2731 通过（coverage），2729/2729 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] **Lexer 正则表达式字面量扫描**（2026-05-15）：新增 TokenKind::Regex，LexerState.scan_regex 标志，scan_regex() 函数处理模式体（字符类、转义）和 flag 字符
 - [x] **函数内 arguments 对象**（2026-05-15）：call_function/push_call_frame 中为 JS 函数创建 arguments 对象（array-like + length），Interpreter + VM 对称
 - [x] **Array.prototype 6 方法**（2026-05-15）：concat/fill/copyWithin/shift/unshift/lastIndexOf，Interpreter + VM 对称。Array test262 12.2% → 14.8%

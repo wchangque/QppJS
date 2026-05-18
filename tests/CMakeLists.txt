@@ -32,6 +32,7 @@ add_executable(qppjs_unit_tests
     unit/number_math_test.cpp
     unit/tla_test.cpp
     unit/update_expression_test.cpp
+    unit/regex_literal_test.cpp
     # unit/global_stubs_test.cpp  # FIXME: pre-existing compilation error (is_err not a member of EvalResult)
 )
 

@@ -148,6 +148,13 @@ struct ImportCallExpression {
     SourceRange range;
 };
 
+// 正则表达式字面量 /pattern/flags
+struct RegexLiteral {
+    std::string pattern;
+    std::string flags;
+    SourceRange range;
+};
+
 // ++/-- 前缀或后缀自增/自减表达式
 struct UpdateExpression {
     UpdateOp op;
@@ -186,7 +193,7 @@ struct ExprNode {
                  ObjectExpression, MemberExpression, MemberAssignmentExpression,
                  FunctionExpression, CallExpression, NewExpression, ArrayExpression,
                  AwaitExpression, UpdateExpression, AsyncFunctionExpression,
-                 MetaProperty, ImportCallExpression>
+                 MetaProperty, ImportCallExpression, RegexLiteral>
             v;
 
     ExprNode() = default;

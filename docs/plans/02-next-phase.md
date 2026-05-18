@@ -11,12 +11,14 @@
 
 ## 2. test262 通过率提升候选目标（按优先级）
 
-1. **`Array` + `String` + `Boolean` 全局构造函数** — 修复 1383 个 ReferenceError（预计提升 ~5%）
-2. **`delete` 运算符** — 修复 117 个 SyntaxError
-3. **`Symbol` 基础支持** — 修复 149 个 ReferenceError
-4. **`arguments` 对象** — 修复 137 个 ReferenceError
-5. **`Object.defineProperty` / `Object.getOwnPropertyDescriptor`** — 解锁 propertyHelper.js harness
-6. **箭头函数 `()=>`** — 修复 82+ 个 SyntaxError
+1. **正则表达式 RegExp 运行时** — 基于 Parser 已集成的 RegexLiteral 实现 RegExp 构造函数和 prototype 方法
+2. **模板字符串 `` ` ``** — 修复 SyntaxError
+3. **`Array` + `String` + `Boolean` 全局构造函数** — 修复 1383 个 ReferenceError（预计提升 ~5%）
+4. **`delete` 运算符** — 修复 117 个 SyntaxError
+5. **`Symbol` 基础支持** — 修复 149 个 ReferenceError
+6. **`arguments` 对象** — 修复 137 个 ReferenceError
+7. **`Object.defineProperty` / `Object.getOwnPropertyDescriptor`** — 解锁 propertyHelper.js harness
+8. **箭头函数 `()=>`** — 修复 82+ 个 SyntaxError
 
 ## 3. 进入前提
 

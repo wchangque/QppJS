@@ -3308,6 +3308,9 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
                 return EvalResult::ok(Value::undefined());
             },
             [this](const ImportCallExpression& e) { return eval_import_call(e); },
+            [](const RegexLiteral& /*e*/) {
+                return EvalResult::err(Error{ErrorKind::Runtime, "Unsupported: RegExp literal"});
+            },
         },
         expr.v);
 }

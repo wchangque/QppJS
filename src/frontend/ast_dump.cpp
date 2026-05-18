@@ -257,6 +257,13 @@ std::string dump_expr(const ExprNode& node, int indent) {
                            result += ind(indent + 1) + "specifier:\n";
                            result += dump_expr(*ic.specifier, indent + 2);
                        },
+                       [&](const RegexLiteral& rl) {
+                           result = prefix + "RegexLiteral\n";
+                           result += ind(indent + 1) + "pattern: " + rl.pattern + "\n";
+                           result += ind(indent + 1) + "flags: ";
+                           result += rl.flags.empty() ? "(none)" : rl.flags;
+                           result += "\n";
+                       },
                },
                node.v);
 

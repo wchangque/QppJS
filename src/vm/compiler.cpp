@@ -532,6 +532,12 @@ void Compiler::compile_expr(const ExprNode& expr) {
                 emit(Opcode::kMetaProperty);
             },
             [this](const ImportCallExpression& e) { compile_import_call(e); },
+            [this](const RegexLiteral& /*e*/) {
+                uint16_t idx = add_constant(Value::string("Unsupported: RegExp literal"));
+                emit(Opcode::kLoadString);
+                emit_u16(idx);
+                emit(Opcode::kThrow);
+            },
         },
         expr.v);
 }

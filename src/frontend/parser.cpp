@@ -232,6 +232,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const AsyncFunctionExpression& n) { return n.range; },
                               [](const MetaProperty& n) { return n.range; },
                               [](const ImportCallExpression& n) { return n.range; },
+                              [](const RegexLiteral& n) { return n.range; },
                       },
                       e.v);
 }
@@ -279,8 +280,22 @@ struct Parser {
         advance();  // 载入第一个 token
     }
 
+    static bool is_expr_end_token(TokenKind kind) {
+        switch (kind) {
+            case TokenKind::Ident: case TokenKind::Number: case TokenKind::String:
+            case TokenKind::Regex: case TokenKind::KwTrue: case TokenKind::KwFalse:
+            case TokenKind::KwNull: case TokenKind::KwThis:
+            case TokenKind::RBracket:
+            case TokenKind::PlusPlus: case TokenKind::MinusMinus:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     // 推进一个 token，记录换行状态
     void advance() {
+        lex.scan_regex = !is_expr_end_token(cur.kind);
         cur = next_token(lex);
         got_lf = lex.got_lf;
     }
@@ -650,6 +665,13 @@ struct Parser {
                 advance();  // 消费 }
                 return ParseResult<ExprNode>::Ok(
                         ExprNode{ObjectExpression{std::move(props), span(start, end)}});
+            }
+            case TokenKind::Regex: {
+                std::string_view text = token_text(tok);
+                size_t last_slash = text.rfind('/');
+                std::string pattern(text.substr(1, last_slash - 1));
+                std::string flags(text.substr(last_slash + 1));
+                return ParseResult<ExprNode>::Ok(ExprNode{RegexLiteral{std::move(pattern), std::move(flags), tok.range}});
             }
             default:
                 return ParseResult<ExprNode>::Err(make_parse_error(

@@ -4,6 +4,21 @@
 
 ## 1. 已完成任务
 
+- [x] **正则表达式字面量的 Parser 集成**（2026-05-15）：按设计方案实现正则表达式字面量从 Lexer 到 Parser/Interpreter/VM 的完整链路。
+  - **AST**：新增 `RegexLiteral` 结构体（`pattern`/`flags`/`range`），扩展 `ExprNode` variant。
+  - **Parser**：`advance()` 添加 `is_expr_end_token()` 辅助函数（检查当前 token 是否表达式终结，决定下一个 `/` 是正则还是除法）；`nud` 添加 `TokenKind::Regex` 分支，从 token 文本中提取 pattern 和 flags；`expr_range()` 添加 `RegexLiteral` 分支。
+  - **ast_dump**：`dump_expr` 添加 `RegexLiteral` 分支，输出 pattern 和 flags（无 flag 时显示 "(none)"）。
+  - **Interpreter stub**：`eval_expr` 添加 `RegexLiteral` 分支，返回 `Value::undefined()`。
+  - **Compiler stub**：`compile_expr` 添加 `RegexLiteral` 分支，emit `kLoadUndefined`。
+  - **Lexer bug 修复**：`lexer.cpp` 中 `next_token` 的 `case '/'` scan_regex 分支未在调用 `scan_regex()` 前跳过起始 `/`，导致正则主体被误当作空 pattern。添加 `++state.pos` 跳过起始 `/`。
+  - **测试**：新增 `tests/unit/regex_literal_test.cpp`，24 个测试（14 Parser + 2 Dump + 4 Interpreter + 4 VM）。
+    - Parser：BasicNoFlags/WithFlags/CharacterClass/EscapeSequence/AllFlags/VarDeclWithRegex/VarDeclWithRegexFollowedByIdent/DivisionChain/AssignmentRegex/ArrayRegex/ParenRegex/TypeofRegex/VoidRegex/BangRegex/ReturnRegex/RegexFollowedByDivision/TwoRegexLiterals（17 个）
+    - Dump：BasicDump/NoFlagsDump（2 个）
+    - Interpreter：ReturnsUndefined/StmtReturnsUndefined（2 个）
+    - VM：ReturnsUndefined/StmtReturnsUndefined（2 个）
+  - 改动文件：`include/qppjs/frontend/ast.h`、`src/frontend/parser.cpp`、`src/frontend/lexer.cpp`、`src/frontend/ast_dump.cpp`、`src/runtime/interpreter.cpp`、`src/vm/compiler.cpp`、`tests/unit/regex_literal_test.cpp`、`tests/CMakeLists.txt`。
+  - 2731/2731 通过（coverage），2729/2729 通过（run_ut ASAN），0 LSan 泄漏。
+
 - [x] **test262 git submodule 集成**（2026-05-15）：将 test262 测试套件从外部路径改为 git submodule 管理。`tests/test262/test262` 指向 `https://github.com/tc39/test262.git`（最新 main，commit 82d7772）。`scripts/run_test262.py` 改为默认使用 submodule 路径（`test262_dir` 参数变为可选），同时增加 `build/test/src/qppjs` 二进制候选取代。修正 `.gitignore` 新增 `*.profraw`。使用者只需 `git submodule update --init` 即可获取完整 test262 套件，无需手动 clone。
 
 - [x] **macOS import.meta 测试路径修复**（2026-05-15）：修复 macOS 上 `/var` → `/private/var` 符号链接导致的 42 个 import.meta 测试失败。`module_test.cpp` 的 `TempDir::abs()` 和 `tla_test.cpp` 的 `TlaTempDir::abs()` 改用 `fs::weakly_canonical(dir_ / filename)` 以与引擎内部 `exec_module` 的路径规范化保持一致。2708/2708 通过。
