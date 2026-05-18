@@ -87,6 +87,7 @@ private:
     void compile_array_expr(const ArrayExpression& expr);
     void compile_update_expr(const UpdateExpression& expr);
     void compile_import_call(const ImportCallExpression& expr);
+    void compile_template_literal(const TemplateLiteral& expr);
 
     // Emit helpers
     void emit(Opcode op);

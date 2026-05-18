@@ -75,6 +75,7 @@ private:
     EvalResult eval_await_expr(const AwaitExpression& expr);
     EvalResult eval_update_expr(const UpdateExpression& expr);
     EvalResult eval_import_call(const ImportCallExpression& expr);
+    EvalResult eval_template_literal(const TemplateLiteral& expr);
 
     // Type conversions (static)
     static bool to_boolean(const Value& v);

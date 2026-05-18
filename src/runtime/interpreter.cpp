@@ -3311,6 +3311,7 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [](const RegexLiteral& /*e*/) {
                 return EvalResult::err(Error{ErrorKind::Runtime, "Unsupported: RegExp literal"});
             },
+            [this](const TemplateLiteral& e) { return eval_template_literal(e); },
         },
         expr.v);
 }
@@ -4979,6 +4980,25 @@ EvalResult Interpreter::eval_import_call(const ImportCallExpression& expr) {
 
     promise->Fulfill(Value::object(ObjectPtr(ns_obj)), job_queue_);
     return EvalResult::ok(Value::object(ObjectPtr(promise)));
+}
+
+// ---- 模板字符串 ----
+
+EvalResult Interpreter::eval_template_literal(const TemplateLiteral& node) {
+    std::string result;
+    size_t min_len = 0;
+    for (const auto& q : node.quasis) min_len += q.cooked.size();
+    result.reserve(min_len);
+
+    for (size_t i = 0; i < node.quasis.size(); ++i) {
+        result += node.quasis[i].cooked;
+        if (i < node.expressions.size()) {
+            auto res = eval_expr(*node.expressions[i]);
+            if (!res.is_ok()) return res;
+            result += to_string_val(res.value());
+        }
+    }
+    return EvalResult::ok(Value::string(result));
 }
 
 // ---- ++/-- update expressions ----

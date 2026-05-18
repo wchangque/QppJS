@@ -264,6 +264,17 @@ std::string dump_expr(const ExprNode& node, int indent) {
                            result += rl.flags.empty() ? "(none)" : rl.flags;
                            result += "\n";
                        },
+                       [&](const TemplateLiteral& tl) {
+                           result = prefix + "TemplateLiteral\n";
+                           for (size_t i = 0; i < tl.quasis.size(); ++i) {
+                               result += ind(indent + 1) + "quasi[" + std::to_string(i) + "]: \"" +
+                                         tl.quasis[i].cooked + "\"\n";
+                               if (i < tl.expressions.size()) {
+                                   result += ind(indent + 1) + "expr[" + std::to_string(i) + "]:\n";
+                                   result += dump_expr(*tl.expressions[i], indent + 2);
+                               }
+                           }
+                       },
                },
                node.v);
 

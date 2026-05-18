@@ -88,6 +88,12 @@ enum class TokenKind {
 
     Regex,  // /pattern/flags
 
+    // 模板字符串 token
+    TemplateNoSub,   // `...`  (无插值完整模板)
+    TemplateHead,    // `...${ (模板头)
+    TemplateMiddle,  // }...${ (中间段)
+    TemplateTail,    // }...`  (末尾段)
+
     Invalid,
 };
 

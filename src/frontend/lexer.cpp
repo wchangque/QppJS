@@ -288,6 +288,87 @@ static Token scan_string(LexerState& state, uint32_t start) {
     return make_invalid();
 }
 
+// 扫描模板字符串的一段。
+// 调用时 state.pos 已指向起始 ` 或上一段 } 之后的第一个字符（由调用方决定是否已消耗定界符）。
+// 这里采用的约定：调用方传入的 start 是定界符（` 或 }）的位置，
+// 调用前 state.pos == start，本函数消耗起始定界符后扫描内容。
+Token scan_template_part(LexerState& state) {
+    const auto& src = state.source;
+    const uint32_t len = static_cast<uint32_t>(src.size());
+    uint32_t start = state.pos;
+
+    // 消耗起始定界符（` 或 }）
+    ++state.pos;
+
+    // is_head: 起始为 `（TemplateNoSub 或 TemplateHead）
+    bool is_head = (src[start] == '`');
+
+    while (state.pos < len) {
+        char c = src[state.pos];
+
+        if (c == '\\') {
+            // 转义序列：跳过反斜杠和后续字符
+            ++state.pos;
+            if (state.pos < len) {
+                char esc = src[state.pos];
+                ++state.pos;
+                if (esc == '\r') {
+                    ++state.line;
+                    if (state.pos < len && src[state.pos] == '\n') {
+                        ++state.pos;
+                    }
+                } else if (esc == '\n') {
+                    ++state.line;
+                }
+            }
+            continue;
+        }
+
+        if (c == '\r') {
+            // 规范化换行
+            ++state.line;
+            ++state.pos;
+            if (state.pos < len && src[state.pos] == '\n') {
+                ++state.pos;
+            }
+            continue;
+        }
+
+        if (c == '\n') {
+            ++state.line;
+            ++state.pos;
+            continue;
+        }
+
+        if (c == '`') {
+            // 模板结束
+            ++state.pos;
+            uint32_t tok_len = state.pos - start;
+            if (is_head) {
+                return {TokenKind::TemplateNoSub, {start, tok_len}};
+            } else {
+                return {TokenKind::TemplateTail, {start, tok_len}};
+            }
+        }
+
+        if (c == '$' && state.pos + 1 < len && src[state.pos + 1] == '{') {
+            // 插值开始
+            state.pos += 2;  // 消耗 ${
+            uint32_t tok_len = state.pos - start;
+            if (is_head) {
+                return {TokenKind::TemplateHead, {start, tok_len}};
+            } else {
+                return {TokenKind::TemplateMiddle, {start, tok_len}};
+            }
+        }
+
+        ++state.pos;
+    }
+
+    // EOF 未闭合
+    return {TokenKind::Invalid, {start, state.pos - start}};
+}
+
 static Token scan_regex(LexerState& state, uint32_t start) {
     // state.pos 已经跳过起始的 '/'
     const auto& src = state.source;
@@ -623,6 +704,9 @@ Token next_token(LexerState& state) {
         case '?':
             ++state.pos;
             return {TokenKind::Question, {start, 1}};
+        case '`':
+            // 模板字符串起始
+            return scan_template_part(state);
         default:
             break;
     }

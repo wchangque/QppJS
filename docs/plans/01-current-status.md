@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 2731/2731 通过（coverage），2729/2729 通过（run_ut ASAN），0 LSan 泄漏 |
-| 最近更新 | 2026-05-15 |
-| 下一步 | 继续提升 test262 通过率（模板字符串 + RegExp 运行时） |
+| 测试计数 | 2866/2866 通过（coverage），0 LSan 泄漏 |
+| 最近更新 | 2026-05-18 |
+| 下一步 | 继续提升 test262 通过率（RegExp 运行时 + delete 运算符 + Symbol 基础支持） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
@@ -22,6 +22,9 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **模板字符串 Review 修复**（2026-05-18）：P2-1：`decode_template_cooked` 补加 `case '1'`–`'7'` 返回 `std::nullopt`，修复 `\1`–`\7` 遗留八进制未报 SyntaxError 的 bug；P1：`kAdd` 字符串分支当两端均为字符串时改用 `sv()` 直接拼接（`reserve` + `+=`），避免 2 次 `as_string()` 值拷贝；新增 TL-52/53/54 三个 Parser SyntaxError 测试。2866/2866 通过（coverage），0 LSan 泄漏。
+- [x] **模板字符串（Template Literals）**（2026-05-18）：新增 4 种 TokenKind（TemplateNoSub/TemplateHead/TemplateMiddle/TemplateTail）；Lexer 新增 `scan_template_part` 函数，`next_token` 添加 `` ` `` 分支；Parser 新增 `decode_template_cooked`（转义解码，支持 `\n\t\r\b\f\v\\\`\$\0\xHH\uHHHH\u{H...}` 及行延续）、`advance_template_part`（回退 pos 后调用 scan_template_part）、nud 添加 TemplateNoSub/TemplateHead 分支、`expr_range` 添加 TemplateLiteral 分支；AST 新增 `TemplateElement`/`TemplateLiteral` 节点并加入 ExprNode variant；ast_dump 添加 TemplateLiteral 输出；Interpreter `eval_template_literal` 拼接 cooked + to_string_val 插值；opcode.h 新增 `kToString`；Compiler `compile_template_literal`（快路径 LoadString + 有插值路径 kToString + kAdd）；VM `kToString` 实现；新增 template_literal_test.cpp（7 Lexer + 10 Parser/Dump + 14 Interp + 14 VM = 45 个测试）。2769/2769 通过（coverage），2769/2769 通过（run_ut ASAN），0 LSan 泄漏。
 
 - [x] **正则表达式字面量的 Parser 集成**（2026-05-15）：新增 RegexLiteral AST 节点（pattern/flags/range）；扩展 ExprNode variant；Parser advance() 添加 is_expr_end_token() 依据上下文设置 lex.scan_regex；nud 添加 Regex 分支解析 pattern 和 flags；expr_range() 添加 RegexLiteral 分支；ast_dump 添加 RegexLiteral 输出；interpreter/compiler 添加 RegexLiteral stub（返回 undefined/LoadUndefined）；修复 lexer.cpp scan_regex 入口未跳过起始 / 的 bug；新增 regex_literal_test.cpp 中 24 个测试（14 Parser + 2 Dump + 4 Interpreter + 4 VM）。2731/2731 通过（coverage），2729/2729 通过（run_ut ASAN），0 LSan 泄漏。
 - [x] **Lexer 正则表达式字面量扫描**（2026-05-15）：新增 TokenKind::Regex，LexerState.scan_regex 标志，scan_regex() 函数处理模式体（字符类、转义）和 flag 字符

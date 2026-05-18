@@ -538,6 +538,7 @@ void Compiler::compile_expr(const ExprNode& expr) {
                 emit_u16(idx);
                 emit(Opcode::kThrow);
             },
+            [this](const TemplateLiteral& e) { compile_template_literal(e); },
         },
         expr.v);
 }
@@ -1137,6 +1138,35 @@ void Compiler::compile_update_expr(const UpdateExpression& expr) {
 void Compiler::compile_import_call(const ImportCallExpression& expr) {
     compile_expr(*expr.specifier);  // push specifier string onto stack
     emit(Opcode::kImportCall);      // pops specifier, pushes Promise
+}
+
+void Compiler::compile_template_literal(const TemplateLiteral& expr) {
+    const auto& quasis = expr.quasis;
+    const auto& expressions = expr.expressions;
+
+    if (expressions.empty()) {
+        // 无插值快路径：直接加载字符串
+        uint16_t idx = add_constant(Value::string(quasis[0].cooked));
+        emit(Opcode::kLoadString);
+        emit_u16(idx);
+        return;
+    }
+
+    // 有插值：LoadString(quasis[0]) + 对每个表达式 compile_expr + kToString + kAdd + LoadString(quasis[i+1]) + kAdd
+    {
+        uint16_t idx = add_constant(Value::string(quasis[0].cooked));
+        emit(Opcode::kLoadString);
+        emit_u16(idx);
+    }
+    for (size_t i = 0; i < expressions.size(); ++i) {
+        compile_expr(*expressions[i]);
+        emit(Opcode::kToString);
+        emit(Opcode::kAdd);
+        uint16_t idx = add_constant(Value::string(quasis[i + 1].cooked));
+        emit(Opcode::kLoadString);
+        emit_u16(idx);
+        emit(Opcode::kAdd);
+    }
 }
 
 }  // namespace qppjs

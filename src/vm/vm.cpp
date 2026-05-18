@@ -4262,7 +4262,17 @@ EvalResult VM::run(size_t exit_depth) {
             Value rv = std::move(stack.back()); stack.pop_back();
             Value lv = std::move(stack.back()); stack.pop_back();
             if (lv.is_string() || rv.is_string()) {
-                stack.push_back(Value::string(to_string_val(lv) + to_string_val(rv)));
+                if (lv.is_string() && rv.is_string()) {
+                    auto lsv = lv.sv();
+                    auto rsv = rv.sv();
+                    std::string r;
+                    r.reserve(lsv.size() + rsv.size());
+                    r += lsv;
+                    r += rsv;
+                    stack.push_back(Value::string(std::move(r)));
+                } else {
+                    stack.push_back(Value::string(to_string_val(lv) + to_string_val(rv)));
+                }
             } else {
                 auto ln = to_number(lv); if (!ln.is_ok()) return ln;
                 auto rn = to_number(rv); if (!rn.is_ok()) return rn;
@@ -4738,6 +4748,14 @@ EvalResult VM::run(size_t exit_depth) {
 
             // Signal suspension — run() will detect this and return kAsyncSuspendSentinel
             goto suspend_exit;
+        }
+
+        case Opcode::kToString: {
+            Value& top = stack.back();
+            if (!top.is_string()) {
+                top = Value::string(to_string_val(top));
+            }
+            break;
         }
 
         default:

@@ -150,6 +150,14 @@ std::string_view token_kind_name(TokenKind kind) {
             return "Arrow";
         case TokenKind::Regex:
             return "Regex";
+        case TokenKind::TemplateNoSub:
+            return "TemplateNoSub";
+        case TokenKind::TemplateHead:
+            return "TemplateHead";
+        case TokenKind::TemplateMiddle:
+            return "TemplateMiddle";
+        case TokenKind::TemplateTail:
+            return "TemplateTail";
         case TokenKind::Invalid:
             return "Invalid";
     }

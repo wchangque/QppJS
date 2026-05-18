@@ -16,5 +16,9 @@ struct LexerState {
 
 LexerState lexer_init(std::string_view source);
 Token next_token(LexerState& state);
+// 扫描模板字符串的一段（从当前 pos 开始，已消耗起始 ` 或上一段的 }）
+// 返回 TemplateNoSub / TemplateHead / TemplateMiddle / TemplateTail / Invalid
+// token.range 覆盖从起始定界符（含）到当前段结束定界符（含）的原始文本
+Token scan_template_part(LexerState& state);
 
 }  // namespace qppjs

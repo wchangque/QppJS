@@ -102,7 +102,9 @@ namespace qppjs {
     X(ElemPostInc, 0)                   \
     X(ElemPostDec, 0)                   \
     /* import.meta */                   \
-    X(MetaProperty, 0)
+    X(MetaProperty, 0)                  \
+    /* Template literal */              \
+    X(ToString, 0)
 
 enum class Opcode : uint8_t {
 #define X(name, _operand_bytes) k##name,

@@ -140,6 +140,155 @@ static std::string decode_string(std::string_view raw) {
     return result;
 }
 
+// 解码模板字符串的 cooked 文本（不含起始/结束定界符的内容部分）
+// raw_text: 不含起始 ` 或 }、不含结束 ` 或 ${ 的原始内容
+// 返回 nullopt 表示存在非法转义（SyntaxError）
+static std::optional<std::string> decode_template_cooked(std::string_view raw_text) {
+    std::string result;
+    result.reserve(raw_text.size());
+    std::size_t i = 0;
+    const std::size_t end = raw_text.size();
+    while (i < end) {
+        char c = raw_text[i];
+        if (c != '\\') {
+            // 规范化换行：\r\n 和 \r 均转为 \n
+            if (c == '\r') {
+                result += '\n';
+                ++i;
+                if (i < end && raw_text[i] == '\n') ++i;
+            } else {
+                result += c;
+                ++i;
+            }
+            continue;
+        }
+        // 转义序列
+        ++i;
+        if (i >= end) break;
+        char esc = raw_text[i];
+        ++i;
+        switch (esc) {
+            case 'n':  result += '\n'; break;
+            case 't':  result += '\t'; break;
+            case 'r':  result += '\r'; break;
+            case 'b':  result += '\b'; break;
+            case 'f':  result += '\f'; break;
+            case 'v':  result += '\v'; break;
+            case '\\': result += '\\'; break;
+            case '`':  result += '`';  break;
+            case '$':  result += '$';  break;
+            case '\'': result += '\''; break;
+            case '"':  result += '"';  break;
+            case '0': {
+                if (i < end && is_hex_digit_char(raw_text[i]) && raw_text[i] >= '0' && raw_text[i] <= '9') {
+                    // \01 等遗留八进制 -> 非法
+                    return std::nullopt;
+                }
+                result += '\0';
+                break;
+            }
+            case '1': case '2': case '3': case '4':
+            case '5': case '6': case '7':
+            case '8': case '9':
+                // 遗留八进制转义 \1-\9 在模板字符串中均为 NotEscapeSequence
+                return std::nullopt;
+            case 'x': {
+                if (i + 2 <= end && is_hex_digit_char(raw_text[i]) && is_hex_digit_char(raw_text[i + 1])) {
+                    int val = hex_val(raw_text[i]) * 16 + hex_val(raw_text[i + 1]);
+                    result += static_cast<char>(val);
+                    i += 2;
+                } else {
+                    return std::nullopt;
+                }
+                break;
+            }
+            case 'u': {
+                if (i < end && raw_text[i] == '{') {
+                    // \u{H...}
+                    ++i;
+                    uint32_t cp = 0;
+                    bool has_digit = false;
+                    while (i < end && raw_text[i] != '}') {
+                        if (!is_hex_digit_char(raw_text[i])) return std::nullopt;
+                        cp = cp * 16 + static_cast<uint32_t>(hex_val(raw_text[i]));
+                        ++i;
+                        has_digit = true;
+                    }
+                    if (!has_digit || i >= end) return std::nullopt;
+                    ++i;  // 消耗 }
+                    if (cp > 0x10FFFF) return std::nullopt;
+                    // 编码为 UTF-8
+                    if (cp < 0x80) {
+                        result += static_cast<char>(cp);
+                    } else if (cp < 0x800) {
+                        result += static_cast<char>(0xC0 | (cp >> 6));
+                        result += static_cast<char>(0x80 | (cp & 0x3F));
+                    } else if (cp < 0x10000) {
+                        result += static_cast<char>(0xE0 | (cp >> 12));
+                        result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                        result += static_cast<char>(0x80 | (cp & 0x3F));
+                    } else {
+                        result += static_cast<char>(0xF0 | (cp >> 18));
+                        result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                        result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                        result += static_cast<char>(0x80 | (cp & 0x3F));
+                    }
+                } else {
+                    // \uNNNN
+                    auto read_hex4 = [&](std::size_t pos) -> int {
+                        if (pos + 4 > end) return -1;
+                        if (!is_hex_digit_char(raw_text[pos]) || !is_hex_digit_char(raw_text[pos + 1]) ||
+                            !is_hex_digit_char(raw_text[pos + 2]) || !is_hex_digit_char(raw_text[pos + 3]))
+                            return -1;
+                        return hex_val(raw_text[pos]) << 12 | hex_val(raw_text[pos + 1]) << 8 |
+                               hex_val(raw_text[pos + 2]) << 4 | hex_val(raw_text[pos + 3]);
+                    };
+                    int hi = read_hex4(i);
+                    if (hi < 0) return std::nullopt;
+                    i += 4;
+                    uint32_t cp = static_cast<uint32_t>(hi);
+                    // 高代理对
+                    if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < end && raw_text[i] == '\\' && raw_text[i + 1] == 'u') {
+                        int lo = read_hex4(i + 2);
+                        if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                            cp = 0x10000 + ((cp - 0xD800) << 10) + (static_cast<uint32_t>(lo) - 0xDC00);
+                            i += 6;
+                        }
+                    }
+                    if (cp < 0x80) {
+                        result += static_cast<char>(cp);
+                    } else if (cp < 0x800) {
+                        result += static_cast<char>(0xC0 | (cp >> 6));
+                        result += static_cast<char>(0x80 | (cp & 0x3F));
+                    } else if (cp < 0x10000) {
+                        result += static_cast<char>(0xE0 | (cp >> 12));
+                        result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                        result += static_cast<char>(0x80 | (cp & 0x3F));
+                    } else {
+                        result += static_cast<char>(0xF0 | (cp >> 18));
+                        result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                        result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                        result += static_cast<char>(0x80 | (cp & 0x3F));
+                    }
+                }
+                break;
+            }
+            case '\n':
+                // 行延续：\LF 消除
+                break;
+            case '\r':
+                // 行延续：\CR 或 \CRLF 消除
+                if (i < end && raw_text[i] == '\n') ++i;
+                break;
+            default:
+                // 其他 \X 保留 X（如 \a → 'a'）
+                result += esc;
+                break;
+        }
+    }
+    return result;
+}
+
 // ---- 数字解析 ----
 
 static double parse_number_text(std::string_view text) {
@@ -233,6 +382,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const MetaProperty& n) { return n.range; },
                               [](const ImportCallExpression& n) { return n.range; },
                               [](const RegexLiteral& n) { return n.range; },
+                              [](const TemplateLiteral& n) { return n.range; },
                       },
                       e.v);
 }
@@ -287,6 +437,7 @@ struct Parser {
             case TokenKind::KwNull: case TokenKind::KwThis:
             case TokenKind::RBracket:
             case TokenKind::PlusPlus: case TokenKind::MinusMinus:
+            case TokenKind::TemplateNoSub: case TokenKind::TemplateTail:
                 return true;
             default:
                 return false;
@@ -298,6 +449,16 @@ struct Parser {
         lex.scan_regex = !is_expr_end_token(cur.kind);
         cur = next_token(lex);
         got_lf = lex.got_lf;
+    }
+
+    // 在解析完 ${...} 内的表达式后调用（此时 cur 应为 RBrace）。
+    // 将 lex.pos 回退到 } 的位置，然后调用 scan_template_part 消耗 } 并扫描下一段。
+    // 更新 cur 为 TemplateMiddle 或 TemplateTail（或 Invalid）。
+    void advance_template_part() {
+        // cur 是 RBrace，next_token 对 } 只推进 1 字节，所以 lex.pos - 1 即为 } 的位置
+        --lex.pos;
+        cur = scan_template_part(lex);
+        got_lf = false;
     }
 
     // 返回当前 token 的原始文本
@@ -672,6 +833,88 @@ struct Parser {
                 std::string pattern(text.substr(1, last_slash - 1));
                 std::string flags(text.substr(last_slash + 1));
                 return ParseResult<ExprNode>::Ok(ExprNode{RegexLiteral{std::move(pattern), std::move(flags), tok.range}});
+            }
+            case TokenKind::TemplateNoSub: {
+                // `...`  无插值完整模板
+                std::string_view text = token_text(tok);
+                // raw_text: 去掉首尾定界符（` 和 `）
+                std::string_view raw_text = text.substr(1, text.size() - 2);
+                auto cooked = decode_template_cooked(raw_text);
+                if (!cooked.has_value()) {
+                    return ParseResult<ExprNode>::Err(
+                        make_parse_error(source, tok, "invalid escape sequence in template literal"));
+                }
+                TemplateElement elem{std::move(cooked.value()), ""};
+                std::vector<TemplateElement> quasis;
+                quasis.push_back(std::move(elem));
+                return ParseResult<ExprNode>::Ok(ExprNode{TemplateLiteral{
+                    std::move(quasis), {}, tok.range}});
+            }
+            case TokenKind::TemplateHead: {
+                // `...${ 有插值模板头
+                uint32_t tpl_start = tok.range.offset;
+                std::vector<TemplateElement> quasis;
+                std::vector<std::unique_ptr<ExprNode>> expressions;
+
+                // 解码第一段（去掉首 ` 和尾 ${）
+                {
+                    std::string_view text = token_text(tok);
+                    // text = `...${ ，raw_text 去掉首 ` 和尾 ${
+                    std::string_view raw_text = text.substr(1, text.size() - 3);
+                    auto cooked = decode_template_cooked(raw_text);
+                    if (!cooked.has_value()) {
+                        return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, tok, "invalid escape sequence in template literal"));
+                    }
+                    quasis.push_back(TemplateElement{std::move(cooked.value()), ""});
+                }
+
+                // 循环：解析表达式 + 下一段
+                while (true) {
+                    auto expr_res = parse_expr(0);
+                    if (!expr_res.ok()) return expr_res;
+                    expressions.push_back(std::make_unique<ExprNode>(std::move(expr_res.value())));
+
+                    // cur 应为 RBrace（}）
+                    if (cur.kind != TokenKind::RBrace) {
+                        return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, cur, "expected '}' in template literal"));
+                    }
+                    // 消耗 } 并扫描下一模板段
+                    advance_template_part();
+
+                    if (cur.kind == TokenKind::TemplateTail) {
+                        // 末尾段：去掉首 } 和尾 `
+                        std::string_view text = token_text(cur);
+                        std::string_view raw_text = text.substr(1, text.size() - 2);
+                        auto cooked = decode_template_cooked(raw_text);
+                        if (!cooked.has_value()) {
+                            return ParseResult<ExprNode>::Err(
+                                make_parse_error(source, cur, "invalid escape sequence in template literal"));
+                        }
+                        uint32_t tpl_end = range_end(cur.range);
+                        quasis.push_back(TemplateElement{std::move(cooked.value()), ""});
+                        advance();  // 消耗 TemplateTail
+                        return ParseResult<ExprNode>::Ok(ExprNode{TemplateLiteral{
+                            std::move(quasis), std::move(expressions),
+                            span(tpl_start, tpl_end)}});
+                    } else if (cur.kind == TokenKind::TemplateMiddle) {
+                        // 中间段：去掉首 } 和尾 ${
+                        std::string_view text = token_text(cur);
+                        std::string_view raw_text = text.substr(1, text.size() - 3);
+                        auto cooked = decode_template_cooked(raw_text);
+                        if (!cooked.has_value()) {
+                            return ParseResult<ExprNode>::Err(
+                                make_parse_error(source, cur, "invalid escape sequence in template literal"));
+                        }
+                        quasis.push_back(TemplateElement{std::move(cooked.value()), ""});
+                        advance();  // 消耗 TemplateMiddle，为下一次循环准备
+                        // 继续循环
+                    } else {
+                        return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, cur, "unexpected token in template literal"));
+                    }
+                }
             }
             default:
                 return ParseResult<ExprNode>::Err(make_parse_error(

@@ -155,6 +155,19 @@ struct RegexLiteral {
     SourceRange range;
 };
 
+// 模板字符串的文本段
+struct TemplateElement {
+    std::string cooked;  // 已解转义的文本
+    std::string raw;     // 原始文本（暂不用于非标签模板，存空串）
+};
+
+// 模板字符串字面量 `...${expr}...`
+struct TemplateLiteral {
+    std::vector<TemplateElement> quasis;                 // 文本段，长度 = exprs.size() + 1
+    std::vector<std::unique_ptr<ExprNode>> expressions;  // 插值表达式
+    SourceRange range;
+};
+
 // ++/-- 前缀或后缀自增/自减表达式
 struct UpdateExpression {
     UpdateOp op;
@@ -193,7 +206,7 @@ struct ExprNode {
                  ObjectExpression, MemberExpression, MemberAssignmentExpression,
                  FunctionExpression, CallExpression, NewExpression, ArrayExpression,
                  AwaitExpression, UpdateExpression, AsyncFunctionExpression,
-                 MetaProperty, ImportCallExpression, RegexLiteral>
+                 MetaProperty, ImportCallExpression, RegexLiteral, TemplateLiteral>
             v;
 
     ExprNode() = default;
