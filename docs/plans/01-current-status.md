@@ -9,7 +9,7 @@
 | 当前阶段 | test262 通过率提升 |
 | 测试计数 | 3323/3323 通过（coverage），3321/3321（run_ut ASAN），0 LSan 泄漏 |
 | 最近更新 | 2026-05-19 |
-| 下一步 | 继续提升 test262 通过率（for-in/for-of、其他缺失特性等） |
+| 下一步 | 继续提升 test262 通过率（三元运算符、for...in/for...of、解构、spread/rest 等） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
