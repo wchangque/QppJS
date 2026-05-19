@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 3104/3104 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 3170/3170 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-05-19 |
-| 下一步 | 继续提升 test262 通过率（Object.defineProperty + 箭头函数 + String/Boolean 全局构造函数） |
+| 下一步 | 继续提升 test262 通过率（箭头函数 + String/Boolean 全局构造函数） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
@@ -23,6 +23,10 @@
 
 ## 最近完成
 
+- [x] **Object.defineProperty Review 修复 P0-1/P0-2**（2026-05-19）：P0-1：`eval_member_expr` accessor 原型链遍历循环中，`entry != nullptr` 但为 data property 时添加 `break`，规范要求找到任何 own property 即停止遍历（interpreter.cpp 1 处）；P0-2：`define_property` accessor→data 切换时在清除 `kPropIsAccessor` 标志的同时清零 `getter`/`setter` 字段，消除废弃函数引用残留（js_object.cpp 2 行）。3170/3170 通过（coverage），0 LSan 泄漏。
+- [x] **Object.defineProperty Testing Agent 边界补测 + 1 处 Bug 修复**（2026-05-19）：追加 24 个测试（DP-23～DP-34 × Interp+VM）。覆盖：accessor 原型链继承（this 为子对象）；getter 每次读取重新调用；setter 副作用修改对象其他属性；getter 中 this 为 receiver；configurable:true accessor 替换 getter；configurable:true accessor 切换为 data descriptor（getOwnPropertyDescriptor.get 为 undefined）；non-configurable accessor 不能替换 get/set（TypeError）；getOwnPropertyDescriptor accessor 格式（value/writable 为 undefined，get/set 字段存在）；Object.keys 多属性 enumerable/non-enumerable 混合过滤；preventExtensions 不影响已有属性（writable/configurable 仍有效）；Object.defineProperty 返回值 === 目标对象（可链式调用）；SameValue 重定义幂等（整数/字符串/NaN 同值不抛，不同值仍抛）。同步修复 1 处 Bug：`js_object.cpp define_property` 的 `!configurable + is_accessor` 分支缺少对 getter/setter 变更的 SameValue 检查，添加 `desc.getter.has_value() && !same_value(desc.getter, existing->getter) → TypeError`（setter 同理）。3172/3172 通过（coverage），0 LSan 泄漏。
+- [x] **Object.defineProperty Review 修复 P0-1/P0-2**（2026-05-19）：P0-1：interpreter.cpp eval_member_expr accessor 原型链遍历循环在 `entry != nullptr` 且为 data property 时补加 `break`（修复越过 own data property 继续向上找 accessor 的 Bug，与 vm.cpp kGetProp 路径对称）；P0-2：js_object.cpp define_property accessor→data 切换时追加 `getter = setter = undefined()`（清零废弃引用，消除 GC 保留旧函数对象的问题）。testing-agent 同步修复 1 处 Bug：non-configurable accessor 属性不能替换 get/set（`define_property` 中补加 accessor 的 SameValue 保护检查）；新增 24 个边界测试（DP-23～DP-34 × Interp+VM）。3170/3170 通过（coverage），0 LSan 泄漏。
+- [x] **Object.defineProperty 及 Property Descriptor 系统**（2026-05-19）：`PropertyEntry` 扩展（flags + getter/setter 字段）；`JSObject::extensible_` 字段；`JSObject::define_property`（ValidateAndApplyPropertyDescriptor）；`get_own_entry`；`define_builtin_property`（flags=0x00，内部引擎专用）；`set_property_ex` 扩展（writable/extensible sloppy 检查）；`delete_property` 检查 configurable:false；`own_enumerable_string_keys` 过滤 enumerable:false；`TraceRefs`/`ClearRefs`/`clear_function_properties` 扩展（accessor getter/setter 引用处理）；`Object.defineProperty`/`Object.getOwnPropertyDescriptor`/`Object.preventExtensions` 注册（Interpreter + VM 对称）；accessor getter 调用（eval_member_expr/kGetProp 原型链遍历）；accessor setter 调用（eval_member_assign/kSetProp，VM 侧 call_stack_ realloc 安全处理）；SameValue NaN/+0/-0 语义；新增 define_property_test.cpp（DP-01～DP-22 × Interp+VM，共 44 个测试）。3148/3148 通过（coverage），0 LSan 泄漏。
 - [x] **Symbol 基础支持 Review 修复 P0-1/P0-2/P0-3**（2026-05-19）：P0-1：vm.cpp kSub/kMul/kDiv/kMod 添加 Symbol 检测 → `frame.pending_throw` + continue（修复算术运算对 Symbol 的 TypeError 绕过 try-catch）；P0-2：interpreter.cpp AddAssign 字符串分支前添加 Symbol 检测（修复 `s += Symbol()` 静默返回 `"<symbol>"` 的 Bug）；P0-3：vm.cpp kGetElem 添加 `obj_val.is_symbol()` 分支（sym["description"] 在 VM 侧不再报 TypeError）。3104/3104 通过，0 LSan 泄漏。
 - [x] **Symbol 基础支持 Testing Agent 边界补测**（2026-05-19）：追加 28 个测试（SY-23～SY-36 × Interp+VM）。覆盖：description ToString 转换（null/false/42）；Symbol(Symbol("x")) TypeError（宽松断言）；ToNumber TypeError（sym*1）；多 Symbol 属性独立；Symbol 不被 Object.keys 枚举；原型链 Symbol 查找；Symbol.for(undefined/null)；WKS 互不相等；strict_eq 语义。3104/3104 通过，0 LSan 泄漏。
 - [x] **Symbol 基础支持 Review 修复**（2026-05-19）：P0-1：vm.cpp kSub/kMul/kDiv/kMod 添加 Symbol TypeError via `frame.pending_throw`（与 kAdd 对称）；P0-2：interpreter.cpp AddAssign 字符串分支前添加 Symbol 检测（与 BinaryOp::Add 对称）；P0-3：vm.cpp kGetElem 在字符串分支前添加 `obj_val.is_symbol()` 分支（逻辑与 kGetProp 完全对称，支持 sym["description"] 查 description/sym["toString"] 查 symbol_prototype_）。3104/3104 通过（coverage），0 LSan 泄漏。

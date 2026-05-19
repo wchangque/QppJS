@@ -7,12 +7,31 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace qppjs {
+
+// Property attribute flags (stored in PropertyEntry.flags)
+constexpr uint8_t kPropWritable     = 0x01;
+constexpr uint8_t kPropEnumerable   = 0x02;
+constexpr uint8_t kPropConfigurable = 0x04;
+constexpr uint8_t kPropIsAccessor   = 0x08;
+// Default flags for user-level set_property (writable + enumerable + configurable)
+constexpr uint8_t kPropDefault      = 0x07;
+
+// Property descriptor for Object.defineProperty (stack-only, not stored)
+struct PropDesc {
+    std::optional<Value> value;
+    std::optional<bool> writable;
+    std::optional<Value> getter;
+    std::optional<Value> setter;
+    std::optional<bool> enumerable;
+    std::optional<bool> configurable;
+};
 
 class JSObject : public RcObject {
 public:
@@ -27,15 +46,36 @@ public:
 
     Value get_property(const std::string& key) const;
     void set_property(const std::string& key, Value value);
+    // Internal initialization: flags = 0x00 (non-writable, non-enumerable, non-configurable).
+    void define_builtin_property(const std::string& key, Value value);
     // length setter may throw RangeError; array index writes auto-extend elements_
+    // Also checks writable/extensible for descriptor-aware properties.
     EvalResult set_property_ex(const std::string& key, Value value);
     // Returns true if deleted (or property didn't exist); false if non-configurable.
     bool delete_property(const std::string& key);
+    // [[DefineOwnProperty]] per spec: ValidateAndApplyPropertyDescriptor.
+    // Returns ok(undefined) on success, err(TypeError) on violation.
+    EvalResult define_property(const std::string& key, const PropDesc& desc);
     // constructor_property_ is a raw (non-owning) pointer — weak reference semantics.
     void set_constructor_property(RcObject* value);
     bool has_own_property(const std::string& key) const;
     void clear_function_properties();
     std::vector<std::string> own_enumerable_string_keys() const;
+
+    bool extensible() const { return extensible_; }
+    void set_extensible(bool v) { extensible_ = v; }
+
+    struct PropertyEntry {
+        std::string key;
+        Value value;
+        Value getter;   // kPropIsAccessor: valid; data: undefined
+        Value setter;   // kPropIsAccessor: valid; data: undefined
+        uint8_t flags = kPropDefault;
+    };
+
+    // Returns nullptr if key not found in own properties.
+    PropertyEntry* get_own_entry(const std::string& key);
+    const PropertyEntry* get_own_entry(const std::string& key) const;
 
     // Symbol-keyed property access (lazy-initialized storage).
     Value get_property_by_symbol(uint64_t symbol_id) const;
@@ -59,10 +99,6 @@ private:
 
 private:
     RcPtr<JSObject> proto_;
-    struct PropertyEntry {
-        std::string key;
-        Value value;
-    };
     std::vector<PropertyEntry> properties_;
     std::unordered_map<std::string, size_t> index_map_;
     // Tracks the number of live entries in index_map_ (for own_enumerable_string_keys pre-alloc).
@@ -70,6 +106,7 @@ private:
     // Raw pointer — weak reference, does not own. Caller must ensure lifetime.
     RcObject* constructor_property_ = nullptr;
     bool has_constructor_property_ = false;
+    bool extensible_ = true;
 };
 
 }  // namespace qppjs

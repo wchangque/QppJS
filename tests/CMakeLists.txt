@@ -37,6 +37,7 @@ add_executable(qppjs_unit_tests
     unit/template_literal_test.cpp
     unit/delete_test.cpp
     unit/symbol_test.cpp
+    unit/define_property_test.cpp
     # unit/global_stubs_test.cpp  # FIXME: pre-existing compilation error (is_err not a member of EvalResult)
 )
 

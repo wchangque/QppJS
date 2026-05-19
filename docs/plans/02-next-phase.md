@@ -16,8 +16,8 @@
 3. **`Array` + `String` + `Boolean` 全局构造函数** — 修复 1383 个 ReferenceError（预计提升 ~5%）
 4. ~~**`delete` 运算符** — 已完成（2026-05-19）~~
 5. ~~**`Symbol` 基础支持** — 已完成（2026-05-19）~~
-6. **`arguments` 对象** — 修复 137 个 ReferenceError
-7. **`Object.defineProperty` / `Object.getOwnPropertyDescriptor`** — 解锁 propertyHelper.js harness
+6. ~~**`arguments` 对象** — 已完成~~
+7. ~~**`Object.defineProperty` / `Object.getOwnPropertyDescriptor`** — 已完成（2026-05-19）~~
 8. **箭头函数 `()=>`** — 修复 82+ 个 SyntaxError
 
 ## 3. 进入前提

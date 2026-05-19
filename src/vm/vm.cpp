@@ -1627,9 +1627,137 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(args[0]);
     });
+    // Build Object.defineProperty
+    auto define_property_fn = RcPtr<JSFunction>::make();
+    define_property_fn->set_name(std::string("defineProperty"));
+    define_property_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.size() < 1 || !args[0].is_object()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Object.defineProperty called on non-object");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        RcObject* raw = args[0].as_object_raw();
+        if (raw->object_kind() != ObjectKind::kOrdinary && raw->object_kind() != ObjectKind::kArray) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Object.defineProperty called on non-object");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        auto* obj = static_cast<JSObject*>(raw);
+        std::string key = args.size() >= 2 ? to_string_val(args[1]) : "undefined";
+        if (args.size() < 3 || !args[2].is_object()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Property description must be an object");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        RcObject* desc_raw = args[2].as_object_raw();
+        if (desc_raw->object_kind() != ObjectKind::kOrdinary) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Property description must be an object");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        auto* desc_obj = static_cast<JSObject*>(desc_raw);
+        PropDesc pd;
+        bool has_value = desc_obj->has_own_property("value");
+        bool has_writable = desc_obj->has_own_property("writable");
+        bool has_get = desc_obj->has_own_property("get");
+        bool has_set = desc_obj->has_own_property("set");
+        bool has_enumerable = desc_obj->has_own_property("enumerable");
+        bool has_configurable = desc_obj->has_own_property("configurable");
+        if ((has_value || has_writable) && (has_get || has_set)) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Invalid property descriptor. Cannot both specify accessors and a value or writable attribute");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        if (has_value) pd.value = desc_obj->get_property("value");
+        if (has_writable) pd.writable = to_boolean(desc_obj->get_property("writable"));
+        if (has_get) {
+            Value get_val = desc_obj->get_property("get");
+            if (!get_val.is_undefined() && !get_val.is_null()) {
+                if (!get_val.is_object() || get_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                    native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                        "Getter must be a function");
+                    return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+                }
+            }
+            pd.getter = std::move(get_val);
+        }
+        if (has_set) {
+            Value set_val = desc_obj->get_property("set");
+            if (!set_val.is_undefined() && !set_val.is_null()) {
+                if (!set_val.is_object() || set_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                    native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                        "Setter must be a function");
+                    return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+                }
+            }
+            pd.setter = std::move(set_val);
+        }
+        if (has_enumerable) pd.enumerable = to_boolean(desc_obj->get_property("enumerable"));
+        if (has_configurable) pd.configurable = to_boolean(desc_obj->get_property("configurable"));
+        auto res = obj->define_property(key, pd);
+        if (!res.is_ok()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                strip_error_prefix(res.error().message()));
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        return EvalResult::ok(args[0]);
+    });
+
+    // Build Object.getOwnPropertyDescriptor
+    auto get_own_prop_desc_fn = RcPtr<JSFunction>::make();
+    get_own_prop_desc_fn->set_name(std::string("getOwnPropertyDescriptor"));
+    get_own_prop_desc_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.size() < 1 || !args[0].is_object()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Object.getOwnPropertyDescriptor called on non-object");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        RcObject* raw = args[0].as_object_raw();
+        if (raw->object_kind() != ObjectKind::kOrdinary && raw->object_kind() != ObjectKind::kArray) {
+            return EvalResult::ok(Value::undefined());
+        }
+        auto* obj = static_cast<JSObject*>(raw);
+        std::string key = args.size() >= 2 ? to_string_val(args[1]) : "undefined";
+        const JSObject::PropertyEntry* entry = obj->get_own_entry(key);
+        if (entry == nullptr) return EvalResult::ok(Value::undefined());
+        auto desc_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(desc_obj.get());
+        desc_obj->set_proto(object_prototype_);
+        bool is_accessor = (entry->flags & kPropIsAccessor) != 0;
+        if (is_accessor) {
+            desc_obj->set_property("get", entry->getter.is_undefined() ? Value::undefined() : entry->getter);
+            desc_obj->set_property("set", entry->setter.is_undefined() ? Value::undefined() : entry->setter);
+        } else {
+            desc_obj->set_property("value", entry->value);
+            desc_obj->set_property("writable", Value::boolean((entry->flags & kPropWritable) != 0));
+        }
+        desc_obj->set_property("enumerable", Value::boolean((entry->flags & kPropEnumerable) != 0));
+        desc_obj->set_property("configurable", Value::boolean((entry->flags & kPropConfigurable) != 0));
+        return EvalResult::ok(Value::object(ObjectPtr(desc_obj)));
+    });
+
+    // Build Object.preventExtensions
+    auto prevent_extensions_fn = RcPtr<JSFunction>::make();
+    prevent_extensions_fn->set_name(std::string("preventExtensions"));
+    prevent_extensions_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_object()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Object.preventExtensions called on non-object");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        RcObject* raw = args[0].as_object_raw();
+        if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+            static_cast<JSObject*>(raw)->set_extensible(false);
+        }
+        return EvalResult::ok(args[0]);
+    });
+
     object_constructor_->set_property("keys", Value::object(ObjectPtr(keys_fn)));
     object_constructor_->set_property("assign", Value::object(ObjectPtr(assign_fn)));
     object_constructor_->set_property("create", Value::object(ObjectPtr(create_fn)));
+    object_constructor_->set_property("defineProperty", Value::object(ObjectPtr(define_property_fn)));
+    object_constructor_->set_property("getOwnPropertyDescriptor", Value::object(ObjectPtr(get_own_prop_desc_fn)));
+    object_constructor_->set_property("preventExtensions", Value::object(ObjectPtr(prevent_extensions_fn)));
 
     global_env_->define_initialized("Object");
     global_env_->set("Object", Value::object(ObjectPtr(object_constructor_)));
@@ -4199,8 +4327,50 @@ EvalResult VM::run(size_t exit_depth) {
                 stack.push_back(Value::undefined());
                 break;
             }
-            auto* obj = static_cast<JSObject*>(raw_obj);
-            stack.push_back(obj->get_property(name));
+            {
+                auto* obj = static_cast<JSObject*>(raw_obj);
+                // Check prototype chain for accessor getter
+                Value getter_to_call;
+                bool found_accessor = false;
+                const JSObject* cur = obj;
+                while (cur != nullptr) {
+                    const JSObject::PropertyEntry* entry = cur->get_own_entry(name);
+                    if (entry != nullptr && (entry->flags & kPropIsAccessor)) {
+                        found_accessor = true;
+                        if (!entry->getter.is_undefined() && !entry->getter.is_null()) {
+                            getter_to_call = entry->getter;
+                        }
+                        break;
+                    }
+                    if (entry != nullptr) break;
+                    cur = cur->proto().get();
+                }
+                if (found_accessor) {
+                    if (getter_to_call.is_undefined()) {
+                        // call_stack_ may realloc after call_function_val; re-fetch frame
+                        call_stack_.back().stack.push_back(Value::undefined());
+                    } else {
+                        auto getter_res = call_function_val(getter_to_call, obj_val, {});
+                        // Re-fetch frame: call_stack_ may have reallocated during getter call
+                        CallFrame& cur_frame = call_stack_.back();
+                        if (!getter_res.is_ok()) {
+                            const std::string& emsg = getter_res.error().message();
+                            if (emsg == "__qppjs_pending_throw__" && native_pending_throw_.has_value()) {
+                                cur_frame.pending_throw = std::move(*native_pending_throw_);
+                                native_pending_throw_ = std::nullopt;
+                            } else {
+                                cur_frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                                    emsg);
+                            }
+                            continue;
+                        }
+                        cur_frame.stack.push_back(getter_res.value());
+                    }
+                    break;
+                }
+                // No accessor found — use normal property lookup
+                stack.push_back(obj->get_property(name));
+            }
             break;
         }
 
@@ -4245,16 +4415,64 @@ EvalResult VM::run(size_t exit_depth) {
                     "Cannot set property '" + name + "' on non-JSObject");
                 continue;
             }
-            auto* obj = static_cast<JSObject*>(raw_set);
-            auto set_ex_res = obj->set_property_ex(name, val);
-            if (!set_ex_res.is_ok()) {
-                const std::string& msg = set_ex_res.error().message();
-                NativeErrorType err_type = NativeErrorType::kRangeError;
-                if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
-                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
-                continue;
+            {
+                auto* obj = static_cast<JSObject*>(raw_set);
+                // Check prototype chain for accessor setter
+                Value setter_to_call;
+                bool found_accessor = false;
+                bool no_setter = false;
+                {
+                    const JSObject* cur = obj;
+                    while (cur != nullptr) {
+                        const JSObject::PropertyEntry* entry = cur->get_own_entry(name);
+                        if (entry != nullptr) {
+                            if (entry->flags & kPropIsAccessor) {
+                                found_accessor = true;
+                                if (entry->setter.is_undefined() || entry->setter.is_null()) {
+                                    no_setter = true;
+                                } else {
+                                    setter_to_call = entry->setter;
+                                }
+                            }
+                            break;
+                        }
+                        cur = cur->proto().get();
+                    }
+                }
+                if (found_accessor) {
+                    if (no_setter) {
+                        // Sloppy mode: silently ignore write to get-only accessor
+                        stack.push_back(std::move(val));
+                    } else {
+                        std::vector<Value> setter_args = {val};
+                        auto setter_res = call_function_val(setter_to_call, obj_val, setter_args);
+                        // Re-fetch frame: call_stack_ may have reallocated
+                        CallFrame& cur_frame = call_stack_.back();
+                        if (!setter_res.is_ok()) {
+                            const std::string& emsg = setter_res.error().message();
+                            if (emsg == "__qppjs_pending_throw__" && native_pending_throw_.has_value()) {
+                                cur_frame.pending_throw = std::move(*native_pending_throw_);
+                                native_pending_throw_ = std::nullopt;
+                            } else {
+                                cur_frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                                    emsg);
+                            }
+                            continue;
+                        }
+                        cur_frame.stack.push_back(std::move(val));
+                    }
+                } else {
+                    auto set_ex_res = obj->set_property_ex(name, val);
+                    if (!set_ex_res.is_ok()) {
+                        const std::string& msg = set_ex_res.error().message();
+                        NativeErrorType err_type = NativeErrorType::kRangeError;
+                        if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                        frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                        continue;
+                    }
+                    stack.push_back(std::move(val));
+                }
             }
-            stack.push_back(std::move(val));
             break;
         }
 

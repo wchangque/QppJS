@@ -13,6 +13,8 @@ void JSObject::TraceRefs(GcHeap& heap) {
     if (proto_) heap.MarkPending(proto_.get());
     for (const auto& entry : properties_) {
         if (entry.value.is_object()) heap.MarkPending(entry.value.as_object_raw());
+        if (entry.getter.is_object()) heap.MarkPending(entry.getter.as_object_raw());
+        if (entry.setter.is_object()) heap.MarkPending(entry.setter.as_object_raw());
     }
     for (const auto& [idx, val] : elements_) {
         if (val.is_object()) heap.MarkPending(val.as_object_raw());
@@ -97,12 +99,175 @@ void JSObject::set_property(const std::string& key, Value value) {
     auto it = index_map_.find(key);
     if (it != index_map_.end()) {
         properties_[it->second].value = std::move(value);
+        // Preserve existing flags (don't downgrade a non-default property to default)
     } else {
         size_t idx = properties_.size();
-        properties_.push_back(PropertyEntry{key, std::move(value)});
+        properties_.push_back(PropertyEntry{key, std::move(value), Value::undefined(), Value::undefined(), kPropDefault});
         index_map_.emplace(key, idx);
         ++active_count_;
     }
+}
+
+void JSObject::define_builtin_property(const std::string& key, Value value) {
+    auto it = index_map_.find(key);
+    if (it != index_map_.end()) {
+        properties_[it->second].value = std::move(value);
+        properties_[it->second].flags = 0x00;
+    } else {
+        size_t idx = properties_.size();
+        properties_.push_back(PropertyEntry{key, std::move(value), Value::undefined(), Value::undefined(), 0x00});
+        index_map_.emplace(key, idx);
+        ++active_count_;
+    }
+}
+
+JSObject::PropertyEntry* JSObject::get_own_entry(const std::string& key) {
+    auto it = index_map_.find(key);
+    if (it == index_map_.end()) return nullptr;
+    return &properties_[it->second];
+}
+
+const JSObject::PropertyEntry* JSObject::get_own_entry(const std::string& key) const {
+    auto it = index_map_.find(key);
+    if (it == index_map_.end()) return nullptr;
+    return &properties_[it->second];
+}
+
+// SameValue per spec: NaN==NaN, +0 != -0
+static bool same_value(const Value& a, const Value& b) {
+    if (a.is_number() && b.is_number()) {
+        double da = a.as_number();
+        double db = b.as_number();
+        if (std::isnan(da) && std::isnan(db)) return true;
+        if (da == 0.0 && db == 0.0) {
+            // distinguish +0 and -0 via sign bit
+            return std::signbit(da) == std::signbit(db);
+        }
+        return da == db;
+    }
+    if (a.is_string() && b.is_string()) return a.sv() == b.sv();
+    if (a.is_bool() && b.is_bool()) return a.as_bool() == b.as_bool();
+    if (a.is_undefined() && b.is_undefined()) return true;
+    if (a.is_null() && b.is_null()) return true;
+    if (a.is_object() && b.is_object()) return a.as_object_raw() == b.as_object_raw();
+    return false;
+}
+
+EvalResult JSObject::define_property(const std::string& key, const PropDesc& desc) {
+    PropertyEntry* existing = get_own_entry(key);
+
+    if (existing == nullptr) {
+        // Property doesn't exist
+        if (!extensible_) {
+            return EvalResult::err(Error{ErrorKind::Runtime,
+                "TypeError: Cannot define property " + key + ", object is not extensible"});
+        }
+        // Create new property — missing fields default to false/undefined
+        bool is_accessor = desc.getter.has_value() || desc.setter.has_value();
+        uint8_t flags = 0x00;
+        if (desc.writable.value_or(false)) flags |= kPropWritable;
+        if (desc.enumerable.value_or(false)) flags |= kPropEnumerable;
+        if (desc.configurable.value_or(false)) flags |= kPropConfigurable;
+        if (is_accessor) flags |= kPropIsAccessor;
+        Value val = desc.value.value_or(Value::undefined());
+        Value getter = desc.getter.value_or(Value::undefined());
+        Value setter = desc.setter.value_or(Value::undefined());
+        size_t idx = properties_.size();
+        properties_.push_back(PropertyEntry{key, std::move(val), std::move(getter), std::move(setter), flags});
+        index_map_.emplace(key, idx);
+        ++active_count_;
+        return EvalResult::ok(Value::undefined());
+    }
+
+    // Property exists — validate changes
+    bool configurable = (existing->flags & kPropConfigurable) != 0;
+    bool writable = (existing->flags & kPropWritable) != 0;
+    bool is_accessor = (existing->flags & kPropIsAccessor) != 0;
+
+    // If descriptor is empty, no-op
+    if (!desc.value.has_value() && !desc.writable.has_value() && !desc.getter.has_value() &&
+        !desc.setter.has_value() && !desc.enumerable.has_value() && !desc.configurable.has_value()) {
+        return EvalResult::ok(Value::undefined());
+    }
+
+    bool desc_has_accessor = desc.getter.has_value() || desc.setter.has_value();
+
+    if (!configurable) {
+        // configurable: false -> can't change configurable to true
+        if (desc.configurable.has_value() && desc.configurable.value()) {
+            return EvalResult::err(Error{ErrorKind::Runtime,
+                "TypeError: Cannot redefine property: " + key});
+        }
+        // Can't change enumerable
+        if (desc.enumerable.has_value()) {
+            bool cur_enum = (existing->flags & kPropEnumerable) != 0;
+            if (desc.enumerable.value() != cur_enum) {
+                return EvalResult::err(Error{ErrorKind::Runtime,
+                    "TypeError: Cannot redefine property: " + key});
+            }
+        }
+        // Can't switch data <-> accessor
+        if (desc_has_accessor && !is_accessor) {
+            return EvalResult::err(Error{ErrorKind::Runtime,
+                "TypeError: Cannot redefine property: " + key});
+        }
+        if (desc.value.has_value() && !desc_has_accessor && is_accessor) {
+            return EvalResult::err(Error{ErrorKind::Runtime,
+                "TypeError: Cannot redefine property: " + key});
+        }
+        if (!is_accessor) {
+            // data property checks
+            if (!writable) {
+                if (desc.writable.has_value() && desc.writable.value()) {
+                    return EvalResult::err(Error{ErrorKind::Runtime,
+                        "TypeError: Cannot redefine property: " + key});
+                }
+                if (desc.value.has_value() && !same_value(desc.value.value(), existing->value)) {
+                    return EvalResult::err(Error{ErrorKind::Runtime,
+                        "TypeError: Cannot redefine property: " + key});
+                }
+            }
+        } else {
+            // accessor property: non-configurable cannot change get or set
+            if (desc.getter.has_value() && !same_value(desc.getter.value(), existing->getter)) {
+                return EvalResult::err(Error{ErrorKind::Runtime,
+                    "TypeError: Cannot redefine property: " + key});
+            }
+            if (desc.setter.has_value() && !same_value(desc.setter.value(), existing->setter)) {
+                return EvalResult::err(Error{ErrorKind::Runtime,
+                    "TypeError: Cannot redefine property: " + key});
+            }
+        }
+    }
+
+    // Apply the descriptor fields that are present
+    if (desc.value.has_value()) existing->value = desc.value.value();
+    if (desc.getter.has_value()) existing->getter = desc.getter.value();
+    if (desc.setter.has_value()) existing->setter = desc.setter.value();
+    if (desc.writable.has_value()) {
+        if (desc.writable.value()) existing->flags |= kPropWritable;
+        else existing->flags &= static_cast<uint8_t>(~kPropWritable);
+    }
+    if (desc.enumerable.has_value()) {
+        if (desc.enumerable.value()) existing->flags |= kPropEnumerable;
+        else existing->flags &= static_cast<uint8_t>(~kPropEnumerable);
+    }
+    if (desc.configurable.has_value()) {
+        if (desc.configurable.value()) existing->flags |= kPropConfigurable;
+        else existing->flags &= static_cast<uint8_t>(~kPropConfigurable);
+    }
+    if (desc_has_accessor) {
+        existing->flags |= kPropIsAccessor;
+        // Clear value for accessor
+        existing->value = Value::undefined();
+    } else if (desc.value.has_value()) {
+        // Becoming data property
+        existing->flags &= static_cast<uint8_t>(~kPropIsAccessor);
+        existing->getter = Value::undefined();
+        existing->setter = Value::undefined();
+    }
+
+    return EvalResult::ok(Value::undefined());
 }
 
 EvalResult JSObject::set_property_ex(const std::string& key, Value value) {
@@ -126,6 +291,27 @@ EvalResult JSObject::set_property_ex(const std::string& key, Value value) {
         array_length_ = new_len;
         return EvalResult::ok(Value::undefined());
     }
+
+    // Check existing property for writable/accessor
+    PropertyEntry* entry = get_own_entry(key);
+    if (entry != nullptr) {
+        if (entry->flags & kPropIsAccessor) {
+            // Accessor: caller should handle setter separately; here we return ok (set via setter path)
+            return EvalResult::ok(Value::undefined());
+        }
+        if (!(entry->flags & kPropWritable)) {
+            // Sloppy mode: silently ignore assignment to non-writable property
+            return EvalResult::ok(Value::undefined());
+        }
+        entry->value = std::move(value);
+        return EvalResult::ok(Value::undefined());
+    }
+
+    // New property: check extensible. Sloppy mode: silently ignore.
+    if (!extensible_) {
+        return EvalResult::ok(Value::undefined());
+    }
+
     set_property(key, std::move(value));
     return EvalResult::ok(Value::undefined());
 }
@@ -148,15 +334,19 @@ bool JSObject::delete_property(const std::string& key) {
             return false;
         }
     }
-    // Non-configurable built-in: prototype on functions is handled by JSFunction,
-    // but JSObject itself has no non-configurable named properties besides array length.
     auto it = index_map_.find(key);
     if (it == index_map_.end()) {
         return true;  // property doesn't exist — delete succeeds
     }
     size_t slot_idx = it->second;
+    // Check configurable flag
+    if (!(properties_[slot_idx].flags & kPropConfigurable)) {
+        return false;
+    }
     index_map_.erase(it);
     properties_[slot_idx].value = Value::undefined();
+    properties_[slot_idx].getter = Value::undefined();
+    properties_[slot_idx].setter = Value::undefined();
     --active_count_;
     return true;
 }
@@ -186,6 +376,13 @@ void JSObject::clear_function_properties(std::unordered_set<const JSObject*>& vi
     }
 
     for (auto& property : properties_) {
+        // Clear accessor getter/setter
+        if (property.getter.is_object()) {
+            property.getter = Value::undefined();
+        }
+        if (property.setter.is_object()) {
+            property.setter = Value::undefined();
+        }
         if (!property.value.is_object()) {
             continue;
         }
@@ -246,7 +443,9 @@ std::vector<std::string> JSObject::own_enumerable_string_keys() const {
         // Non-index keys: enumerate via index_map_ to skip deleted slots
         result.reserve(result.size() + active_count_);
         for (const auto& [key, slot] : index_map_) {
-            result.push_back(key);
+            if (properties_[slot].flags & kPropEnumerable) {
+                result.push_back(key);
+            }
         }
     } else {
         // kOrdinary or kFunction: enumerate via index_map_ to skip deleted slots
@@ -257,7 +456,9 @@ std::vector<std::string> JSObject::own_enumerable_string_keys() const {
             const auto& entry = properties_[i];
             auto it = index_map_.find(entry.key);
             if (it != index_map_.end() && it->second == i) {
-                result.push_back(entry.key);
+                if (entry.flags & kPropEnumerable) {
+                    result.push_back(entry.key);
+                }
             }
         }
     }

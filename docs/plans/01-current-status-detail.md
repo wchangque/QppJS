@@ -4,6 +4,25 @@
 
 ## 1. 已完成任务
 
+- [x] **Object.defineProperty Review 修复 P0-1/P0-2**（2026-05-19）：
+  - **P0-1**（`interpreter.cpp`，`eval_member_expr`）：accessor 原型链遍历循环中，原代码仅在 `entry != nullptr && (entry->flags & kPropIsAccessor)` 时才进入 accessor 分支，对 data property 不作任何处理、继续向上遍历，可能错误找到更高层原型的 accessor。修复：将条件改为先判断 `entry != nullptr`，内层再判断 `kPropIsAccessor`——是 accessor 执行 getter 调用，是 data property 执行 `break` 停止遍历。与 `vm.cpp kGetProp` 路径（`if (entry != nullptr) break;`）保持对称。
+  - **P0-2**（`js_object.cpp`，`define_property`）：accessor→data 切换时，清除 `kPropIsAccessor` 标志后遗留 `existing->getter` / `existing->setter` 废弃函数引用，影响 GC 可达性。修复：在 `existing->flags &= ~kPropIsAccessor` 之后同时执行 `existing->getter = Value::undefined(); existing->setter = Value::undefined();`。
+  - 3170/3170 通过（coverage），0 LSan 泄漏。
+
+- [x] **Object.defineProperty Testing Agent 边界补测 + 1 处 Bug 修复**（2026-05-19）：
+  - **追加测试**：24 个（DP-23～DP-34 × Interp+VM），覆盖 accessor 原型链继承（this 为 receiver 子对象）、getter 每次读取重新调用、setter 副作用（修改对象其他属性）、getter 中 this 为 receiver（不是 proto）、configurable:true accessor 替换 getter（DP-27）、configurable:true accessor 切换为 data descriptor（getOwnPropertyDescriptor.get 返回 undefined，DP-28）、non-configurable accessor 不能替换 get/set（TypeError，DP-29）、getOwnPropertyDescriptor accessor 格式（value/writable 为 undefined，DP-30）、Object.keys 多属性 enumerable 混合过滤（DP-31）、preventExtensions 不影响已有属性修改（DP-32）、Object.defineProperty 返回值 === O（可链式，DP-33）、SameValue 幂等重定义（整数/字符串/NaN 同值不抛，不同值仍抛，DP-34）。
+  - **Bug 修复**：`js_object.cpp define_property` 在 `!configurable + is_accessor` 分支下缺少 getter/setter SameValue 检查 — 添加 `if (desc.getter.has_value() && !same_value(desc.getter.value(), existing->getter)) → TypeError`（setter 同理）。修复前 non-configurable accessor 可被任意替换 getter/setter 而不抛错。
+  - 3172/3172 通过（coverage），0 LSan 泄漏。
+
+- [x] **Object.defineProperty 及 Property Descriptor 系统**（2026-05-19）：
+  - **核心数据结构**：`PropertyEntry` 扩展（新增 `flags: uint8_t`、`getter: Value`、`setter: Value` 字段，flags 位 kPropWritable=0x01/kPropEnumerable=0x02/kPropConfigurable=0x04/kPropIsAccessor=0x08/kPropDefault=0x07）；`JSObject::extensible_` 字段（默认 true）；`PropDesc` 结构体（栈上使用，全部 optional 字段）。
+  - **JSObject 新接口**：`define_property(key, PropDesc)` — ValidateAndApplyPropertyDescriptor 规范实现（SameValue NaN/+0/-0，non-configurable 保护，data↔accessor 切换限制）；`get_own_entry(key)` — 仅查自身不含原型链；`define_builtin_property(key, value)` — flags=0x00（non-enum/non-writable/non-configurable，供引擎内部初始化）。
+  - **现有接口扩展**：`set_property_ex` 新增 writable/extensible sloppy 检查（non-writable 静默忽略，non-extensible 静默忽略——sloppy mode 语义）；`delete_property` 新增 configurable 检查（configurable:false → 返回 false）；`own_enumerable_string_keys` 过滤 enumerable:false 属性；`TraceRefs` 扩展（`getter.is_object()` / `setter.is_object()` mark）；`clear_function_properties` 扩展（清理 property.getter / property.setter 引用防 GC 泄漏）。
+  - **Object 静态方法（Interpreter + VM 对称）**：`Object.defineProperty`（ToPropertyDescriptor 验证：get/set 需为 callable；data+accessor 混用 TypeError；`define_property` 错误包装为 TypeError）；`Object.getOwnPropertyDescriptor`（返回含 value/writable 或 get/set 的 descriptor 对象）；`Object.preventExtensions`（设 extensible_=false）。
+  - **Accessor 调用路径**：`eval_member_expr` 原型链遍历找 kPropIsAccessor 后调用 getter（`call_function_val`，空参数，receiver=obj_val）；`eval_member_assign` 原型链遍历找 setter 后调用（sloppy 无 setter 静默忽略）；VM `kGetProp` 分离 getter 值拷贝再调用（`call_stack_.back()` re-fetch 防止 realloc 失效引用）；VM `kSetProp` 同理（setter_to_call 值拷贝 + re-fetch frame）。
+  - 新增 `tests/unit/define_property_test.cpp`（DP-01～DP-22 × Interp+VM，共 44 个测试）；`tests/CMakeLists.txt` 注册。
+  - 3148/3148 通过（coverage），0 LSan 泄漏。
+
 - [x] **delete 运算符 Testing Agent 边界补测 + 2 处 Bug 修复**（2026-05-19）：
   - 追加 48 个测试（DEL-16～DEL-28，Interp+VM 对称）。
   - 新增覆盖：delete 后重新添加属性 Object.keys 正确性；多属性依次删除后枚举顺序；delete 普通对象数字属性；delete 后通过 Object.keys 验证属性消失；delete 嵌套对象内属性（父/兄弟仍完好）；delete 表达式作为条件；连续 delete 同一属性幂等性；delete 数组越界索引（true，length 不变）；delete 后 typeof；delete 全部属性后 Object.keys 为空；delete 返回值赋值；delete 数组元素后 forEach 跳过 hole；delete computed string key 变量。
