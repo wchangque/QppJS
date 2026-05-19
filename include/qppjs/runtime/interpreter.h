@@ -174,6 +174,7 @@ private:
     RcPtr<JSObject> array_prototype_;    // Array.prototype
     RcPtr<JSObject> function_prototype_; // Function.prototype (call/apply/bind)
     RcPtr<JSObject> promise_prototype_;  // Promise.prototype (then/catch/finally)
+    RcPtr<JSObject> boolean_prototype_;  // Boolean.prototype (valueOf/toString)
     RcPtr<JSObject> string_prototype_;   // String.prototype (indexOf/slice/trim/...)
     RcPtr<JSObject> math_obj_;           // Math object
     RcPtr<JSObject> number_prototype_;   // Number.prototype

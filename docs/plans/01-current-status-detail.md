@@ -4,6 +4,31 @@
 
 ## 1. 已完成任务
 
+- [x] **String/Boolean 构造函数测试修复**（2026-05-19）：
+  - `string_prototype_` 新增 `valueOf` 方法：this 为 string primitive 直接返回，kStringObject 返回 wrapped_value_，其他 TypeError（interpreter.cpp + vm.cpp）
+  - `string_prototype_` 新增 `toString` 方法：逻辑同 valueOf（interpreter.cpp + vm.cpp）
+  - `String.fromCharCode` ToUint16 修正：`static_cast<uint32_t>(negative_double)` 存在 UB，改为 `fmod(trunc_n, 65536.0) + 负数偏移` 正确处理负数参数（-1 → 65535 = U+FFFF）（interpreter.cpp + vm.cpp）
+  - 修复 6 个失败测试：SB-24（new String("x").valueOf() === "x"），SB-25（new String("x").toString() === "x"），SB-26（String.fromCharCode(-1) === String.fromCharCode(65535)）× Interp+VM
+  - 3323/3323 通过（coverage），3321/3321（run_ut ASAN），0 LSan 泄漏
+
+- [x] **String 和 Boolean 全局构造函数**（2026-05-19）：
+  - `ObjectKind` 追加 `kStringObject`/`kBooleanObject` 枚举值（rc_object.h）
+  - `JSObject` 新增 `wrapped_value_` 字段（js_object.h）；TraceRefs 追加 wrapped_value_ 对象引用追踪；ClearRefs 清零 wrapped_value_（js_object.cpp）
+  - `string_prototype_` 改造为 `kStringObject` 类型，wrapped="" （interpreter.cpp + vm.cpp）
+  - `boolean_prototype_` 新建（kBooleanObject，wrapped=false，proto=object_prototype_），注册 valueOf/toString 方法；interpreter.h + vm.h 新增成员声明
+  - Boolean 构造函数 is_new_call 两路径：false 路径返回 bool primitive，true 路径创建 kBooleanObject 对象（linked to boolean_prototype_）
+  - String 构造函数 is_new_call 两路径：false 路径处理 Symbol 特殊转换，true 路径创建 kStringObject 对象；new String(Symbol) → TypeError
+  - `String.fromCharCode`：ToUint16 截断（`uint32_t(trunc(n))` → `uint16_t`），UTF-8 编码
+  - `eval_member_expr`/`kGetProp`/`kGetElem`：kStringObject length 特判（wrapped_value_.js_string_raw()），其他属性走 get_property（proto chain）；kBooleanObject 直接 get_property
+  - `eval_call_expr`：kStringObject/kBooleanObject 分支（static_cast JSObject*，调用 get_property）
+  - `instanceof`：kStringObject/kBooleanObject 加入 proto chain 遍历允许列表（interpreter.cpp + vm.cpp）
+  - `ThisStringValue` 更新：8 个 string_prototype_ 方法（indexOf/lastIndexOf/slice/substring/split/trim/trimStart/trimEnd/match）改用 `string_this_value`/`string_this_value_vm` helper，对 kStringObject 提取 wrapped_value_
+  - GC roots：4 处 GC roots sections 均加入 `boolean_prototype_`；4 处 cleanup sections 均加入 `boolean_prototype_->clear_function_properties()`
+  - 移除 vm.cpp 中已过时的 `Patch string_constructor_ to handle Symbol` 代码块（功能已集成到 string_constructor_ 主体）
+  - boolean_constructor_ + string_constructor_ 设置 prototype_obj 和 "prototype" 属性（支持 instanceof）
+  - 新增 `tests/unit/string_boolean_constructor_test.cpp`（SB-01～SB-22 × Interp+VM = 44 个测试）
+  - 3279/3279 通过（coverage），3277/3277（run_ut ASAN），0 LSan 泄漏
+
 - [x] **箭头函数 Review 修复 P0-1/P2-1**（2026-05-19）：
   - **P0-1**：重构 `nud(LParen)` 逗号分支（`parser.cpp`）。原实现在遇到 `(Ident,` 后立即校验且只接受 Identifier，导致 `(a, 123)` 等合法逗号表达式报 SyntaxError。修复为先收集所有逗号分隔表达式（`parse_expr(2)` 级，不提前校验），消费 `)` 后再判断：若跟 `=>` 则验证每项是否为 Identifier → 箭头函数路径；否则返回最后一项（逗号表达式语义，无 `BinaryOp::Comma` 故返回 last item）。
   - **P2-1**：`is_expr_end_token` 新增 `TokenKind::RParen` → 返回 true，修复 `(a + b) / 2` 中 `)` 后的 `/` 被误识别为正则字面量开头。

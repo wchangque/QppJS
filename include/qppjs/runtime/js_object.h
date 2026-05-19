@@ -65,6 +65,10 @@ public:
     bool extensible() const { return extensible_; }
     void set_extensible(bool v) { extensible_ = v; }
 
+    // Wrapped primitive value for kStringObject / kBooleanObject.
+    const Value& wrapped_value() const { return wrapped_value_; }
+    void set_wrapped_value(Value v) { wrapped_value_ = std::move(v); }
+
     struct PropertyEntry {
         std::string key;
         Value value;
@@ -107,6 +111,7 @@ private:
     RcObject* constructor_property_ = nullptr;
     bool has_constructor_property_ = false;
     bool extensible_ = true;
+    Value wrapped_value_;  // kStringObject: string primitive; kBooleanObject: bool primitive
 };
 
 }  // namespace qppjs

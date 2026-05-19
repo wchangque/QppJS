@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 3235/3235 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 3323/3323 通过（coverage），3321/3321（run_ut ASAN），0 LSan 泄漏 |
 | 最近更新 | 2026-05-19 |
-| 下一步 | 继续提升 test262 通过率（String/Boolean 全局构造函数等） |
+| 下一步 | 继续提升 test262 通过率（for-in/for-of、其他缺失特性等） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
@@ -22,6 +22,10 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **String/Boolean 构造函数测试修复**（2026-05-19）：`string_prototype_` 新增 `valueOf`/`toString` 方法（this 为 string primitive 直接返回，kStringObject 返回 wrapped_value_，其他 TypeError）；`String.fromCharCode` ToUint16 修正——将 `static_cast<uint32_t>` 中间转换改为 `fmod(trunc_n, 65536.0) + 负数修正` 正确处理负数参数（-1 → 65535 = U+FFFF）；Interpreter + VM 两侧对称。修复 6 个失败测试（SB-24/25/26 × Interp+VM）。3323/3323 通过（coverage），3321/3321（run_ut ASAN），0 LSan 泄漏。
+
+- [x] **String 和 Boolean 全局构造函数**（2026-05-19）：`kStringObject`/`kBooleanObject` 枚举值；`JSObject::wrapped_value_` 字段（TraceRefs/ClearRefs 更新）；`string_prototype_` 改造为 kStringObject（wrapped=""）；`boolean_prototype_` 新建（kBooleanObject，wrapped=false，valueOf/toString）；String 构造函数 is_new_call 两路径（new → kStringObject 对象，Symbol → TypeError）；Boolean 构造函数 is_new_call 两路径；`String.fromCharCode`（ToUint16 截断）；eval_member_expr/kGetProp/kGetElem 对 kStringObject（length 特判）/kBooleanObject（proto chain）支持；eval_call_expr/kCallMethod 对 kStringObject/kBooleanObject 支持；ThisStringValue 更新（8 个 string_prototype_ 方法均使用 string_this_value 辅助提取 wrapped_value_）；instanceof kStringObject/kBooleanObject 透传；GC roots 注册 boolean_prototype_（4 处）；移除 vm.cpp 旧 Symbol patch 代码块。新增 44 个测试（SB-01～SB-22 × Interp+VM）。3279/3279 通过（coverage），3277/3277（run_ut ASAN），0 LSan 泄漏。
 
 - [x] **箭头函数 Review 修复 P0-1/P2-1**（2026-05-19）：P0-1：重构 `nud(LParen)` 逗号分支，先收集所有逗号分隔表达式再按 `)` 后是否跟 `=>` 决定路径（修复 `(a, 123)` 等逗号表达式被误报 SyntaxError 的 bug）；P2-1：`is_expr_end_token` 新增 `RParen`，修复 `(a+b)/2` 中除号被误识别为正则字面量。3235/3235 通过（coverage），0 LSan 泄漏。
 - [x] **箭头函数 `()=>`**（2026-05-19）：AST 新增 `ArrowFunctionExpression`（params + body_stmts，表达式体已合成 ReturnStatement）；BytecodeFunction `is_arrow` 字段；JSFunction `is_arrow_`/`lexical_this_` 字段 + TraceRefs/ClearRefs 对称处理；Parser `lbp(Arrow)=3`（可在函数参数等所有赋值级上下文消费），`nud(LParen)` 重写（`()=>`/`(a,b)=>`/`(a)=>` 三路径），`led(Arrow)`（`x=>`），`parse_arrow_body`（块体复用 parse_function_body；表达式体包装 ReturnStatement）；in_async_function_/in_module_ 词法透传（不重置）；Interpreter `eval_arrow_function_expr` + `call_function` 三处守卫（new 拒绝/arguments 跳过/lexical_this）；Compiler `compile_arrow_function_expr`（is_arrow=true）+ compile_function `is_program` 参数（函数体隐式 return undefined，修复 JS 语义）；VM kMakeFunction `is_arrow` 分支 + push_call_frame 三处守卫 + kNewCall 箭头拒绝；ast_dump ArrowFunctionExpression；新增 arrow_function_test.cpp（AF-01~AF-20 × Interp+VM = 39 个测试，含 AF-19 Parser SyntaxError）。3211/3211 通过（coverage），0 LSan 泄漏。

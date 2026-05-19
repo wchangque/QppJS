@@ -24,6 +24,7 @@ void JSObject::TraceRefs(GcHeap& heap) {
             if (entry.value.is_object()) heap.MarkPending(entry.value.as_object_raw());
         }
     }
+    if (wrapped_value_.is_object()) heap.MarkPending(wrapped_value_.as_object_raw());
     // constructor_property_ is a raw weak ref; do not trace — kept alive by JSFunction::prototype_
 }
 
@@ -39,6 +40,7 @@ void JSObject::ClearRefs() {
     if (symbol_index_) symbol_index_->clear();
     constructor_property_ = nullptr;
     has_constructor_property_ = false;
+    wrapped_value_ = Value();
 }
 
 // Returns true and sets idx if key is a valid canonical array index (uint32, no leading zeros,

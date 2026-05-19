@@ -254,6 +254,42 @@ static int32_t str_last_index_of(std::string_view haystack, std::string_view nee
     return cu_idx;
 }
 
+// Coerce a primitive value to string for String.prototype method fallback.
+// Does not call Interpreter::to_string_val (private); only handles non-object primitives.
+static std::string coerce_primitive_to_str(const Value& v) {
+    if (v.is_undefined()) return "undefined";
+    if (v.is_null()) return "null";
+    if (v.is_bool()) return v.as_bool() ? "true" : "false";
+    if (v.is_number()) {
+        double n = v.as_number();
+        if (std::isnan(n)) return "NaN";
+        if (std::isinf(n)) return n > 0 ? "Infinity" : "-Infinity";
+        if (n == static_cast<double>(static_cast<long long>(n)) && std::abs(n) < 1e15) {
+            std::ostringstream oss;
+            oss << static_cast<long long>(n);
+            return oss.str();
+        }
+        std::ostringstream oss;
+        oss << n;
+        return oss.str();
+    }
+    return "[object Object]";
+}
+
+// Extract the effective string Value from a String.prototype method's this.
+// Handles string primitive, kStringObject wrapper, or falls back to coerce.
+static Value string_this_value(const Value& this_val) {
+    if (this_val.is_string()) return this_val;
+    if (this_val.is_object()) {
+        RcObject* raw = this_val.as_object_raw();
+        if (raw->object_kind() == ObjectKind::kStringObject) {
+            return static_cast<JSObject*>(raw)->wrapped_value();
+        }
+        return Value::string("[object Object]");
+    }
+    return Value::string(coerce_primitive_to_str(this_val));
+}
+
 // ============================================================
 // Completion
 // ============================================================
@@ -2167,8 +2203,9 @@ void Interpreter::init_runtime() {
     global_env_->define_initialized("Promise");
     global_env_->set("Promise", Value::object(ObjectPtr(promise_ctor)));
 
-    // String.prototype
-    string_prototype_ = RcPtr<JSObject>::make();
+    // String.prototype (kStringObject wrapper with empty string)
+    string_prototype_ = RcPtr<JSObject>::make(ObjectKind::kStringObject);
+    string_prototype_->set_wrapped_value(Value::string(""));
     string_prototype_->set_proto(object_prototype_);
 
     // indexOf(searchString, fromIndex)
@@ -2179,7 +2216,7 @@ void Interpreter::init_runtime() {
                 "String.prototype.indexOf called on null or undefined");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
-        Value effective_this = this_val.is_string() ? this_val : Value::string(to_string_val(this_val));
+        Value effective_this = string_this_value(this_val);
         JSString* js_str = effective_this.js_string_raw();
         int32_t len = utf8_cp_len(js_str);
         std::string search = args.empty() ? "undefined" : to_string_val(args[0]);
@@ -2207,7 +2244,7 @@ void Interpreter::init_runtime() {
                 "String.prototype.lastIndexOf called on null or undefined");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
-        Value effective_this = this_val.is_string() ? this_val : Value::string(to_string_val(this_val));
+        Value effective_this = string_this_value(this_val);
         JSString* js_str = effective_this.js_string_raw();
         int32_t len = utf8_cp_len(js_str);
         std::string search = args.empty() ? "undefined" : to_string_val(args[0]);
@@ -2236,7 +2273,7 @@ void Interpreter::init_runtime() {
                 "String.prototype.slice called on null or undefined");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
-        Value effective_this = this_val.is_string() ? this_val : Value::string(to_string_val(this_val));
+        Value effective_this = string_this_value(this_val);
         JSString* js_str = effective_this.js_string_raw();
         int32_t len = utf8_cp_len(js_str);
         auto resolve_slice_idx = [&](size_t arg_pos, int32_t default_val) -> int32_t {
@@ -2263,7 +2300,7 @@ void Interpreter::init_runtime() {
                 "String.prototype.substring called on null or undefined");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
-        Value effective_this = this_val.is_string() ? this_val : Value::string(to_string_val(this_val));
+        Value effective_this = string_this_value(this_val);
         JSString* js_str = effective_this.js_string_raw();
         int32_t len = utf8_cp_len(js_str);
         auto resolve_sub_idx = [&](size_t arg_pos, int32_t default_val) -> int32_t {
@@ -2289,7 +2326,7 @@ void Interpreter::init_runtime() {
                 "String.prototype.split called on null or undefined");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
-        std::string str = to_string_val(this_val);
+        std::string str(string_this_value(this_val).sv());
         auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
         result->set_proto(array_prototype_);
         gc_heap_.Register(result.get());
@@ -2366,7 +2403,7 @@ void Interpreter::init_runtime() {
                 "String.prototype.trim called on null or undefined");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
-        return EvalResult::ok(Value::string(utf8_trim_impl(to_string_val(this_val), true, true)));
+        return EvalResult::ok(Value::string(utf8_trim_impl(string_this_value(this_val).sv(), true, true)));
     });
     gc_heap_.Register(str_trim_fn.get());
     string_prototype_->set_property("trim", Value::object(ObjectPtr(str_trim_fn)));
@@ -2380,7 +2417,7 @@ void Interpreter::init_runtime() {
                 "String.prototype.trimStart called on null or undefined");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
-        return EvalResult::ok(Value::string(utf8_trim_impl(to_string_val(this_val), true, false)));
+        return EvalResult::ok(Value::string(utf8_trim_impl(string_this_value(this_val).sv(), true, false)));
     });
     gc_heap_.Register(str_trim_start_fn.get());
     string_prototype_->set_property("trimStart", Value::object(ObjectPtr(str_trim_start_fn)));
@@ -2394,10 +2431,44 @@ void Interpreter::init_runtime() {
                 "String.prototype.trimEnd called on null or undefined");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
-        return EvalResult::ok(Value::string(utf8_trim_impl(to_string_val(this_val), false, true)));
+        return EvalResult::ok(Value::string(utf8_trim_impl(string_this_value(this_val).sv(), false, true)));
     });
     gc_heap_.Register(str_trim_end_fn.get());
     string_prototype_->set_property("trimEnd", Value::object(ObjectPtr(str_trim_end_fn)));
+
+    // valueOf()
+    auto str_valueof_fn = RcPtr<JSFunction>::make();
+    str_valueof_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+        if (this_val.is_string()) return EvalResult::ok(this_val);
+        if (this_val.is_object()) {
+            RcObject* raw = this_val.as_object_raw();
+            if (raw->object_kind() == ObjectKind::kStringObject) {
+                return EvalResult::ok(static_cast<JSObject*>(raw)->wrapped_value());
+            }
+        }
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "String.prototype.valueOf requires a string or String object");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    });
+    gc_heap_.Register(str_valueof_fn.get());
+    string_prototype_->set_property("valueOf", Value::object(ObjectPtr(str_valueof_fn)));
+
+    // toString()
+    auto str_tostring_fn = RcPtr<JSFunction>::make();
+    str_tostring_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+        if (this_val.is_string()) return EvalResult::ok(this_val);
+        if (this_val.is_object()) {
+            RcObject* raw = this_val.as_object_raw();
+            if (raw->object_kind() == ObjectKind::kStringObject) {
+                return EvalResult::ok(static_cast<JSObject*>(raw)->wrapped_value());
+            }
+        }
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "String.prototype.toString requires a string or String object");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    });
+    gc_heap_.Register(str_tostring_fn.get());
+    string_prototype_->set_property("toString", Value::object(ObjectPtr(str_tostring_fn)));
 
     // ---- Global constants: NaN, Infinity ----
 
@@ -2563,15 +2634,73 @@ void Interpreter::init_runtime() {
     global_env_->define_initialized("Number");
     global_env_->set("Number", Value::object(ObjectPtr(number_constructor_)));
 
+    // ---- Boolean.prototype ----
+
+    boolean_prototype_ = RcPtr<JSObject>::make(ObjectKind::kBooleanObject);
+    boolean_prototype_->set_wrapped_value(Value::boolean(false));
+    boolean_prototype_->set_proto(object_prototype_);
+    gc_heap_.Register(boolean_prototype_.get());
+
+    // Boolean.prototype.valueOf
+    auto bool_valueof_fn = RcPtr<JSFunction>::make();
+    bool_valueof_fn->set_native_fn([this](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+        if (this_val.is_bool()) return EvalResult::ok(this_val);
+        if (this_val.is_object()) {
+            RcObject* raw = this_val.as_object_raw();
+            if (raw->object_kind() == ObjectKind::kBooleanObject) {
+                return EvalResult::ok(static_cast<JSObject*>(raw)->wrapped_value());
+            }
+        }
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "Boolean.prototype.valueOf requires a boolean or Boolean object");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    });
+    gc_heap_.Register(bool_valueof_fn.get());
+    boolean_prototype_->set_property("valueOf", Value::object(ObjectPtr(bool_valueof_fn)));
+
+    // Boolean.prototype.toString
+    auto bool_tostring_fn = RcPtr<JSFunction>::make();
+    bool_tostring_fn->set_native_fn([this](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+        bool b = false;
+        if (this_val.is_bool()) {
+            b = this_val.as_bool();
+        } else if (this_val.is_object()) {
+            RcObject* raw = this_val.as_object_raw();
+            if (raw->object_kind() == ObjectKind::kBooleanObject) {
+                b = static_cast<JSObject*>(raw)->wrapped_value().as_bool();
+            } else {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Boolean.prototype.toString requires a boolean or Boolean object");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+        } else {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Boolean.prototype.toString requires a boolean or Boolean object");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        return EvalResult::ok(Value::string(b ? "true" : "false"));
+    });
+    gc_heap_.Register(bool_tostring_fn.get());
+    boolean_prototype_->set_property("toString", Value::object(ObjectPtr(bool_tostring_fn)));
+
     // ---- Boolean constructor ----
 
     boolean_constructor_ = RcPtr<JSFunction>::make();
     boolean_constructor_->set_name(std::string("Boolean"));
-    boolean_constructor_->set_native_fn([](Value /*this_val*/, std::vector<Value> args,
-                                           bool /*is_new*/) -> EvalResult {
-        bool b = args.empty() ? false : to_boolean(args[0]);
-        return EvalResult::ok(Value::boolean(b));
+    boolean_constructor_->set_native_fn([this](Value /*this_val*/, std::vector<Value> args,
+                                               bool is_new) -> EvalResult {
+        bool bool_val = args.empty() ? false : to_boolean(args[0]);
+        if (!is_new) {
+            return EvalResult::ok(Value::boolean(bool_val));
+        }
+        auto obj = RcPtr<JSObject>::make(ObjectKind::kBooleanObject);
+        obj->set_wrapped_value(Value::boolean(bool_val));
+        obj->set_proto(boolean_prototype_);
+        gc_heap_.Register(obj.get());
+        return EvalResult::ok(Value::object(ObjectPtr(obj)));
     });
+    boolean_constructor_->set_prototype_obj(boolean_prototype_);
+    boolean_constructor_->set_property("prototype", Value::object(ObjectPtr(boolean_prototype_)));
 
     gc_heap_.Register(boolean_constructor_.get());
     global_env_->define_initialized("Boolean");
@@ -2582,14 +2711,57 @@ void Interpreter::init_runtime() {
     string_constructor_ = RcPtr<JSFunction>::make();
     string_constructor_->set_name(std::string("String"));
     string_constructor_->set_native_fn([this](Value /*this_val*/, std::vector<Value> args,
-                                              bool /*is_new*/) -> EvalResult {
-        if (!args.empty() && args[0].is_symbol()) {
-            return EvalResult::ok(Value::string(symbol_to_string(args[0].as_symbol_id(), symbol_table_)));
+                                              bool is_new) -> EvalResult {
+        if (!is_new) {
+            if (!args.empty() && args[0].is_symbol()) {
+                return EvalResult::ok(Value::string(symbol_to_string(args[0].as_symbol_id(), symbol_table_)));
+            }
+            std::string s = args.empty() ? std::string("") : to_string_val(args[0]);
+            return EvalResult::ok(Value::string(s));
         }
-        std::string s = args.empty() ? std::string("") : to_string_val(args[0]);
-        return EvalResult::ok(Value::string(s));
+        // new String(...): Symbol throws TypeError
+        if (!args.empty() && args[0].is_symbol()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Cannot convert a Symbol value to a string");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        std::string str = args.empty() ? std::string("") : to_string_val(args[0]);
+        auto obj = RcPtr<JSObject>::make(ObjectKind::kStringObject);
+        obj->set_wrapped_value(Value::string(str));
+        obj->set_proto(string_prototype_);
+        gc_heap_.Register(obj.get());
+        return EvalResult::ok(Value::object(ObjectPtr(obj)));
     });
+    string_constructor_->set_prototype_obj(string_prototype_);
+    string_constructor_->set_property("prototype", Value::object(ObjectPtr(string_prototype_)));
 
+    // String.fromCharCode
+    auto str_from_char_code_fn = RcPtr<JSFunction>::make();
+    str_from_char_code_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+        std::string result;
+        for (auto& arg : args) {
+            double n = to_number_double(arg);
+            double trunc_n = std::isfinite(n) ? std::trunc(n) : 0.0;
+            double mod = std::fmod(trunc_n, 65536.0);
+            if (mod < 0.0) mod += 65536.0;
+            uint16_t code = static_cast<uint16_t>(mod);
+            if (code < 0x80) {
+                result += static_cast<char>(code);
+            } else if (code < 0x800) {
+                result += static_cast<char>(0xC0 | (code >> 6));
+                result += static_cast<char>(0x80 | (code & 0x3F));
+            } else {
+                result += static_cast<char>(0xE0 | (code >> 12));
+                result += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                result += static_cast<char>(0x80 | (code & 0x3F));
+            }
+        }
+        return EvalResult::ok(Value::string(result));
+    });
+    gc_heap_.Register(str_from_char_code_fn.get());
+    string_constructor_->set_property("fromCharCode", Value::object(ObjectPtr(str_from_char_code_fn)));
+
+    gc_heap_.Register(string_prototype_.get());
     gc_heap_.Register(string_constructor_.get());
     global_env_->define_initialized("String");
     global_env_->set("String", Value::object(ObjectPtr(string_constructor_)));
@@ -2848,7 +3020,7 @@ void Interpreter::init_runtime() {
                 "String.prototype.match called on null or undefined");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
-        std::string str = to_string_val(this_val);
+        std::string str(string_this_value(this_val).sv());
         if (args.empty() || args[0].is_undefined()) {
             // match(undefined) → match(/(?:)/)
             auto rx_res = make_regexp("", "");
@@ -3411,6 +3583,7 @@ EvalResult Interpreter::exec(const Program& program) {
         add_obj(array_prototype_.get());
         add_obj(function_prototype_.get());
         add_obj(promise_prototype_.get());
+        add_obj(boolean_prototype_.get());
         add_obj(string_prototype_.get());
         add_obj(math_obj_.get());
         add_obj(number_prototype_.get());
@@ -3441,6 +3614,7 @@ EvalResult Interpreter::exec(const Program& program) {
     if (array_prototype_) array_prototype_->clear_function_properties();
     if (function_prototype_) function_prototype_->clear_function_properties();
     if (promise_prototype_) promise_prototype_->clear_function_properties();
+    if (boolean_prototype_) boolean_prototype_->clear_function_properties();
     if (string_prototype_) string_prototype_->clear_function_properties();
     if (math_obj_) math_obj_->clear_function_properties();
     if (number_prototype_) number_prototype_->clear_function_properties();
@@ -4233,7 +4407,8 @@ EvalResult Interpreter::eval_binary(const BinaryExpression& expr) {
         while (cur_raw) {
             ObjectKind k = cur_raw->object_kind();
             if (k != ObjectKind::kOrdinary && k != ObjectKind::kArray &&
-                k != ObjectKind::kRegExp) break;
+                k != ObjectKind::kRegExp && k != ObjectKind::kStringObject &&
+                k != ObjectKind::kBooleanObject) break;
             auto* cur_obj = static_cast<JSObject*>(cur_raw);
             const RcPtr<JSObject>& proto = cur_obj->proto();
             if (!proto) break;
@@ -4505,6 +4680,18 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
         if (key == "lastIndex") return EvalResult::ok(Value::number(static_cast<double>(rx->last_index_)));
         if (regexp_prototype_) return EvalResult::ok(regexp_prototype_->get_property(key));
         return EvalResult::ok(Value::undefined());
+    }
+    if (raw_obj->object_kind() == ObjectKind::kStringObject) {
+        auto* js_obj = static_cast<JSObject*>(raw_obj);
+        if (key == "length") {
+            JSString* js_str = js_obj->wrapped_value().js_string_raw();
+            return EvalResult::ok(Value::number(static_cast<double>(utf8_cp_len(js_str))));
+        }
+        return EvalResult::ok(js_obj->get_property(key));
+    }
+    if (raw_obj->object_kind() == ObjectKind::kBooleanObject) {
+        auto* js_obj = static_cast<JSObject*>(raw_obj);
+        return EvalResult::ok(js_obj->get_property(key));
     }
     if (raw_obj->object_kind() != ObjectKind::kOrdinary && raw_obj->object_kind() != ObjectKind::kArray) {
         return EvalResult::ok(Value::undefined());
@@ -5036,6 +5223,10 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
             } else {
                 callee_val = Value::undefined();
             }
+        } else if (obj_ptr->object_kind() == ObjectKind::kStringObject ||
+                   obj_ptr->object_kind() == ObjectKind::kBooleanObject) {
+            auto* js_obj = static_cast<JSObject*>(obj_ptr);
+            callee_val = js_obj->get_property(key);
         } else {
             callee_val = Value::undefined();
         }
@@ -5224,6 +5415,7 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
         add_obj(array_prototype_.get());
         add_obj(function_prototype_.get());
         add_obj(promise_prototype_.get());
+        add_obj(boolean_prototype_.get());
         add_obj(string_prototype_.get());
         add_obj(math_obj_.get());
         add_obj(number_prototype_.get());
@@ -5253,6 +5445,7 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
     if (array_prototype_) array_prototype_->clear_function_properties();
     if (function_prototype_) function_prototype_->clear_function_properties();
     if (promise_prototype_) promise_prototype_->clear_function_properties();
+    if (boolean_prototype_) boolean_prototype_->clear_function_properties();
     if (string_prototype_) string_prototype_->clear_function_properties();
     if (math_obj_) math_obj_->clear_function_properties();
     if (number_prototype_) number_prototype_->clear_function_properties();
