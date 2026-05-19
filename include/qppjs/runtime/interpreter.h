@@ -70,6 +70,7 @@ private:
     EvalResult eval_member_expr(const MemberExpression& expr);
     EvalResult eval_member_assign(const MemberAssignmentExpression& expr);
     EvalResult eval_function_expr(const FunctionExpression& expr);
+    EvalResult eval_arrow_function_expr(const ArrowFunctionExpression& expr);
     EvalResult eval_call_expr(const CallExpression& expr);
     EvalResult eval_new_expr(const NewExpression& expr);
     EvalResult eval_array_expr(const ArrayExpression& expr);

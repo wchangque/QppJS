@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 3170/3170 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 3235/3235 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-05-19 |
-| 下一步 | 继续提升 test262 通过率（箭头函数 + String/Boolean 全局构造函数） |
+| 下一步 | 继续提升 test262 通过率（String/Boolean 全局构造函数等） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
@@ -23,6 +23,8 @@
 
 ## 最近完成
 
+- [x] **箭头函数 Review 修复 P0-1/P2-1**（2026-05-19）：P0-1：重构 `nud(LParen)` 逗号分支，先收集所有逗号分隔表达式再按 `)` 后是否跟 `=>` 决定路径（修复 `(a, 123)` 等逗号表达式被误报 SyntaxError 的 bug）；P2-1：`is_expr_end_token` 新增 `RParen`，修复 `(a+b)/2` 中除号被误识别为正则字面量。3235/3235 通过（coverage），0 LSan 泄漏。
+- [x] **箭头函数 `()=>`**（2026-05-19）：AST 新增 `ArrowFunctionExpression`（params + body_stmts，表达式体已合成 ReturnStatement）；BytecodeFunction `is_arrow` 字段；JSFunction `is_arrow_`/`lexical_this_` 字段 + TraceRefs/ClearRefs 对称处理；Parser `lbp(Arrow)=3`（可在函数参数等所有赋值级上下文消费），`nud(LParen)` 重写（`()=>`/`(a,b)=>`/`(a)=>` 三路径），`led(Arrow)`（`x=>`），`parse_arrow_body`（块体复用 parse_function_body；表达式体包装 ReturnStatement）；in_async_function_/in_module_ 词法透传（不重置）；Interpreter `eval_arrow_function_expr` + `call_function` 三处守卫（new 拒绝/arguments 跳过/lexical_this）；Compiler `compile_arrow_function_expr`（is_arrow=true）+ compile_function `is_program` 参数（函数体隐式 return undefined，修复 JS 语义）；VM kMakeFunction `is_arrow` 分支 + push_call_frame 三处守卫 + kNewCall 箭头拒绝；ast_dump ArrowFunctionExpression；新增 arrow_function_test.cpp（AF-01~AF-20 × Interp+VM = 39 个测试，含 AF-19 Parser SyntaxError）。3211/3211 通过（coverage），0 LSan 泄漏。
 - [x] **Object.defineProperty Review 修复 P0-1/P0-2**（2026-05-19）：P0-1：`eval_member_expr` accessor 原型链遍历循环中，`entry != nullptr` 但为 data property 时添加 `break`，规范要求找到任何 own property 即停止遍历（interpreter.cpp 1 处）；P0-2：`define_property` accessor→data 切换时在清除 `kPropIsAccessor` 标志的同时清零 `getter`/`setter` 字段，消除废弃函数引用残留（js_object.cpp 2 行）。3170/3170 通过（coverage），0 LSan 泄漏。
 - [x] **Object.defineProperty Testing Agent 边界补测 + 1 处 Bug 修复**（2026-05-19）：追加 24 个测试（DP-23～DP-34 × Interp+VM）。覆盖：accessor 原型链继承（this 为子对象）；getter 每次读取重新调用；setter 副作用修改对象其他属性；getter 中 this 为 receiver；configurable:true accessor 替换 getter；configurable:true accessor 切换为 data descriptor（getOwnPropertyDescriptor.get 为 undefined）；non-configurable accessor 不能替换 get/set（TypeError）；getOwnPropertyDescriptor accessor 格式（value/writable 为 undefined，get/set 字段存在）；Object.keys 多属性 enumerable/non-enumerable 混合过滤；preventExtensions 不影响已有属性（writable/configurable 仍有效）；Object.defineProperty 返回值 === 目标对象（可链式调用）；SameValue 重定义幂等（整数/字符串/NaN 同值不抛，不同值仍抛）。同步修复 1 处 Bug：`js_object.cpp define_property` 的 `!configurable + is_accessor` 分支缺少对 getter/setter 变更的 SameValue 检查，添加 `desc.getter.has_value() && !same_value(desc.getter, existing->getter) → TypeError`（setter 同理）。3172/3172 通过（coverage），0 LSan 泄漏。
 - [x] **Object.defineProperty Review 修复 P0-1/P0-2**（2026-05-19）：P0-1：interpreter.cpp eval_member_expr accessor 原型链遍历循环在 `entry != nullptr` 且为 data property 时补加 `break`（修复越过 own data property 继续向上找 accessor 的 Bug，与 vm.cpp kGetProp 路径对称）；P0-2：js_object.cpp define_property accessor→data 切换时追加 `getter = setter = undefined()`（清零废弃引用，消除 GC 保留旧函数对象的问题）。testing-agent 同步修复 1 处 Bug：non-configurable accessor 属性不能替换 get/set（`define_property` 中补加 accessor 的 SameValue 保护检查）；新增 24 个边界测试（DP-23～DP-34 × Interp+VM）。3170/3170 通过（coverage），0 LSan 泄漏。

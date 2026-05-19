@@ -18,6 +18,9 @@ void JSFunction::TraceRefs(GcHeap& heap) {
             if (v.is_object()) heap.MarkPending(v.as_object_raw());
         }
     }
+    if (is_arrow_ && lexical_this_.is_object()) {
+        heap.MarkPending(lexical_this_.as_object_raw());
+    }
 }
 
 void JSFunction::ClearRefs() {
@@ -30,6 +33,9 @@ void JSFunction::ClearRefs() {
         bound_target_ = Value::undefined();
         bound_this_ = Value::undefined();
         bound_args_.clear();
+    }
+    if (is_arrow_) {
+        lexical_this_ = Value::undefined();
     }
 }
 

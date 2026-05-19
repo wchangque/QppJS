@@ -46,7 +46,8 @@ private:
     // Compile a function body (params + statements). Creates a new BytecodeFunction.
     std::shared_ptr<BytecodeFunction> compile_function(std::optional<std::string> name,
                                                         const std::vector<std::string>& params,
-                                                        const std::vector<StmtNode>& body);
+                                                        const std::vector<StmtNode>& body,
+                                                        bool is_program = false);
 
     // Pre-scan body for var declarations and function declarations (non-recursive into nested fns).
     void hoist_vars_scan(const std::vector<StmtNode>& body);
@@ -82,6 +83,7 @@ private:
     void compile_member_assign(const MemberAssignmentExpression& expr);
     void compile_function_expr(const FunctionExpression& expr);
     void compile_async_function_expr(const AsyncFunctionExpression& expr);
+    void compile_arrow_function_expr(const ArrowFunctionExpression& expr);
     void compile_call_expr(const CallExpression& expr);
     void compile_new_expr(const NewExpression& expr);
     void compile_array_expr(const ArrayExpression& expr);

@@ -277,6 +277,19 @@ std::string dump_expr(const ExprNode& node, int indent) {
                                }
                            }
                        },
+                       [&](const ArrowFunctionExpression& afe) {
+                           result = prefix + "ArrowFunctionExpression\n";
+                           result += ind(indent + 1) + "params: (";
+                           for (size_t i = 0; i < afe.params.size(); ++i) {
+                               if (i > 0) result += ", ";
+                               result += afe.params[i];
+                           }
+                           result += ")\n";
+                           result += ind(indent + 1) + "body:\n";
+                           for (const auto& s : *afe.body_stmts) {
+                               result += dump_stmt(s, indent + 2);
+                           }
+                       },
                },
                node.v);
 

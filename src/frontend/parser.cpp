@@ -383,6 +383,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const ImportCallExpression& n) { return n.range; },
                               [](const RegexLiteral& n) { return n.range; },
                               [](const TemplateLiteral& n) { return n.range; },
+                              [](const ArrowFunctionExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -435,7 +436,7 @@ struct Parser {
             case TokenKind::Ident: case TokenKind::Number: case TokenKind::String:
             case TokenKind::Regex: case TokenKind::KwTrue: case TokenKind::KwFalse:
             case TokenKind::KwNull: case TokenKind::KwThis:
-            case TokenKind::RBracket:
+            case TokenKind::RBracket: case TokenKind::RParen:
             case TokenKind::PlusPlus: case TokenKind::MinusMinus:
             case TokenKind::TemplateNoSub: case TokenKind::TemplateTail:
                 return true;
@@ -500,6 +501,8 @@ struct Parser {
     // 返回操作符的左绑定力（0 表示非中缀操作符）
     static int lbp(TokenKind kind) {
         switch (kind) {
+            case TokenKind::Arrow:
+                return 3;
             case TokenKind::Eq:
             case TokenKind::PlusEq:
             case TokenKind::MinusEq:
@@ -631,11 +634,68 @@ struct Parser {
             case TokenKind::KwThis:
                 return ParseResult<ExprNode>::Ok(ExprNode{Identifier{"this", tok.range}});
             case TokenKind::LParen: {
-                auto inner = parse_expr(0);
-                if (!inner.ok()) return inner;
+                uint32_t paren_start = tok.range.offset;
+                // () => ...  无参箭头函数
+                if (cur.kind == TokenKind::RParen) {
+                    advance();  // 消费 )
+                    if (cur.kind == TokenKind::Arrow && !got_lf) {
+                        advance();  // 消费 =>
+                        return parse_arrow_body({}, paren_start);
+                    }
+                    return ParseResult<ExprNode>::Err(
+                        make_parse_error(source, cur, "unexpected ')'"));
+                }
+
+                // 解析第一个表达式（赋值级别，不吞逗号）
+                auto first = parse_expr(2);
+                if (!first.ok()) return first;
+
+                // (a, b, ...) — 先收集所有表达式，再按 ) 后是否跟 => 决定路径
+                if (cur.kind == TokenKind::Comma) {
+                    std::vector<ExprNode> items;
+                    items.push_back(std::move(first.value()));
+                    while (cur.kind == TokenKind::Comma) {
+                        advance();  // 消费 ,
+                        auto item = parse_expr(2);
+                        if (!item.ok()) return item;
+                        items.push_back(std::move(item.value()));
+                    }
+                    auto rp2 = expect(TokenKind::RParen);
+                    if (!rp2.ok()) return ParseResult<ExprNode>::Err(rp2.error());
+                    if (cur.kind == TokenKind::Arrow && !got_lf) {
+                        // 箭头函数：验证每项都是 Identifier
+                        std::vector<std::string> params;
+                        for (auto& item : items) {
+                            if (!std::holds_alternative<Identifier>(item.v)) {
+                                return ParseResult<ExprNode>::Err(
+                                    make_parse_error(source, cur, "arrow function parameter must be an identifier"));
+                            }
+                            params.push_back(std::get<Identifier>(item.v).name);
+                        }
+                        advance();  // 消费 =>
+                        return parse_arrow_body(std::move(params), paren_start);
+                    }
+                    // 逗号表达式：(a, b) 的值为最后一项
+                    return ParseResult<ExprNode>::Ok(std::move(items.back()));
+                }
+
+                // 消费 )
                 auto rp = expect(TokenKind::RParen);
                 if (!rp.ok()) return ParseResult<ExprNode>::Err(rp.error());
-                return inner;
+
+                // (a) => ...  单参括号箭头函数
+                if (cur.kind == TokenKind::Arrow && !got_lf) {
+                    if (!std::holds_alternative<Identifier>(first.value().v)) {
+                        return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, cur, "arrow function parameter must be an identifier"));
+                    }
+                    std::string param_name = std::get<Identifier>(first.value().v).name;
+                    advance();  // 消费 =>
+                    return parse_arrow_body({std::move(param_name)}, paren_start);
+                }
+
+                // 普通括号表达式
+                return first;
             }
             // 一元前缀
             case TokenKind::Minus: {
@@ -935,6 +995,21 @@ struct Parser {
         auto kind = op_tok.kind;
         int bp = lbp(kind);
 
+        // 箭头函数：x => ...（left 必须是 Identifier）
+        if (kind == TokenKind::Arrow) {
+            if (got_lf) {
+                return ParseResult<ExprNode>::Err(
+                    make_parse_error(source, op_tok, "no line break allowed before '=>'"));
+            }
+            if (!std::holds_alternative<Identifier>(left.v)) {
+                return ParseResult<ExprNode>::Err(
+                    make_parse_error(source, op_tok, "arrow function parameter must be an identifier"));
+            }
+            std::string param_name = std::get<Identifier>(left.v).name;
+            uint32_t fn_start = std::get<Identifier>(left.v).range.offset;
+            return parse_arrow_body({std::move(param_name)}, fn_start);
+        }
+
         // 后缀自增/自减：x++ / x--
         if (kind == TokenKind::PlusPlus || kind == TokenKind::MinusMinus) {
             if (got_lf) {
@@ -1224,6 +1299,35 @@ struct Parser {
         SourceRange r{lbrace.range.offset, rb.value().range.offset + 1 - lbrace.range.offset};
         return ParseResult<std::pair<std::vector<StmtNode>, SourceRange>>::Ok(
                 std::make_pair(std::move(body), r));
+    }
+
+    // 解析箭头函数体（已消费 =>）
+    // params: 参数列表；range_start: 整个箭头函数起始偏移
+    ParseResult<ExprNode> parse_arrow_body(std::vector<std::string> params, uint32_t range_start) {
+        std::vector<StmtNode> stmts;
+        SourceRange body_range;
+        if (cur.kind == TokenKind::LBrace) {
+            // 块体：复用 parse_function_body
+            auto body_result = parse_function_body();
+            if (!body_result.ok()) return ParseResult<ExprNode>::Err(body_result.error());
+            stmts = std::move(body_result.value().first);
+            body_range = body_result.value().second;
+        } else {
+            // 表达式体：解析表达式，合成 ReturnStatement
+            auto expr_result = parse_expr(2);
+            if (!expr_result.ok()) return expr_result;
+            uint32_t expr_end = range_end(expr_range(expr_result.value()));
+            body_range = span(range_start, expr_end);
+            ReturnStatement ret;
+            ret.argument = std::move(expr_result.value());
+            ret.range = body_range;
+            stmts.push_back(StmtNode{std::move(ret)});
+        }
+        uint32_t fn_end = range_end(body_range);
+        return ParseResult<ExprNode>::Ok(ExprNode{ArrowFunctionExpression{
+            std::move(params),
+            std::make_shared<std::vector<StmtNode>>(std::move(stmts)),
+            span(range_start, fn_end)}});
     }
 
     // ---- 语句解析 ----

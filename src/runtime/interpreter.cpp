@@ -3715,6 +3715,7 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const ImportCallExpression& e) { return eval_import_call(e); },
             [this](const RegexLiteral& e) { return eval_regex_literal(e); },
             [this](const TemplateLiteral& e) { return eval_template_literal(e); },
+            [this](const ArrowFunctionExpression& e) { return eval_arrow_function_expr(e); },
         },
         expr.v);
 }
@@ -4659,6 +4660,13 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
         return StmtResult::ok(Completion::return_(r.value()));
     }
 
+    // 守卫 1：箭头函数不可 new
+    if (fn->is_arrow() && is_new_call) {
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "arrow function is not a constructor");
+        return StmtResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+
     RcPtr<Environment> outer = fn->closure_env() ? fn->closure_env() : global_env_;
     auto fn_env = RcPtr<Environment>::make(outer);
     gc_heap_.Register(fn_env.get());
@@ -4677,19 +4685,24 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
         fn_env->initialize(params[i], std::move(arg_val));
     }
 
-    // Build arguments object
-    auto arg_obj = RcPtr<JSObject>::make();
-    gc_heap_.Register(arg_obj.get());
-    arg_obj->set_proto(object_prototype_);
-    for (size_t i = 0; i < args.size(); ++i) {
-        arg_obj->elements_[static_cast<uint32_t>(i)] = args[i];
+    // 守卫 2：箭头函数不创建 arguments（词法穿透外层）
+    if (!fn->is_arrow()) {
+        auto arg_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(arg_obj.get());
+        arg_obj->set_proto(object_prototype_);
+        for (size_t i = 0; i < args.size(); ++i) {
+            arg_obj->elements_[static_cast<uint32_t>(i)] = args[i];
+        }
+        arg_obj->array_length_ = static_cast<uint32_t>(args.size());
+        arg_obj->set_property("length", Value::number(static_cast<double>(args.size())));
+        fn_env->define("arguments", VarKind::Var);
+        fn_env->initialize("arguments", Value::object(ObjectPtr(arg_obj)));
     }
-    arg_obj->array_length_ = static_cast<uint32_t>(args.size());
-    arg_obj->set_property("length", Value::number(static_cast<double>(args.size())));
-    fn_env->define("arguments", VarKind::Var);
-    fn_env->initialize("arguments", Value::object(ObjectPtr(arg_obj)));
 
-    ScopeGuard guard(*this, fn_env, fn_env, std::move(this_val), /*is_call=*/true);
+    // 守卫 3：箭头函数使用词法 this
+    Value actual_this = fn->is_arrow() ? fn->lexical_this() : std::move(this_val);
+
+    ScopeGuard guard(*this, fn_env, fn_env, std::move(actual_this), /*is_call=*/true);
     hoist_vars(*fn->body(), *fn_env);
 
     JSFunction* saved_function = current_function_;
@@ -4710,7 +4723,9 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
         result_val = c.value;
     }
     current_function_ = saved_function;
-    return StmtResult::ok(Completion::normal(result_val));
+    // Functions always return undefined unless there is an explicit return statement.
+    (void)result_val;
+    return StmtResult::ok(Completion::normal(Value::undefined()));
 }
 
 StmtResult Interpreter::eval_function_decl(const FunctionDeclaration& stmt) {
@@ -4939,6 +4954,19 @@ EvalResult Interpreter::eval_function_expr(const FunctionExpression& expr) {
                                               expr.name.has_value()));
 }
 
+EvalResult Interpreter::eval_arrow_function_expr(const ArrowFunctionExpression& expr) {
+    auto fn = RcPtr<JSFunction>::make();
+    fn->set_params(expr.params);
+    fn->set_body(expr.body_stmts);
+    fn->set_closure_env(current_env_);
+    fn->set_defining_module(current_module_);
+    fn->set_arrow(true);
+    fn->set_lexical_this(current_this_);
+    // 箭头函数不创建 prototype 对象（不可 new）
+    gc_heap_.Register(fn.get());
+    return EvalResult::ok(Value::object(ObjectPtr(fn)));
+}
+
 EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
     if (call_depth_ >= kMaxCallDepth) {
         pending_throw_ = make_error_value(NativeErrorType::kRangeError,
@@ -5088,6 +5116,13 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
     }
     auto* fn_raw2 = static_cast<JSFunction*>(callee_val.as_object_raw());
     auto fn = RcPtr<JSFunction>(fn_raw2);
+
+    // 箭头函数不可 new
+    if (fn->is_arrow()) {
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "arrow function is not a constructor");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
 
     // Determine prototype for new object
     RcPtr<JSObject> proto = fn->prototype_obj() ? fn->prototype_obj() : object_prototype_;

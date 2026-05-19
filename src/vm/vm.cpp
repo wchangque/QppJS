@@ -3446,6 +3446,12 @@ EvalResult VM::push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<V
     if (call_depth_ >= kMaxCallDepth) {
         return EvalResult::err(Error(ErrorKind::Runtime, "RangeError: Maximum call stack size exceeded"));
     }
+
+    // 守卫 1：箭头函数不可 new
+    if (fn->is_arrow() && is_new) {
+        return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: arrow function is not a constructor"));
+    }
+
     call_depth_++;
 
     const auto& bc = fn->bytecode();
@@ -3474,8 +3480,8 @@ EvalResult VM::push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<V
         fn_env->initialize(params[i], std::move(arg));
     }
 
-    // Build arguments object
-    {
+    // 守卫 2：箭头函数不创建 arguments（词法穿透外层）
+    if (!fn->is_arrow()) {
         auto arg_obj = RcPtr<JSObject>::make();
         gc_heap_.Register(arg_obj.get());
         arg_obj->set_proto(object_prototype_);
@@ -3496,11 +3502,14 @@ EvalResult VM::push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<V
         fn_env->define_function(bc->names[idx]);
     }
 
+    // 守卫 3：箭头函数使用词法 this
+    Value actual_this = fn->is_arrow() ? fn->lexical_this() : std::move(this_val);
+
     CallFrame frame;
     frame.bytecode = bc.get();
     frame.pc = 0;
     frame.env = fn_env;
-    frame.this_val = std::move(this_val);
+    frame.this_val = std::move(actual_this);
     frame.is_new_call = is_new;
     if (is_new) frame.new_instance = std::move(new_instance);
     frame.current_module = fn->defining_module();
@@ -4623,6 +4632,14 @@ EvalResult VM::run(size_t exit_depth) {
             fn->set_closure_env(env);
             fn->set_is_named_expr(fn_bc->is_named_expr);
             fn->set_defining_module(frame.current_module);
+            // 箭头函数：捕获词法 this，不创建 prototype 对象
+            if (fn_bc->is_arrow) {
+                fn->set_arrow(true);
+                fn->set_lexical_this(frame.this_val);
+                gc_heap_.Register(fn.get());
+                stack.push_back(Value::object(ObjectPtr(fn)));
+                break;
+            }
             auto proto_obj = RcPtr<JSObject>::make();
             proto_obj->set_proto(object_prototype_);
             proto_obj->set_constructor_property(fn.get());
@@ -4828,6 +4845,12 @@ EvalResult VM::run(size_t exit_depth) {
                 continue;
             }
             auto fn = RcPtr<JSFunction>(static_cast<JSFunction*>(ctor_raw));
+            // 箭头函数不可 new
+            if (fn->is_arrow()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "arrow function is not a constructor");
+                continue;
+            }
             if (fn->is_native()) {
                 auto res = fn->native_fn()(Value::undefined(), std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/true);
                 if (!res.is_ok()) {

@@ -189,7 +189,8 @@ void Compiler::hoist_vars_scan_stmt(const StmtNode& stmt) {
 std::shared_ptr<BytecodeFunction> Compiler::compile_function(
     std::optional<std::string> name,
     const std::vector<std::string>& params,
-    const std::vector<StmtNode>& body) {
+    const std::vector<StmtNode>& body,
+    bool is_program) {
 
     auto fn = std::make_shared<BytecodeFunction>();
     fn->name = std::move(name);
@@ -250,10 +251,11 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
         }
     }
 
-    // Compile all statements; leave the last value on stack for implicit return.
+    // Compile all statements.
     if (body.empty()) {
         emit(Opcode::kReturnUndefined);
-    } else {
+    } else if (is_program) {
+        // Top-level program: leave the last value on stack for implicit return (REPL semantics).
         for (size_t i = 0; i < body.size() - 1; ++i) {
             compile_stmt(body[i]);
         }
@@ -265,6 +267,12 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
                 fn->last_expr_name = id->name;
             }
         }
+    } else {
+        // Function body: all statements executed normally; implicit return undefined.
+        for (const auto& stmt : body) {
+            compile_stmt(stmt);
+        }
+        emit(Opcode::kReturnUndefined);
     }
 
     current_ = saved;
@@ -277,7 +285,7 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
 // ============================================================
 
 std::shared_ptr<BytecodeFunction> Compiler::compile(const Program& program) {
-    return compile_function(std::nullopt, {}, program.body);
+    return compile_function(std::nullopt, {}, program.body, /*is_program=*/true);
 }
 
 // ============================================================
@@ -540,6 +548,7 @@ void Compiler::compile_expr(const ExprNode& expr) {
                 emit_u16(flags_idx);
             },
             [this](const TemplateLiteral& e) { compile_template_literal(e); },
+            [this](const ArrowFunctionExpression& e) { compile_arrow_function_expr(e); },
         },
         expr.v);
 }
@@ -744,6 +753,14 @@ void Compiler::compile_async_function_expr(const AsyncFunctionExpression& expr) 
 void Compiler::compile_async_function_decl(const AsyncFunctionDeclaration& /*stmt*/) {
     // P2-C: async function declarations are hoisted at function entry; skip here.
     // (Nothing to emit at the declaration site.)
+}
+
+void Compiler::compile_arrow_function_expr(const ArrowFunctionExpression& expr) {
+    auto child = compile_function(std::nullopt, expr.params, *expr.body_stmts);
+    child->is_arrow = true;
+    uint16_t fn_idx = add_function(std::move(child));
+    emit(Opcode::kMakeFunction);
+    emit_u16(fn_idx);
 }
 
 void Compiler::compile_call_expr(const CallExpression& expr) {

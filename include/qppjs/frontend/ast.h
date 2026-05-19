@@ -148,6 +148,14 @@ struct ImportCallExpression {
     SourceRange range;
 };
 
+// 箭头函数表达式 [params] => body
+// 表达式体已在 Parser 中合成为含单条 ReturnStatement 的块体
+struct ArrowFunctionExpression {
+    std::vector<std::string> params;
+    std::shared_ptr<std::vector<StmtNode>> body_stmts;
+    SourceRange range;
+};
+
 // 正则表达式字面量 /pattern/flags
 struct RegexLiteral {
     std::string pattern;
@@ -206,7 +214,8 @@ struct ExprNode {
                  ObjectExpression, MemberExpression, MemberAssignmentExpression,
                  FunctionExpression, CallExpression, NewExpression, ArrayExpression,
                  AwaitExpression, UpdateExpression, AsyncFunctionExpression,
-                 MetaProperty, ImportCallExpression, RegexLiteral, TemplateLiteral>
+                 MetaProperty, ImportCallExpression, RegexLiteral, TemplateLiteral,
+                 ArrowFunctionExpression>
             v;
 
     ExprNode() = default;

@@ -4,6 +4,40 @@
 
 ## 1. 已完成任务
 
+- [x] **箭头函数 Review 修复 P0-1/P2-1**（2026-05-19）：
+  - **P0-1**：重构 `nud(LParen)` 逗号分支（`parser.cpp`）。原实现在遇到 `(Ident,` 后立即校验且只接受 Identifier，导致 `(a, 123)` 等合法逗号表达式报 SyntaxError。修复为先收集所有逗号分隔表达式（`parse_expr(2)` 级，不提前校验），消费 `)` 后再判断：若跟 `=>` 则验证每项是否为 Identifier → 箭头函数路径；否则返回最后一项（逗号表达式语义，无 `BinaryOp::Comma` 故返回 last item）。
+  - **P2-1**：`is_expr_end_token` 新增 `TokenKind::RParen` → 返回 true，修复 `(a + b) / 2` 中 `)` 后的 `/` 被误识别为正则字面量开头。
+  - 3235/3235 通过（coverage），0 LSan 泄漏。
+
+- [x] **箭头函数 Testing Agent 边界补测**（2026-05-19）：
+  - 追加 24 个测试（AF-21～AF-32 × Interp+VM）至 `tests/unit/arrow_function_test.cpp`（总计 63 个）。
+  - **AF-21**：表达式体直接返回 `this`（方法内 `() => this`，`f().v === obj.v`）。
+  - **AF-22**：三层箭头嵌套 `() => () => () => this.x`，this 仍指向最外层普通函数的 this。
+  - **AF-23**：立即调用箭头函数 IIFE（`(() => 42)()`）。
+  - **AF-24**：箭头函数赋值为另一对象方法后 this 不变（`obj2.fn = arrow; obj2.fn()` 仍返回 obj1 的属性值）。
+  - **AF-25**：参数与外层同名变量遮蔽（`var x=1; var f = x => x*2; f(3) === 6`）。
+  - **AF-26**：链式调用 `filter + map`（`[1,2,3].filter(x=>x>1).map(x=>x*2)`）。
+  - **AF-27**：返回箭头函数 partial application（`var make = n => x => x + n; make(5)(3) === 8`）。
+  - **AF-28**：条件分支块体（if-else 验证绝对值语义；三元运算符 `?:` 尚未实现，注释说明）。
+  - **AF-29**：无参空块体返回 undefined（`() => {}` 独立验证）。
+  - **AF-30**：复合函数类型检查（`typeof f === "function" && f.prototype === undefined`；`Function` 全局尚未注册，注释说明）。
+  - **AF-31**：多参数回调 `(x, i) => x + i` 验证 index 参数传递（`['a','b'].map((x,i)=>x+i)[0] === "a0"`）。
+  - **AF-32**：map 结果数组两端完整性（`[1,2].map(x=>x+10)` 验证 r[0]/r[1]）。
+  - **发现未实现功能**：(1) 三元运算符 `?:` 未实现（`Question` token 已词法化但 Parser 无 led handler）；(2) `Function` 全局构造函数未注册。两项均记录在对应测试注释中，不修改设计结论。
+  - 3235/3235 通过（coverage），0 LSan 泄漏。
+
+- [x] **箭头函数 `()=>`**（2026-05-19）：
+  - **AST**：新增 `ArrowFunctionExpression{params, body_stmts, range}`（表达式体已在 Parser 合成为含 ReturnStatement 的块体，无 expr_body 字段）；加入 `ExprNode` variant。
+  - **BytecodeFunction**：新增 `bool is_arrow = false` 字段。
+  - **JSFunction**：新增 `is_arrow_`/`lexical_this_` 私有字段 + 公开 accessor；`TraceRefs` 追踪 `lexical_this_`（对照 `bound_this_`）；`ClearRefs` 清零 `lexical_this_`。
+  - **Parser**：`lbp(Arrow)=3`（高于赋值 lbp=2，使箭头函数可在函数参数/数组/赋值 RHS 等所有赋值级上下文中消费）；`nud(LParen)` 重写（三路径：`()=>`/`(a,b)=>`/`(a)=>`，其余为普通括号表达式）；`led(Arrow)` 新增（left 必须是 Identifier，检查 got_lf）；`parse_arrow_body` 新增（块体复用 parse_function_body；表达式体 parse_expr(2) 后包装 ReturnStatement）；in_async_function_/in_module_ 词法透传（不重置，箭头函数继承外层 async/TLA 上下文）；`expr_range` 添加 ArrowFunctionExpression 分支。
+  - **ast_dump**：添加 ArrowFunctionExpression 输出（params + body 语句列表）。
+  - **Interpreter**：新增 `eval_arrow_function_expr`（set_arrow/set_lexical_this(current_this_)/不创建 prototype_obj/GC 注册）；`eval_expr` dispatch 添加分支；`call_function` 三处守卫（1. is_arrow+is_new_call → TypeError；2. !is_arrow 才建 arguments；3. actual_this = is_arrow ? lexical_this : this_val）；`eval_new_expr` 前置箭头检查（early return TypeError）。同时修复函数隐式返回语义：将 `Completion::normal(result_val)` 改为 `Completion::normal(Value::undefined())`（JS 规范：无显式 return 的函数返回 undefined）。
+  - **Compiler**：新增 `compile_arrow_function_expr`（compile_function + is_arrow=true）；`compile_expr` 添加分支；`compile_function` 新增 `is_program=false` 参数——程序体保持"留最后表达式值"的 REPL 语义，函数体改为 compile_stmt（所有语句含最后一条）+ kReturnUndefined（修复 VM 侧函数隐式返回语义）；`compile()` 传 is_program=true。
+  - **VM**：`kMakeFunction` 添加 is_arrow 分支（set_arrow/set_lexical_this(frame.this_val)/不创建 proto_obj/break）；`push_call_frame` 三处守卫（1. is_arrow+is_new → return TypeError；2. !is_arrow 才建 arguments；3. actual_this = is_arrow ? lexical_this : this_val）；`kNewCall` 添加箭头检查（frame.pending_throw）。
+  - 新增 `tests/unit/arrow_function_test.cpp`（AF-01～AF-20 × Interp+VM + 1 Parser SyntaxError = 39 个测试）；`tests/CMakeLists.txt` 注册。
+  - 3211/3211 通过（coverage），0 LSan 泄漏。
+
 - [x] **Object.defineProperty Review 修复 P0-1/P0-2**（2026-05-19）：
   - **P0-1**（`interpreter.cpp`，`eval_member_expr`）：accessor 原型链遍历循环中，原代码仅在 `entry != nullptr && (entry->flags & kPropIsAccessor)` 时才进入 accessor 分支，对 data property 不作任何处理、继续向上遍历，可能错误找到更高层原型的 accessor。修复：将条件改为先判断 `entry != nullptr`，内层再判断 `kPropIsAccessor`——是 accessor 执行 getter 调用，是 data property 执行 `break` 停止遍历。与 `vm.cpp kGetProp` 路径（`if (entry != nullptr) break;`）保持对称。
   - **P0-2**（`js_object.cpp`，`define_property`）：accessor→data 切换时，清除 `kPropIsAccessor` 标志后遗留 `existing->getter` / `existing->setter` 废弃函数引用，影响 GC 可达性。修复：在 `existing->flags &= ~kPropIsAccessor` 之后同时执行 `existing->getter = Value::undefined(); existing->setter = Value::undefined();`。
