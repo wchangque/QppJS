@@ -21,7 +21,7 @@ overloaded(Ts...) -> overloaded<Ts...>;
 
 // ---- 枚举 ----
 
-enum class UnaryOp { Minus, Plus, Bang, Typeof, Void };
+enum class UnaryOp { Minus, Plus, Bang, Typeof, Void, Delete };
 enum class UpdateOp { Inc, Dec };
 enum class BinaryOp { Add, Sub, Mul, Div, Mod, Lt, Gt, LtEq, GtEq, EqEq, NotEq, EqEqEq, NotEqEq, Instanceof };
 enum class LogicalOp { And, Or };

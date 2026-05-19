@@ -171,6 +171,9 @@ public:
     // Initialize a TDZ binding (called when let/const declaration executes).
     EvalResult initialize(const std::string& name, Value value);
 
+    // Delete a binding (non-strict mode). Returns true if deleted or not found; false if non-deletable.
+    bool delete_binding(const std::string& name);
+
     // 将已有 Cell 注入 Binding（live binding 核心，用于模块导出变量）
     // initialized=false 表示 TDZ（let/const 导出），initialized=true 表示无 TDZ（var/function 导出）
     void define_binding_with_cell(const std::string& name, RcPtr<Cell> cell, bool is_mutable,

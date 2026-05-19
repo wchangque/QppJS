@@ -4,6 +4,13 @@
 
 ## 1. 已完成任务
 
+- [x] **delete 运算符 Testing Agent 边界补测 + 2 处 Bug 修复**（2026-05-19）：
+  - 追加 48 个测试（DEL-16～DEL-28，Interp+VM 对称）。
+  - 新增覆盖：delete 后重新添加属性 Object.keys 正确性；多属性依次删除后枚举顺序；delete 普通对象数字属性；delete 后通过 Object.keys 验证属性消失；delete 嵌套对象内属性（父/兄弟仍完好）；delete 表达式作为条件；连续 delete 同一属性幂等性；delete 数组越界索引（true，length 不变）；delete 后 typeof；delete 全部属性后 Object.keys 为空；delete 返回值赋值；delete 数组元素后 forEach 跳过 hole；delete computed string key 变量。
+  - **Bug 修复 1**：`own_enumerable_string_keys`（`js_object.cpp`）遍历 `properties_` 时添加 `it->second == i` slot index 一致性检查，修复 delete 后重新赋值导致 `properties_` 留有旧条目、Object.keys 返回重复项的 Bug。
+  - **Bug 修复 2**：`forEach`（`interpreter.cpp` + `vm.cpp` 两侧）对 hole 添加 `continue` 跳过，修复 forEach 不遵循稀疏数组语义的 Bug（规范要求 forEach 跳过 hole）。
+  - 3032/3032 通过（coverage），0 LSan 泄漏。
+
 - [x] **RegExp 运行时 Review 修复 P2-1/P2-2/P2-3**（2026-05-18）：
   - **P2-1+P2-3**：`match_not_bol` 语义修复。原代码 `if (rx->multiline_) mflags |= match_not_bol` 语义完全反转——multiline 模式下本应允许 `^` 匹配每行开头，却错误地阻止了它。修复为 `if (!rx->multiline_ && start_pos > 0) mflags |= match_not_bol`，即只在非 multiline 且搜索起点不是字符串开头时才传入该 flag（防止 `^` 错误匹配子串起点）。
   - **P2-2**：exec 空匹配时 lastIndex 职责分离。原 `regexp_exec`/`vm_regexp_exec` 在空匹配时直接 `last_index_ = match_start + 1`（超出规范的额外 +1）。修复为只设 `last_index_ = match_end`；全局 match 循环中检测 `match0.sv().empty()` 后 `rx->last_index_++` 防死循环，与规范 AdvanceStringIndex 语义对齐。

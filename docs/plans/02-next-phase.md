@@ -14,8 +14,8 @@
 1. ~~**正则表达式 RegExp 运行时** — 已完成（2026-05-18）~~
 2. ~~**模板字符串 `` ` ``** — 已完成（2026-05-18，仅无标签形式；Tagged Template 暂不支持）~~
 3. **`Array` + `String` + `Boolean` 全局构造函数** — 修复 1383 个 ReferenceError（预计提升 ~5%）
-4. **`delete` 运算符** — 修复 117 个 SyntaxError
-5. **`Symbol` 基础支持** — 修复 149 个 ReferenceError
+4. ~~**`delete` 运算符** — 已完成（2026-05-19）~~
+5. ~~**`Symbol` 基础支持** — 已完成（2026-05-19）~~
 6. **`arguments` 对象** — 修复 137 个 ReferenceError
 7. **`Object.defineProperty` / `Object.getOwnPropertyDescriptor`** — 解锁 propertyHelper.js harness
 8. **箭头函数 `()=>`** — 修复 82+ 个 SyntaxError

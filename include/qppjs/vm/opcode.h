@@ -106,7 +106,11 @@ namespace qppjs {
     /* Template literal */              \
     X(ToString, 0)                      \
     /* RegExp literal */                \
-    X(NewRegExp, 4)
+    X(NewRegExp, 4)                    \
+    /* delete operator */              \
+    X(DeleteProp, 2)                   \
+    X(DeleteElem, 0)                   \
+    X(DeleteVar, 2)
 
 enum class Opcode : uint8_t {
 #define X(name, _operand_bytes) k##name,

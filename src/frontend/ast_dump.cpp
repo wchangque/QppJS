@@ -38,6 +38,8 @@ const char* unary_op_str(UnaryOp op) {
             return "typeof";
         case UnaryOp::Void:
             return "void";
+        case UnaryOp::Delete:
+            return "delete";
     }
     return "?";
 }

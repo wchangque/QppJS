@@ -116,6 +116,21 @@ EvalResult Environment::initialize(const std::string& name, Value value) {
     return EvalResult::ok(b->cell->value);
 }
 
+bool Environment::delete_binding(const std::string& name) {
+    // Walk the scope chain to find the binding.
+    Environment* env = this;
+    while (env != nullptr) {
+        Binding* b = env->bindings_.find(name);
+        if (b != nullptr) {
+            // Found — all var/let/const bindings are non-deletable in non-strict mode.
+            return false;
+        }
+        env = env->outer_.get();
+    }
+    // Not found — delete of undeclared variable returns true.
+    return true;
+}
+
 void Environment::define_binding_with_cell(const std::string& name, RcPtr<Cell> cell, bool is_mutable,
                                             bool initialized) {
     // Binding.initialized 与 Cell.initialized 保持一致，确保 get() 检查正确

@@ -577,6 +577,32 @@ void Compiler::compile_unary(const UnaryExpression& expr) {
         emit(Opcode::kPop);
         emit(Opcode::kLoadUndefined);
         break;
+    case UnaryOp::Delete:
+        if (std::holds_alternative<MemberExpression>(expr.operand->v)) {
+            const auto& mem = std::get<MemberExpression>(expr.operand->v);
+            compile_expr(*mem.object);
+            if (mem.computed) {
+                compile_expr(*mem.property);
+                emit(Opcode::kDeleteElem);
+            } else {
+                const auto& prop_lit = std::get<StringLiteral>(mem.property->v);
+                uint16_t idx = add_name(prop_lit.value);
+                emit(Opcode::kDeleteProp);
+                emit_u16(idx);
+            }
+        } else if (std::holds_alternative<Identifier>(expr.operand->v)) {
+            // TODO: strict mode Early Error (SyntaxError for delete of unqualified identifier)
+            const auto& id = std::get<Identifier>(expr.operand->v);
+            uint16_t idx = add_name(id.name);
+            emit(Opcode::kDeleteVar);
+            emit_u16(idx);
+        } else {
+            // Other expr: eval for side effects, discard, push true
+            compile_expr(*expr.operand);
+            emit(Opcode::kPop);
+            emit(Opcode::kLoadTrue);
+        }
+        break;
     }
 }
 

@@ -17,6 +17,11 @@ void JSObject::TraceRefs(GcHeap& heap) {
     for (const auto& [idx, val] : elements_) {
         if (val.is_object()) heap.MarkPending(val.as_object_raw());
     }
+    if (symbol_props_) {
+        for (const auto& entry : *symbol_props_) {
+            if (entry.value.is_object()) heap.MarkPending(entry.value.as_object_raw());
+        }
+    }
     // constructor_property_ is a raw weak ref; do not trace — kept alive by JSFunction::prototype_
 }
 
@@ -26,7 +31,10 @@ void JSObject::ClearRefs() {
     proto_ = RcPtr<JSObject>();
     properties_.clear();
     index_map_.clear();
+    active_count_ = 0;
     elements_.clear();
+    if (symbol_props_) symbol_props_->clear();
+    if (symbol_index_) symbol_index_->clear();
     constructor_property_ = nullptr;
     has_constructor_property_ = false;
 }
@@ -93,6 +101,7 @@ void JSObject::set_property(const std::string& key, Value value) {
         size_t idx = properties_.size();
         properties_.push_back(PropertyEntry{key, std::move(value)});
         index_map_.emplace(key, idx);
+        ++active_count_;
     }
 }
 
@@ -124,6 +133,32 @@ EvalResult JSObject::set_property_ex(const std::string& key, Value value) {
 void JSObject::set_constructor_property(RcObject* value) {
     constructor_property_ = value;
     has_constructor_property_ = true;
+}
+
+bool JSObject::delete_property(const std::string& key) {
+    if (object_kind() == ObjectKind::kArray) {
+        uint32_t idx = 0;
+        if (try_parse_array_index(key, idx)) {
+            elements_.erase(idx);
+            // array_length_ is not changed (hole semantics)
+            return true;
+        }
+        // Non-configurable built-in: length
+        if (key == "length") {
+            return false;
+        }
+    }
+    // Non-configurable built-in: prototype on functions is handled by JSFunction,
+    // but JSObject itself has no non-configurable named properties besides array length.
+    auto it = index_map_.find(key);
+    if (it == index_map_.end()) {
+        return true;  // property doesn't exist — delete succeeds
+    }
+    size_t slot_idx = it->second;
+    index_map_.erase(it);
+    properties_[slot_idx].value = Value::undefined();
+    --active_count_;
+    return true;
 }
 
 bool JSObject::has_own_property(const std::string& key) const {
@@ -208,16 +243,66 @@ std::vector<std::string> JSObject::own_enumerable_string_keys() const {
         for (uint32_t idx : indices) {
             result.push_back(std::to_string(idx));
         }
-        for (const auto& entry : properties_) {
-            result.push_back(entry.key);
+        // Non-index keys: enumerate via index_map_ to skip deleted slots
+        result.reserve(result.size() + active_count_);
+        for (const auto& [key, slot] : index_map_) {
+            result.push_back(key);
         }
     } else {
-        // kOrdinary or kFunction: insertion-order properties
-        for (const auto& entry : properties_) {
-            result.push_back(entry.key);
+        // kOrdinary or kFunction: enumerate via index_map_ to skip deleted slots
+        result.reserve(active_count_);
+        // Preserve insertion order by iterating properties_ and checking index_map_.
+        // Also verify the slot index matches to skip stale entries left by delete+re-insert.
+        for (size_t i = 0; i < properties_.size(); ++i) {
+            const auto& entry = properties_[i];
+            auto it = index_map_.find(entry.key);
+            if (it != index_map_.end() && it->second == i) {
+                result.push_back(entry.key);
+            }
         }
     }
     return result;
+}
+
+Value JSObject::get_property_by_symbol(uint64_t symbol_id) const {
+    if (symbol_index_ && symbol_props_) {
+        auto it = symbol_index_->find(symbol_id);
+        if (it != symbol_index_->end()) {
+            return (*symbol_props_)[it->second].value;
+        }
+    }
+    // Walk prototype chain
+    const JSObject* proto = proto_.get();
+    while (proto != nullptr) {
+        if (proto->symbol_index_ && proto->symbol_props_) {
+            auto it = proto->symbol_index_->find(symbol_id);
+            if (it != proto->symbol_index_->end()) {
+                return (*proto->symbol_props_)[it->second].value;
+            }
+        }
+        proto = proto->proto_.get();
+    }
+    return Value::undefined();
+}
+
+void JSObject::set_property_by_symbol(uint64_t symbol_id, Value val) {
+    if (!symbol_props_) {
+        symbol_props_ = std::make_unique<std::vector<SymbolPropertyEntry>>();
+        symbol_index_ = std::make_unique<std::unordered_map<uint64_t, size_t>>();
+    }
+    auto it = symbol_index_->find(symbol_id);
+    if (it != symbol_index_->end()) {
+        (*symbol_props_)[it->second].value = std::move(val);
+    } else {
+        size_t idx = symbol_props_->size();
+        symbol_props_->push_back({symbol_id, std::move(val)});
+        (*symbol_index_)[symbol_id] = idx;
+    }
+}
+
+bool JSObject::has_own_symbol(uint64_t symbol_id) const {
+    if (!symbol_index_) return false;
+    return symbol_index_->count(symbol_id) > 0;
 }
 
 }  // namespace qppjs

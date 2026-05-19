@@ -46,6 +46,7 @@ bool VM::to_boolean(const Value& v) {
     }
     case ValueKind::String:  return !v.as_string().empty();
     case ValueKind::Object:  return true;
+    case ValueKind::Symbol:  return true;
     }
     return false;
 }
@@ -74,6 +75,8 @@ EvalResult VM::to_number(const Value& v) {
     }
     case ValueKind::Object:
         return EvalResult::ok(Value::number(std::numeric_limits<double>::quiet_NaN()));
+    case ValueKind::Symbol:
+        return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: Cannot convert a Symbol value to a number"));
     }
     return EvalResult::ok(Value::number(std::numeric_limits<double>::quiet_NaN()));
 }
@@ -106,6 +109,10 @@ std::string VM::to_string_val(const Value& v) {
         return number_to_string(n);
     }
     case ValueKind::String: return v.as_string();
+    case ValueKind::Symbol:
+        // Implicit ToString of Symbol is forbidden; callers that need explicit conversion
+        // (e.g. String(sym)) must handle separately.
+        return "<symbol>";
     case ValueKind::Object: {
         RcObject* obj = v.as_object_raw();
         if (obj && obj->object_kind() == ObjectKind::kFunction) {
@@ -130,6 +137,7 @@ static bool strict_eq(const Value& a, const Value& b) {
     }
     case ValueKind::String: return a.as_string() == b.as_string();
     case ValueKind::Object: return a.as_object_raw() == b.as_object_raw();
+    case ValueKind::Symbol: return a.as_symbol_id() == b.as_symbol_id();
     }
     return false;
 }
@@ -160,7 +168,8 @@ static double to_number_double_vm(const Value& v) {
         if (end == s.c_str() || *end != '\0') return std::numeric_limits<double>::quiet_NaN();
         return r;
     }
-    case ValueKind::Object: return std::numeric_limits<double>::quiet_NaN();
+    case ValueKind::Object:  return std::numeric_limits<double>::quiet_NaN();
+    case ValueKind::Symbol:  return std::numeric_limits<double>::quiet_NaN();
     }
     return std::numeric_limits<double>::quiet_NaN();
 }
@@ -520,7 +529,9 @@ void VM::init_global_env() {
         uint32_t len = arr->array_length_;
         for (uint32_t i = 0; i < len; i++) {
             auto elem_it = arr->elements_.find(i);
-            Value elem = elem_it != arr->elements_.end() ? elem_it->second : Value::undefined();
+            // Skip holes (sparse array semantics)
+            if (elem_it == arr->elements_.end()) continue;
+            Value elem = elem_it->second;
             Value call_args[3] = {elem, Value::number(static_cast<double>(i)), this_val};
             std::span<Value> arg_span(call_args, 3);
             auto res = call_function_val(callback, Value::undefined(), arg_span);
@@ -2720,6 +2731,108 @@ void VM::init_global_env() {
         string_prototype_->set_property("match", Value::object(ObjectPtr(vm_string_match_fn)));
     }
 
+    // ---- Symbol ----
+
+    symbol_prototype_ = RcPtr<JSObject>::make();
+    symbol_prototype_->set_proto(object_prototype_);
+    gc_heap_.Register(symbol_prototype_.get());
+
+    // Symbol.prototype.toString
+    auto vm_sym_tostring_fn = RcPtr<JSFunction>::make();
+    vm_sym_tostring_fn->set_native_fn([this](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+        if (!this_val.is_symbol()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Symbol.prototype.toString requires a symbol");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        const std::string* desc = symbol_table_.GetDescription(this_val.as_symbol_id());
+        std::string result = desc ? ("Symbol(" + *desc + ")") : "Symbol()";
+        return EvalResult::ok(Value::string(result));
+    });
+    symbol_prototype_->set_property("toString", Value::object(ObjectPtr(vm_sym_tostring_fn)));
+    gc_heap_.Register(vm_sym_tostring_fn.get());
+
+    // Symbol.prototype.valueOf
+    auto vm_sym_valueof_fn = RcPtr<JSFunction>::make();
+    vm_sym_valueof_fn->set_native_fn([](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+        return EvalResult::ok(this_val);
+    });
+    symbol_prototype_->set_property("valueOf", Value::object(ObjectPtr(vm_sym_valueof_fn)));
+    gc_heap_.Register(vm_sym_valueof_fn.get());
+
+    // Symbol constructor
+    symbol_constructor_ = RcPtr<JSFunction>::make();
+    symbol_constructor_->set_name(std::string("Symbol"));
+    symbol_constructor_->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool is_new_call) -> EvalResult {
+        if (is_new_call) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Symbol is not a constructor");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::optional<std::string> description = std::nullopt;
+        if (!args.empty() && !args[0].is_undefined()) {
+            description = to_string_val(args[0]);
+        }
+        uint64_t id = symbol_table_.NewSymbol(std::move(description));
+        return EvalResult::ok(Value::symbol(id));
+    });
+
+    // Symbol.for
+    auto vm_sym_for_fn = RcPtr<JSFunction>::make();
+    vm_sym_for_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        std::string key = args.empty() ? "undefined" : to_string_val(args[0]);
+        uint64_t id = symbol_table_.ForKey(key);
+        return EvalResult::ok(Value::symbol(id));
+    });
+    symbol_constructor_->set_property("for", Value::object(ObjectPtr(vm_sym_for_fn)));
+    gc_heap_.Register(vm_sym_for_fn.get());
+
+    // Symbol.keyFor
+    auto vm_sym_keyfor_fn = RcPtr<JSFunction>::make();
+    vm_sym_keyfor_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_symbol()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Symbol.keyFor argument must be a symbol");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        auto key = symbol_table_.KeyForId(args[0].as_symbol_id());
+        if (!key.has_value()) return EvalResult::ok(Value::undefined());
+        return EvalResult::ok(Value::string(*key));
+    });
+    symbol_constructor_->set_property("keyFor", Value::object(ObjectPtr(vm_sym_keyfor_fn)));
+    gc_heap_.Register(vm_sym_keyfor_fn.get());
+
+    // Well-Known Symbols
+    symbol_constructor_->set_property("iterator",
+        Value::symbol(symbol_table_.well_known_iterator));
+    symbol_constructor_->set_property("toPrimitive",
+        Value::symbol(symbol_table_.well_known_to_primitive));
+    symbol_constructor_->set_property("hasInstance",
+        Value::symbol(symbol_table_.well_known_has_instance));
+    symbol_constructor_->set_property("toStringTag",
+        Value::symbol(symbol_table_.well_known_to_string_tag));
+
+    gc_heap_.Register(symbol_constructor_.get());
+    global_env_->define("Symbol", VarKind::Const);
+    global_env_->initialize("Symbol", Value::object(ObjectPtr(symbol_constructor_)));
+
+    // Patch string_constructor_ to handle Symbol(sym) → "Symbol(x)"
+    {
+        auto vm_str_fn = RcPtr<JSFunction>::make();
+        vm_str_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool /*is_new*/) -> EvalResult {
+            if (!args.empty() && args[0].is_symbol()) {
+                const std::string* desc = symbol_table_.GetDescription(args[0].as_symbol_id());
+                std::string result = desc ? ("Symbol(" + *desc + ")") : "Symbol()";
+                return EvalResult::ok(Value::string(result));
+            }
+            std::string s = args.empty() ? std::string("") : to_string_val(args[0]);
+            return EvalResult::ok(Value::string(s));
+        });
+        if (string_constructor_) {
+            string_constructor_->set_native_fn(vm_str_fn->native_fn());
+        }
+    }
+
     // Register the global environment with GcHeap.
     gc_heap_.Register(global_env_.get());
 
@@ -3131,6 +3244,8 @@ EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
         add_obj(string_constructor_.get());
         add_obj(regexp_prototype_.get());
         add_obj(regexp_constructor_.get());
+        add_obj(symbol_prototype_.get());
+        add_obj(symbol_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         // Include call stack frames
         for (auto& cf : call_stack_) {
@@ -3160,11 +3275,13 @@ EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
     if (math_obj_) math_obj_->clear_function_properties();
     if (number_prototype_) number_prototype_->clear_function_properties();
     if (regexp_prototype_) regexp_prototype_->clear_function_properties();
+    if (symbol_prototype_) symbol_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     if (number_constructor_) number_constructor_->clear_own_properties();
     if (boolean_constructor_) boolean_constructor_->clear_own_properties();
     if (string_constructor_) string_constructor_->clear_own_properties();
     if (regexp_constructor_) regexp_constructor_->clear_own_properties();
+    if (symbol_constructor_) symbol_constructor_->clear_own_properties();
 
     return result;
 }
@@ -3999,6 +4116,17 @@ EvalResult VM::run(size_t exit_depth) {
                     "Cannot read property '" + name + "' of " + to_string_val(obj_val));
                 continue;
             }
+            if (obj_val.is_symbol()) {
+                if (name == "description") {
+                    const std::string* desc = symbol_table_.GetDescription(obj_val.as_symbol_id());
+                    stack.push_back(desc ? Value::string(*desc) : Value::undefined());
+                } else if (symbol_prototype_) {
+                    stack.push_back(symbol_prototype_->get_property(name));
+                } else {
+                    stack.push_back(Value::undefined());
+                }
+                break;
+            }
             if (obj_val.is_string()) {
                 if (name == "length") {
                     stack.push_back(Value::number(static_cast<double>(utf8_cp_len_vm(obj_val.js_string_raw()))));
@@ -4135,6 +4263,34 @@ EvalResult VM::run(size_t exit_depth) {
             stack.pop_back();
             Value obj_val = std::move(stack.back());
             stack.pop_back();
+            // Symbol key: look up symbol-keyed property on object
+            if (key_val.is_symbol()) {
+                if (obj_val.is_object()) {
+                    RcObject* raw_sym = obj_val.as_object_raw();
+                    if (raw_sym->object_kind() == ObjectKind::kOrdinary ||
+                        raw_sym->object_kind() == ObjectKind::kArray) {
+                        auto* js_obj_sym = static_cast<JSObject*>(raw_sym);
+                        stack.push_back(js_obj_sym->get_property_by_symbol(key_val.as_symbol_id()));
+                    } else {
+                        stack.push_back(Value::undefined());
+                    }
+                } else {
+                    stack.push_back(Value::undefined());
+                }
+                break;
+            }
+            if (obj_val.is_symbol()) {
+                std::string key = to_string_val(key_val);
+                if (key == "description") {
+                    const std::string* desc = symbol_table_.GetDescription(obj_val.as_symbol_id());
+                    stack.push_back(desc ? Value::string(*desc) : Value::undefined());
+                } else if (symbol_prototype_) {
+                    stack.push_back(symbol_prototype_->get_property(key));
+                } else {
+                    stack.push_back(Value::undefined());
+                }
+                break;
+            }
             if (obj_val.is_string()) {
                 std::string key = to_string_val(key_val);
                 if (key == "length") {
@@ -4188,6 +4344,19 @@ EvalResult VM::run(size_t exit_depth) {
             stack.pop_back();
             Value obj_val = std::move(stack.back());
             stack.pop_back();
+            // Symbol key: store symbol-keyed property on object
+            if (key_val.is_symbol()) {
+                if (obj_val.is_object()) {
+                    RcObject* raw_sym = obj_val.as_object_raw();
+                    if (raw_sym->object_kind() == ObjectKind::kOrdinary ||
+                        raw_sym->object_kind() == ObjectKind::kArray) {
+                        auto* js_obj_sym = static_cast<JSObject*>(raw_sym);
+                        js_obj_sym->set_property_by_symbol(key_val.as_symbol_id(), val);
+                    }
+                }
+                stack.push_back(std::move(val));
+                break;
+            }
             if (!obj_val.is_object()) {
                 frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
                     "Cannot set element on non-object");
@@ -4521,6 +4690,12 @@ EvalResult VM::run(size_t exit_depth) {
         case Opcode::kAdd: {
             Value rv = std::move(stack.back()); stack.pop_back();
             Value lv = std::move(stack.back()); stack.pop_back();
+            // Symbol on either side → TypeError
+            if (lv.is_symbol() || rv.is_symbol()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot convert a Symbol value to a string");
+                continue;
+            }
             if (lv.is_string() || rv.is_string()) {
                 if (lv.is_string() && rv.is_string()) {
                     auto lsv = lv.sv();
@@ -4544,6 +4719,11 @@ EvalResult VM::run(size_t exit_depth) {
         case Opcode::kSub: {
             Value rv = std::move(stack.back()); stack.pop_back();
             Value lv = std::move(stack.back()); stack.pop_back();
+            if (lv.is_symbol() || rv.is_symbol()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot convert a Symbol value to a number");
+                continue;
+            }
             auto ln = to_number(lv); if (!ln.is_ok()) return ln;
             auto rn = to_number(rv); if (!rn.is_ok()) return rn;
             stack.push_back(Value::number(ln.value().as_number() - rn.value().as_number()));
@@ -4553,6 +4733,11 @@ EvalResult VM::run(size_t exit_depth) {
         case Opcode::kMul: {
             Value rv = std::move(stack.back()); stack.pop_back();
             Value lv = std::move(stack.back()); stack.pop_back();
+            if (lv.is_symbol() || rv.is_symbol()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot convert a Symbol value to a number");
+                continue;
+            }
             auto ln = to_number(lv); if (!ln.is_ok()) return ln;
             auto rn = to_number(rv); if (!rn.is_ok()) return rn;
             stack.push_back(Value::number(ln.value().as_number() * rn.value().as_number()));
@@ -4562,6 +4747,11 @@ EvalResult VM::run(size_t exit_depth) {
         case Opcode::kDiv: {
             Value rv = std::move(stack.back()); stack.pop_back();
             Value lv = std::move(stack.back()); stack.pop_back();
+            if (lv.is_symbol() || rv.is_symbol()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot convert a Symbol value to a number");
+                continue;
+            }
             auto ln = to_number(lv); if (!ln.is_ok()) return ln;
             auto rn = to_number(rv); if (!rn.is_ok()) return rn;
             stack.push_back(Value::number(ln.value().as_number() / rn.value().as_number()));
@@ -4571,6 +4761,11 @@ EvalResult VM::run(size_t exit_depth) {
         case Opcode::kMod: {
             Value rv = std::move(stack.back()); stack.pop_back();
             Value lv = std::move(stack.back()); stack.pop_back();
+            if (lv.is_symbol() || rv.is_symbol()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot convert a Symbol value to a number");
+                continue;
+            }
             auto ln = to_number(lv); if (!ln.is_ok()) return ln;
             auto rn = to_number(rv); if (!rn.is_ok()) return rn;
             stack.push_back(Value::number(std::fmod(ln.value().as_number(), rn.value().as_number())));
@@ -4704,6 +4899,7 @@ EvalResult VM::run(size_t exit_depth) {
             case ValueKind::Bool:      type_str = "boolean";   break;
             case ValueKind::Number:    type_str = "number";    break;
             case ValueKind::String:    type_str = "string";    break;
+            case ValueKind::Symbol:    type_str = "symbol";    break;
             case ValueKind::Object: {
                 RcObject* obj = v.as_object_raw();
                 type_str = (obj && obj->object_kind() == ObjectKind::kFunction) ? "function" : "object";
@@ -4735,6 +4931,7 @@ EvalResult VM::run(size_t exit_depth) {
             case ValueKind::Bool:      type_str = "boolean";   break;
             case ValueKind::Number:    type_str = "number";    break;
             case ValueKind::String:    type_str = "string";    break;
+            case ValueKind::Symbol:    type_str = "symbol";    break;
             case ValueKind::Object: {
                 RcObject* obj = v.as_object_raw();
                 type_str = (obj && obj->object_kind() == ObjectKind::kFunction) ? "function" : "object";
@@ -5041,6 +5238,56 @@ EvalResult VM::run(size_t exit_depth) {
             break;
         }
 
+        case Opcode::kDeleteProp: {
+            uint16_t idx = read_u16(bc, pc);
+            const std::string& name = bc->names[idx];
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            if (!obj_val.is_object()) {
+                stack.push_back(Value::boolean(true));
+                break;
+            }
+            RcObject* raw_dp = obj_val.as_object_raw();
+            if (!raw_dp || (raw_dp->object_kind() != ObjectKind::kOrdinary &&
+                            raw_dp->object_kind() != ObjectKind::kArray)) {
+                stack.push_back(Value::boolean(true));
+                break;
+            }
+            auto* obj_dp = static_cast<JSObject*>(raw_dp);
+            stack.push_back(Value::boolean(obj_dp->delete_property(name)));
+            break;
+        }
+
+        case Opcode::kDeleteElem: {
+            Value key_val = std::move(stack.back());
+            stack.pop_back();
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            if (!obj_val.is_object()) {
+                stack.push_back(Value::boolean(true));
+                break;
+            }
+            RcObject* raw_de = obj_val.as_object_raw();
+            if (!raw_de || (raw_de->object_kind() != ObjectKind::kOrdinary &&
+                            raw_de->object_kind() != ObjectKind::kArray)) {
+                stack.push_back(Value::boolean(true));
+                break;
+            }
+            auto* obj_de = static_cast<JSObject*>(raw_de);
+            std::string key_str = to_string_val(key_val);
+            stack.push_back(Value::boolean(obj_de->delete_property(key_str)));
+            break;
+        }
+
+        case Opcode::kDeleteVar: {
+            uint16_t idx = read_u16(bc, pc);
+            const std::string& name = bc->names[idx];
+            // TODO: strict mode Early Error (SyntaxError for delete of unqualified identifier)
+            bool deleted = frame.env->delete_binding(name);
+            stack.push_back(Value::boolean(deleted));
+            break;
+        }
+
         default:
             return EvalResult::err(Error(ErrorKind::Runtime, "Internal: unknown opcode"));
         }
@@ -5117,6 +5364,8 @@ EvalResult VM::exec_module(const std::string& entry_path) {
         add_obj(string_constructor_.get());
         add_obj(regexp_prototype_.get());
         add_obj(regexp_constructor_.get());
+        add_obj(symbol_prototype_.get());
+        add_obj(symbol_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         for (auto& cf : call_stack_) {
             add_obj(cf.env.get());
@@ -5145,11 +5394,13 @@ EvalResult VM::exec_module(const std::string& entry_path) {
     if (math_obj_) math_obj_->clear_function_properties();
     if (number_prototype_) number_prototype_->clear_function_properties();
     if (regexp_prototype_) regexp_prototype_->clear_function_properties();
+    if (symbol_prototype_) symbol_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     if (number_constructor_) number_constructor_->clear_own_properties();
     if (boolean_constructor_) boolean_constructor_->clear_own_properties();
     if (string_constructor_) string_constructor_->clear_own_properties();
     if (regexp_constructor_) regexp_constructor_->clear_own_properties();
+    if (symbol_constructor_) symbol_constructor_->clear_own_properties();
     // 清理所有模块环境中的函数引用（打破 module_env ↔ JSFunction 循环引用）
     module_loader_.ClearModuleEnvs();
     module_loader_.Clear();

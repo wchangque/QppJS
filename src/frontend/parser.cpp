@@ -673,6 +673,13 @@ struct Parser {
                 return ParseResult<ExprNode>::Ok(ExprNode{
                         UnaryExpression{UnaryOp::Void, std::make_unique<ExprNode>(std::move(operand.value())), r}});
             }
+            case TokenKind::KwDelete: {
+                auto operand = parse_expr(15);
+                if (!operand.ok()) return operand;
+                auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
+                return ParseResult<ExprNode>::Ok(ExprNode{
+                        UnaryExpression{UnaryOp::Delete, std::make_unique<ExprNode>(std::move(operand.value())), r}});
+            }
             // 前缀自增/自减：++x / --x
             case TokenKind::PlusPlus:
             case TokenKind::MinusMinus: {
