@@ -11,7 +11,7 @@ namespace qppjs {
 
 class GcHeap;
 
-enum class ObjectKind { kOrdinary, kFunction, kArray, kEnvironment, kModule, kPromise };
+enum class ObjectKind { kOrdinary, kFunction, kArray, kEnvironment, kModule, kPromise, kRegExp };
 
 // Base class for all heap-allocated JS objects with non-atomic reference counting.
 // Subclasses must call RcObject(ObjectKind) in their constructor.

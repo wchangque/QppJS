@@ -4,6 +4,29 @@
 
 ## 1. 已完成任务
 
+- [x] **RegExp 运行时 Review 修复 P2-1/P2-2/P2-3**（2026-05-18）：
+  - **P2-1+P2-3**：`match_not_bol` 语义修复。原代码 `if (rx->multiline_) mflags |= match_not_bol` 语义完全反转——multiline 模式下本应允许 `^` 匹配每行开头，却错误地阻止了它。修复为 `if (!rx->multiline_ && start_pos > 0) mflags |= match_not_bol`，即只在非 multiline 且搜索起点不是字符串开头时才传入该 flag（防止 `^` 错误匹配子串起点）。
+  - **P2-2**：exec 空匹配时 lastIndex 职责分离。原 `regexp_exec`/`vm_regexp_exec` 在空匹配时直接 `last_index_ = match_start + 1`（超出规范的额外 +1）。修复为只设 `last_index_ = match_end`；全局 match 循环中检测 `match0.sv().empty()` 后 `rx->last_index_++` 防死循环，与规范 AdvanceStringIndex 语义对齐。
+  - **改动文件**：`src/runtime/interpreter.cpp`（2 处）、`src/vm/vm.cpp`（2 处），共 4 处最小改动，Interp+VM 两侧对称。
+  - 2944/2944 通过（coverage），0 LSan 泄漏。
+
+- [x] **RegExp 运行时**（2026-05-18）：完整实现 RegExp 运行时。
+  - **新增文件**：`include/qppjs/runtime/js_regexp.h`（JSRegExp 类，继承 JSObject，ObjectKind::kRegExp），`src/runtime/js_regexp.cpp`（构造函数：解析 flags、dotAll pattern rewrite、std::regex 编译、is_valid_ 标志）。
+  - **rc_object.h**：ObjectKind 枚举末尾追加 kRegExp。
+  - **native_errors.h**：NativeErrorType 追加 kSyntaxError（index 4），kCount 自动更新。
+  - **interpreter.h**：添加 js_regexp.h include；新增 regexp_prototype_、regexp_constructor_ 字段；声明 eval_regex_literal/make_regexp/regexp_exec。
+  - **interpreter.cpp**：添加 `<regex>` include；init_runtime 末尾新增 RegExp prototype（exec/test/toString）+ constructor（RegExp(rx)/new RegExp()）+ String.prototype.match；eval_expr RegexLiteral 分支替换 stub 为 eval_regex_literal；新增 make_regexp（flags 验证+std::regex 编译）、eval_regex_literal、regexp_exec（smatch 处理、lastIndex 更新、空匹配防死循环）；eval_member_expr 新增 kRegExp 分支（source/flags/global/ignoreCase/multiline/dotAll/sticky/unicode/lastIndex getter）；eval_member_assign 新增 kRegExp 分支（lastIndex 写入）；eval_call_expr 新增 kRegExp 分支（regexp_prototype_ 查找）；instanceof 的 prototype chain walk 扩展 kRegExp；两处 GC roots 添加 regexp_prototype_/regexp_constructor_；两处 cleanup 添加 clear_function_properties/clear_own_properties；kSubErrors 追加 kSyntaxError。
+  - **vm.h**：添加 js_regexp.h include；新增 regexp_prototype_/regexp_constructor_ 字段；声明 vm_make_regexp/vm_regexp_exec。
+  - **vm.cpp**：添加 `<regex>` include；init_global_env 替换 RegExp stub，新增完整 regexp_prototype_（exec/test/toString）+ constructor + String.prototype.match；vm_make_regexp/vm_regexp_exec 实现；kGetProp 新增 kRegExp 分支；kSetProp 新增 kRegExp lastIndex 写入；kInstanceof prototype chain walk 扩展 kRegExp；kNewRegExp 指令（读 pattern_idx/flags_idx，调用 vm_make_regexp）；两处 GC roots + cleanup 同步更新；kSubErrors 追加 kSyntaxError。
+  - **opcode.h**：追加 kNewRegExp（4 字节操作数）。
+  - **compiler.cpp**：RegexLiteral 分支替换 stub 为 emit kNewRegExp + emit_u16(pattern_idx) + emit_u16(flags_idx)。
+  - **gc_heap.h/cpp**：新增 GcHeap 析构函数，清零残留对象的 gc_heap_ 指针，防止 Interpreter 析构时 UAF。
+  - **lsan_suppressions.txt**：新增 3 条 macOS 误报（dyld4::APIs::setErrorString/std::__1::__refstring_imp/dyld::ThreadLocalVariables::instantiateVariable）。
+  - **tests/CMakeLists.txt**：添加 regexp_test.cpp。
+  - **tests/unit/regexp_test.cpp**：52 个测试（RX-01～RX-24 × Interp+VM + DotAll × 2 + ConstructorStringPattern × 2）。
+  - **tests/unit/regex_literal_test.cpp**：4 个 stub 测试（ThrowsUnsupportedError × 2 + StmtThrowsUnsupportedError × 2）改为验证正确行为；2 个集成测试（RegexAsFunctionArg/RegexAsCallbackArg）改为验证成功路径。
+  - 2916/2916 通过（coverage），0 LSan 泄漏。
+
 - [x] **正则表达式字面量的 Parser 集成**（2026-05-15）：按设计方案实现正则表达式字面量从 Lexer 到 Parser/Interpreter/VM 的完整链路。
   - **AST**：新增 `RegexLiteral` 结构体（`pattern`/`flags`/`range`），扩展 `ExprNode` variant。
   - **Parser**：`advance()` 添加 `is_expr_end_token()` 辅助函数（检查当前 token 是否表达式终结，决定下一个 `/` 是正则还是除法）；`nud` 添加 `TokenKind::Regex` 分支，从 token 文本中提取 pattern 和 flags；`expr_range()` 添加 `RegexLiteral` 分支。

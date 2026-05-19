@@ -6,6 +6,14 @@
 
 namespace qppjs {
 
+GcHeap::~GcHeap() {
+    // Clear gc_heap_ pointer on all remaining registered objects so that their
+    // RcObject::~RcObject() does not call Unregister() on this already-destroyed heap.
+    for (RcObject* obj : objects_) {
+        obj->gc_heap_ = nullptr;
+    }
+}
+
 void GcHeap::Register(RcObject* obj) {
     if (!obj) return;
     obj->gc_heap_ = this;

@@ -6,6 +6,7 @@
 #include "qppjs/runtime/job_queue.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
+#include "qppjs/runtime/js_regexp.h"
 #include "qppjs/runtime/module_loader.h"
 #include "qppjs/runtime/native_errors.h"
 #include "qppjs/runtime/promise.h"
@@ -98,6 +99,12 @@ private:
     // Also handles nested suspension (multiple awaits).
     void vm_handle_async_result(EvalResult body_result, RcPtr<JSPromise> outer_promise);
 
+    // Create a JSRegExp from pattern/flags. Returns error on invalid flags or pattern.
+    EvalResult vm_make_regexp(const std::string& pattern, const std::string& flags);
+
+    // Execute RegExp exec() on input string. Returns result array or null.
+    EvalResult vm_regexp_exec(JSRegExp* rx, const std::string& input);
+
     GcHeap gc_heap_;
     ModuleLoader module_loader_;
     JobQueue job_queue_;
@@ -125,10 +132,12 @@ private:
     RcPtr<JSObject> string_prototype_;   // String.prototype (indexOf/slice/trim/...)
     RcPtr<JSObject> math_obj_;           // Math object
     RcPtr<JSObject> number_prototype_;   // Number.prototype
+    RcPtr<JSObject> regexp_prototype_;   // RegExp.prototype
     RcPtr<JSFunction> object_constructor_;  // global Object function
     RcPtr<JSFunction> number_constructor_;  // global Number function
     RcPtr<JSFunction> boolean_constructor_;  // global Boolean function
     RcPtr<JSFunction> string_constructor_;  // global String function
+    RcPtr<JSFunction> regexp_constructor_;  // global RegExp function
     uint64_t math_random_state_ = 1;    // xorshift64* PRNG state
     RcPtr<Environment> global_env_;
 

@@ -225,53 +225,53 @@ TEST(RegexLiteralDump, NoFlagsDump) {
 }
 
 // ============================================================
-// 7. Interpreter stub — 正则运行时未实现，抛显式错误
+// 7. Interpreter — 正则运行时已实现，正则字面量返回 object
 // ============================================================
 
-TEST(RegexLiteralInterpreter, ThrowsUnsupportedError) {
-    auto parse_result = parse_program("/abc/gi;");
+TEST(RegexLiteralInterpreter, CreatesRegExpObject) {
+    auto parse_result = parse_program("typeof /abc/gi;");
     ASSERT_TRUE(parse_result.ok()) << parse_result.error().message();
     Interpreter interp;
     auto result = interp.exec(parse_result.value());
-    EXPECT_FALSE(result.is_ok());
-    EXPECT_NE(result.error().message().find("Unsupported: RegExp literal"), std::string::npos);
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_EQ(result.value().as_string(), "object");
 }
 
-TEST(RegexLiteralInterpreter, StmtThrowsUnsupportedError) {
-    auto parse_result = parse_program("var x = /test/; x;");
+TEST(RegexLiteralInterpreter, StmtCreatesRegExpObject) {
+    auto parse_result = parse_program("var x = /test/; typeof x;");
     ASSERT_TRUE(parse_result.ok()) << parse_result.error().message();
     Interpreter interp;
     auto result = interp.exec(parse_result.value());
-    EXPECT_FALSE(result.is_ok());
-    EXPECT_NE(result.error().message().find("Unsupported: RegExp literal"), std::string::npos);
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_EQ(result.value().as_string(), "object");
 }
 
 // ============================================================
-// 8. VM stub — 正则运行时未实现，抛显式错误
+// 8. VM — 正则运行时已实现，正则字面量返回 object
 // ============================================================
 
-TEST(RegexLiteralVM, ThrowsUnsupportedError) {
-    auto parse_result = parse_program("/abc/gi;");
+TEST(RegexLiteralVM, CreatesRegExpObject) {
+    auto parse_result = parse_program("typeof /abc/gi;");
     ASSERT_TRUE(parse_result.ok()) << parse_result.error().message();
     VM vm;
     Compiler compiler;
     auto bytecode = compiler.compile(parse_result.value());
     ASSERT_NE(bytecode, nullptr) << "compile failed";
     auto result = vm.exec(bytecode);
-    EXPECT_FALSE(result.is_ok());
-    EXPECT_NE(result.error().message().find("Unsupported: RegExp literal"), std::string::npos);
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_EQ(result.value().as_string(), "object");
 }
 
-TEST(RegexLiteralVM, StmtThrowsUnsupportedError) {
-    auto parse_result = parse_program("var x = /test/; x;");
+TEST(RegexLiteralVM, StmtCreatesRegExpObject) {
+    auto parse_result = parse_program("var x = /test/; typeof x;");
     ASSERT_TRUE(parse_result.ok()) << parse_result.error().message();
     VM vm;
     Compiler compiler;
     auto bytecode = compiler.compile(parse_result.value());
     ASSERT_NE(bytecode, nullptr) << "compile failed";
     auto result = vm.exec(bytecode);
-    EXPECT_FALSE(result.is_ok());
-    EXPECT_NE(result.error().message().find("Unsupported: RegExp literal"), std::string::npos);
+    ASSERT_TRUE(result.is_ok()) << result.error().message();
+    EXPECT_EQ(result.value().as_string(), "object");
 }
 
 // ============================================================
@@ -673,23 +673,22 @@ TEST(RegexLiteralASI, VarDeclAfterRegexLine) {
 // ============================================================
 
 TEST(RegexLiteralIntegration, RegexAsFunctionArg) {
-    // foo(/regex/) — 函数调用中正则作为参数，运行时抛 Unsupported 错误
-    auto result = parse_program("function foo(p){} foo(/regex/);");
+    // foo(/regex/) — 函数调用中正则作为参数，运行时成功
+    auto result = parse_program("function foo(p){ return typeof p; } foo(/regex/);");
     ASSERT_TRUE(result.ok()) << result.error().message();
     Interpreter interp;
     auto exec_result = interp.exec(result.value());
-    EXPECT_FALSE(exec_result.is_ok());
-    EXPECT_NE(exec_result.error().message().find("Unsupported: RegExp literal"), std::string::npos);
+    ASSERT_TRUE(exec_result.is_ok()) << exec_result.error().message();
+    EXPECT_EQ(exec_result.value().as_string(), "object");
 }
 
 TEST(RegexLiteralIntegration, RegexAsCallbackArg) {
-    // [1].forEach(function(x){ /regex/; }) — 回调中使用正则，运行时抛 Unsupported 错误
+    // [1].forEach(function(x){ /regex/; }) — 回调中使用正则，运行时成功
     auto result = parse_program("[1].forEach(function(x){/regex/;});");
     ASSERT_TRUE(result.ok()) << result.error().message();
     Interpreter interp;
     auto exec_result = interp.exec(result.value());
-    EXPECT_FALSE(exec_result.is_ok());
-    EXPECT_NE(exec_result.error().message().find("Unsupported: RegExp literal"), std::string::npos);
+    EXPECT_TRUE(exec_result.is_ok()) << exec_result.error().message();
 }
 
 // ============================================================

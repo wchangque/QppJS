@@ -11,7 +11,7 @@
 
 ## 2. test262 通过率提升候选目标（按优先级）
 
-1. **正则表达式 RegExp 运行时** — 基于 Parser 已集成的 RegexLiteral 实现 RegExp 构造函数和 prototype 方法
+1. ~~**正则表达式 RegExp 运行时** — 已完成（2026-05-18）~~
 2. ~~**模板字符串 `` ` ``** — 已完成（2026-05-18，仅无标签形式；Tagged Template 暂不支持）~~
 3. **`Array` + `String` + `Boolean` 全局构造函数** — 修复 1383 个 ReferenceError（预计提升 ~5%）
 4. **`delete` 运算符** — 修复 117 个 SyntaxError

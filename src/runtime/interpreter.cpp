@@ -6,6 +6,7 @@
 #include "qppjs/runtime/environment.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
+#include "qppjs/runtime/js_regexp.h"
 #include "qppjs/runtime/module_loader.h"
 #include "qppjs/runtime/module_record.h"
 #include "qppjs/runtime/native_errors.h"
@@ -21,6 +22,7 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <regex>
 #include <sstream>
 #include <string>
 
@@ -396,6 +398,7 @@ void Interpreter::init_runtime() {
         {NativeErrorType::kTypeError,      "TypeError"},
         {NativeErrorType::kReferenceError, "ReferenceError"},
         {NativeErrorType::kRangeError,     "RangeError"},
+        {NativeErrorType::kSyntaxError,    "SyntaxError"},
     };
 
     for (const auto& spec : kSubErrors) {
@@ -2601,6 +2604,160 @@ void Interpreter::init_runtime() {
     global_env_->define("Math", VarKind::Const);
     global_env_->initialize("Math", Value::object(ObjectPtr(math_obj_)));
 
+    // ---- RegExp prototype ----
+
+    regexp_prototype_ = RcPtr<JSObject>::make();
+    regexp_prototype_->set_proto(object_prototype_);
+    gc_heap_.Register(regexp_prototype_.get());
+
+    // RegExp.prototype.exec
+    auto regexp_exec_fn = RcPtr<JSFunction>::make();
+    regexp_exec_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (!this_val.is_object() || !this_val.as_object_raw() ||
+            this_val.as_object_raw()->object_kind() != ObjectKind::kRegExp) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "RegExp.prototype.exec called on non-RegExp");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* rx = static_cast<JSRegExp*>(this_val.as_object_raw());
+        std::string input = args.empty() ? "undefined" : to_string_val(args[0]);
+        return regexp_exec(rx, input);
+    });
+    regexp_prototype_->set_property("exec", Value::object(ObjectPtr(regexp_exec_fn)));
+
+    // RegExp.prototype.test
+    auto regexp_test_fn = RcPtr<JSFunction>::make();
+    regexp_test_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (!this_val.is_object() || !this_val.as_object_raw() ||
+            this_val.as_object_raw()->object_kind() != ObjectKind::kRegExp) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "RegExp.prototype.test called on non-RegExp");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* rx = static_cast<JSRegExp*>(this_val.as_object_raw());
+        std::string input = args.empty() ? "undefined" : to_string_val(args[0]);
+        auto res = regexp_exec(rx, input);
+        if (!res.is_ok()) return res;
+        return EvalResult::ok(Value::boolean(!res.value().is_null()));
+    });
+    regexp_prototype_->set_property("test", Value::object(ObjectPtr(regexp_test_fn)));
+
+    // RegExp.prototype.toString
+    auto regexp_tostring_fn = RcPtr<JSFunction>::make();
+    regexp_tostring_fn->set_native_fn([](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+        if (!this_val.is_object() || !this_val.as_object_raw() ||
+            this_val.as_object_raw()->object_kind() != ObjectKind::kRegExp) {
+            return EvalResult::ok(Value::string("/(?:)/"));
+        }
+        auto* rx = static_cast<JSRegExp*>(this_val.as_object_raw());
+        std::string src = rx->pattern_.empty() ? "(?:)" : rx->pattern_;
+        // EscapeRegExpPattern: replace unescaped '/' with '\/'
+        std::string escaped;
+        escaped.reserve(src.size());
+        for (size_t i = 0; i < src.size(); ++i) {
+            if (src[i] == '\\' && i + 1 < src.size()) {
+                escaped += src[i];
+                escaped += src[++i];
+            } else if (src[i] == '/') {
+                escaped += "\\/";
+            } else {
+                escaped += src[i];
+            }
+        }
+        return EvalResult::ok(Value::string("/" + escaped + "/" + rx->flags_str_));
+    });
+    regexp_prototype_->set_property("toString", Value::object(ObjectPtr(regexp_tostring_fn)));
+
+    // ---- RegExp constructor ----
+
+    regexp_constructor_ = RcPtr<JSFunction>::make();
+    regexp_constructor_->set_name(std::string("RegExp"));
+    regexp_constructor_->set_native_fn([this](Value /*this_val*/, std::vector<Value> args,
+                                              bool is_new) -> EvalResult {
+        // RegExp(rx) with no flags → return rx itself (only for non-new call)
+        if (!is_new && args.size() >= 1 && args[0].is_object() && args[0].as_object_raw() &&
+            args[0].as_object_raw()->object_kind() == ObjectKind::kRegExp &&
+            (args.size() < 2 || args[1].is_undefined())) {
+            return EvalResult::ok(args[0]);
+        }
+        std::string pattern;
+        std::string flags;
+        if (!args.empty() && !args[0].is_undefined()) {
+            if (args[0].is_object() && args[0].as_object_raw() &&
+                args[0].as_object_raw()->object_kind() == ObjectKind::kRegExp) {
+                auto* src_rx = static_cast<JSRegExp*>(args[0].as_object_raw());
+                pattern = src_rx->pattern_;
+                flags = src_rx->flags_str_;
+            } else {
+                pattern = to_string_val(args[0]);
+            }
+        }
+        if (args.size() >= 2 && !args[1].is_undefined()) {
+            flags = to_string_val(args[1]);
+        }
+        return make_regexp(pattern, flags);
+    });
+    regexp_constructor_->set_prototype_obj(RcPtr<JSObject>(regexp_prototype_));
+    regexp_constructor_->set_property("prototype", Value::object(ObjectPtr(regexp_prototype_)));
+    gc_heap_.Register(regexp_constructor_.get());
+    global_env_->define_initialized("RegExp");
+    global_env_->set("RegExp", Value::object(ObjectPtr(regexp_constructor_)));
+
+    // ---- String.prototype.match ----
+
+    auto string_match_fn = RcPtr<JSFunction>::make();
+    string_match_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_undefined() || this_val.is_null()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.match called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        std::string str = to_string_val(this_val);
+        if (args.empty() || args[0].is_undefined()) {
+            // match(undefined) → match(/(?:)/)
+            auto rx_res = make_regexp("", "");
+            if (!rx_res.is_ok()) return rx_res;
+            auto* rx = static_cast<JSRegExp*>(rx_res.value().as_object_raw());
+            return regexp_exec(rx, str);
+        }
+        if (!args[0].is_object() || !args[0].as_object_raw() ||
+            args[0].as_object_raw()->object_kind() != ObjectKind::kRegExp) {
+            // Coerce to RegExp
+            std::string pat = to_string_val(args[0]);
+            auto rx_res = make_regexp(pat, "");
+            if (!rx_res.is_ok()) return rx_res;
+            auto* rx = static_cast<JSRegExp*>(rx_res.value().as_object_raw());
+            return regexp_exec(rx, str);
+        }
+        auto* rx = static_cast<JSRegExp*>(args[0].as_object_raw());
+        if (!rx->global_) {
+            return regexp_exec(rx, str);
+        }
+        // Global match: collect all matches
+        rx->last_index_ = 0;
+        auto result_arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(result_arr.get());
+        result_arr->set_proto(array_prototype_);
+        while (true) {
+            if (rx->last_index_ > static_cast<uint32_t>(str.size())) break;
+            auto exec_res = regexp_exec(rx, str);
+            if (!exec_res.is_ok()) return exec_res;
+            if (exec_res.value().is_null()) break;
+            // Extract match[0]
+            auto* match_arr = static_cast<JSObject*>(exec_res.value().as_object_raw());
+            Value match0 = match_arr->get_property("0");
+            result_arr->elements_[result_arr->array_length_] = match0;
+            result_arr->array_length_++;
+            // Advance lastIndex by 1 on empty match to prevent infinite loop.
+            if (match0.is_string() && match0.sv().empty()) rx->last_index_++;
+        }
+        if (result_arr->array_length_ == 0) return EvalResult::ok(Value::null());
+        return EvalResult::ok(Value::object(ObjectPtr(result_arr)));
+    });
+    if (string_prototype_) {
+        string_prototype_->set_property("match", Value::object(ObjectPtr(string_match_fn)));
+    }
+
     // Register the global environment with GcHeap so user-created closures reachable
     // from it are treated as roots and not swept.
     gc_heap_.Register(global_env_.get());
@@ -3021,6 +3178,8 @@ EvalResult Interpreter::exec(const Program& program) {
         add_obj(number_constructor_.get());
         add_obj(boolean_constructor_.get());
         add_obj(string_constructor_.get());
+        add_obj(regexp_prototype_.get());
+        add_obj(regexp_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
         if (pending_throw_.has_value()) add_val(*pending_throw_);
@@ -3043,10 +3202,12 @@ EvalResult Interpreter::exec(const Program& program) {
     if (string_prototype_) string_prototype_->clear_function_properties();
     if (math_obj_) math_obj_->clear_function_properties();
     if (number_prototype_) number_prototype_->clear_function_properties();
+    if (regexp_prototype_) regexp_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     if (number_constructor_) number_constructor_->clear_own_properties();
     if (boolean_constructor_) boolean_constructor_->clear_own_properties();
     if (string_constructor_) string_constructor_->clear_own_properties();
+    if (regexp_constructor_) regexp_constructor_->clear_own_properties();
 
     return final_result;
 }
@@ -3308,9 +3469,7 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
                 return EvalResult::ok(Value::undefined());
             },
             [this](const ImportCallExpression& e) { return eval_import_call(e); },
-            [](const RegexLiteral& /*e*/) {
-                return EvalResult::err(Error{ErrorKind::Runtime, "Unsupported: RegExp literal"});
-            },
+            [this](const RegexLiteral& e) { return eval_regex_literal(e); },
             [this](const TemplateLiteral& e) { return eval_template_literal(e); },
         },
         expr.v);
@@ -3330,6 +3489,96 @@ EvalResult Interpreter::eval_array_expr(const ArrayExpression& expr) {
         arr->array_length_++;
     }
     return EvalResult::ok(Value::object(ObjectPtr(arr)));
+}
+
+// ---- RegExp runtime ----
+
+EvalResult Interpreter::make_regexp(const std::string& pattern, const std::string& flags) {
+    // Validate flags: only g/i/m/s/u/y, no duplicates
+    bool seen[128] = {};
+    for (char c : flags) {
+        if (c != 'g' && c != 'i' && c != 'm' && c != 's' && c != 'u' && c != 'y') {
+            pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                std::string("Invalid regular expression flags: ") + c);
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        if (seen[static_cast<unsigned char>(c)]) {
+            pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                std::string("Duplicate regular expression flag: ") + c);
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        seen[static_cast<unsigned char>(c)] = true;
+    }
+
+    auto rx = RcPtr<JSRegExp>::make(pattern, flags);
+    if (!rx->is_valid_) {
+        pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+            "Invalid regular expression: " + pattern);
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+    gc_heap_.Register(rx.get());
+    if (regexp_prototype_) rx->set_proto(regexp_prototype_);
+    return EvalResult::ok(Value::object(ObjectPtr(rx)));
+}
+
+EvalResult Interpreter::eval_regex_literal(const RegexLiteral& expr) {
+    return make_regexp(expr.pattern, expr.flags);
+}
+
+EvalResult Interpreter::regexp_exec(JSRegExp* rx, const std::string& input) {
+    if (!rx->is_valid_) {
+        pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+            "Invalid regular expression");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+
+    size_t start_pos = (rx->global_ || rx->sticky_) ? rx->last_index_ : 0;
+    if (start_pos > input.size()) {
+        if (rx->global_ || rx->sticky_) rx->last_index_ = 0;
+        return EvalResult::ok(Value::null());
+    }
+
+    std::smatch sm;
+    auto search_begin = input.cbegin() + static_cast<std::ptrdiff_t>(start_pos);
+    std::regex_constants::match_flag_type mflags = std::regex_constants::match_default;
+    // match_not_bol: only when non-multiline and not at string start,
+    // to prevent ^ from matching the substring start position.
+    if (!rx->multiline_ && start_pos > 0) mflags |= std::regex_constants::match_not_bol;
+    // For sticky: only match at exact position
+    if (rx->sticky_) mflags |= std::regex_constants::match_continuous;
+
+    bool found = std::regex_search(search_begin, input.cend(), sm, rx->compiled_, mflags);
+    if (!found) {
+        if (rx->global_ || rx->sticky_) rx->last_index_ = 0;
+        return EvalResult::ok(Value::null());
+    }
+
+    size_t match_start = start_pos + static_cast<size_t>(sm.position(0));
+    size_t match_end = match_start + static_cast<size_t>(sm.length(0));
+
+    if (rx->global_ || rx->sticky_) {
+        rx->last_index_ = static_cast<uint32_t>(match_end);
+    }
+
+    // Build result array
+    auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
+    gc_heap_.Register(result.get());
+    if (array_prototype_) result->set_proto(array_prototype_);
+
+    // elements_[0] = full match, elements_[i] = capture group i
+    for (size_t i = 0; i < sm.size(); ++i) {
+        if (i > 0 && !sm[i].matched) {
+            // Unmatched capture group → undefined (don't write, stays as hole/undefined)
+        } else {
+            result->elements_[static_cast<uint32_t>(i)] = Value::string(sm[i].str());
+        }
+        result->array_length_++;
+    }
+    result->set_property("index", Value::number(static_cast<double>(match_start)));
+    result->set_property("input", Value::string(input));
+    result->set_property("groups", Value::undefined());
+
+    return EvalResult::ok(Value::object(ObjectPtr(result)));
 }
 
 EvalResult Interpreter::eval_identifier(const Identifier& expr) {
@@ -3685,7 +3934,10 @@ EvalResult Interpreter::eval_binary(const BinaryExpression& expr) {
         // Walk the prototype chain of lv
         RcObject* cur_raw = lv.as_object_raw();
         bool found = false;
-        while (cur_raw && cur_raw->object_kind() == ObjectKind::kOrdinary) {
+        while (cur_raw) {
+            ObjectKind k = cur_raw->object_kind();
+            if (k != ObjectKind::kOrdinary && k != ObjectKind::kArray &&
+                k != ObjectKind::kRegExp) break;
             auto* cur_obj = static_cast<JSObject*>(cur_raw);
             const RcPtr<JSObject>& proto = cur_obj->proto();
             if (!proto) break;
@@ -3907,6 +4159,22 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
         if (promise_prototype_) return EvalResult::ok(promise_prototype_->get_property(key));
         return EvalResult::ok(Value::undefined());
     }
+    if (raw_obj->object_kind() == ObjectKind::kRegExp) {
+        auto* rx = static_cast<JSRegExp*>(raw_obj);
+        if (key == "source") {
+            return EvalResult::ok(Value::string(rx->pattern_.empty() ? "(?:)" : rx->pattern_));
+        }
+        if (key == "flags") return EvalResult::ok(Value::string(rx->flags_str_));
+        if (key == "global") return EvalResult::ok(Value::boolean(rx->global_));
+        if (key == "ignoreCase") return EvalResult::ok(Value::boolean(rx->ignore_case_));
+        if (key == "multiline") return EvalResult::ok(Value::boolean(rx->multiline_));
+        if (key == "dotAll") return EvalResult::ok(Value::boolean(rx->dot_all_));
+        if (key == "sticky") return EvalResult::ok(Value::boolean(rx->sticky_));
+        if (key == "unicode") return EvalResult::ok(Value::boolean(rx->unicode_));
+        if (key == "lastIndex") return EvalResult::ok(Value::number(static_cast<double>(rx->last_index_)));
+        if (regexp_prototype_) return EvalResult::ok(regexp_prototype_->get_property(key));
+        return EvalResult::ok(Value::undefined());
+    }
     if (raw_obj->object_kind() != ObjectKind::kOrdinary && raw_obj->object_kind() != ObjectKind::kArray) {
         return EvalResult::ok(Value::undefined());
     }
@@ -3944,6 +4212,15 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
     }
 
     RcObject* raw_obj2 = obj_val.as_object_raw();
+    // kRegExp: allow writing lastIndex
+    if (raw_obj2->object_kind() == ObjectKind::kRegExp) {
+        if (key == "lastIndex") {
+            double n = to_number_double(val_result.value());
+            auto* rx = static_cast<JSRegExp*>(raw_obj2);
+            rx->last_index_ = std::isnan(n) || n < 0.0 ? 0u : static_cast<uint32_t>(n);
+        }
+        return EvalResult::ok(val_result.value());
+    }
     if (raw_obj2->object_kind() != ObjectKind::kOrdinary && raw_obj2->object_kind() != ObjectKind::kArray) {
         pending_throw_ = make_error_value(NativeErrorType::kTypeError,
             "Cannot set properties of non-ordinary object");
@@ -4333,6 +4610,12 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
             } else {
                 callee_val = Value::undefined();
             }
+        } else if (obj_ptr->object_kind() == ObjectKind::kRegExp) {
+            if (regexp_prototype_) {
+                callee_val = regexp_prototype_->get_property(key);
+            } else {
+                callee_val = Value::undefined();
+            }
         } else {
             callee_val = Value::undefined();
         }
@@ -4521,6 +4804,8 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
         add_obj(number_constructor_.get());
         add_obj(boolean_constructor_.get());
         add_obj(string_constructor_.get());
+        add_obj(regexp_prototype_.get());
+        add_obj(regexp_constructor_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
         if (pending_throw_.has_value()) add_val(*pending_throw_);
@@ -4542,10 +4827,12 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
     if (string_prototype_) string_prototype_->clear_function_properties();
     if (math_obj_) math_obj_->clear_function_properties();
     if (number_prototype_) number_prototype_->clear_function_properties();
+    if (regexp_prototype_) regexp_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     if (number_constructor_) number_constructor_->clear_own_properties();
     if (boolean_constructor_) boolean_constructor_->clear_own_properties();
     if (string_constructor_) string_constructor_->clear_own_properties();
+    if (regexp_constructor_) regexp_constructor_->clear_own_properties();
     // 清理所有模块环境中的函数引用（打破 module_env ↔ JSFunction 循环引用）
     module_loader_.ClearModuleEnvs();
     module_loader_.Clear();

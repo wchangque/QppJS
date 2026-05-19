@@ -9,6 +9,7 @@ class RcObject;
 
 class GcHeap {
 public:
+    ~GcHeap();
     void Register(RcObject* obj);
     void Unregister(RcObject* obj);
     void MarkPending(RcObject* obj);

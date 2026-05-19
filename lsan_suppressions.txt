@@ -5,3 +5,8 @@ leak:libSystem_initializer
 # macOS libsystem_c dtoa (floating-point to string) internal pool
 leak:__Balloc_D2A
 leak:__dtoa
+# macOS dyld/libc++abi false positive triggered by std::regex_error exception handling
+leak:dyld4::APIs::setErrorString
+leak:std::__1::__refstring_imp
+# macOS TLS initialization for C++ exception handling (one-time allocation)
+leak:dyld::ThreadLocalVariables::instantiateVariable

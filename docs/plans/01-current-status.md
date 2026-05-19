@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 2866/2866 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 2944/2944 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-05-18 |
-| 下一步 | 继续提升 test262 通过率（RegExp 运行时 + delete 运算符 + Symbol 基础支持） |
+| 下一步 | 继续提升 test262 通过率（delete 运算符 + Symbol 基础支持 + Object.defineProperty） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
@@ -22,6 +22,10 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **RegExp 运行时 Review 修复 P2-1/P2-2/P2-3**（2026-05-18）：P2-1+P2-3：`match_not_bol` 语义修复——改为 `if (!rx->multiline_ && start_pos > 0)` 才传入该 flag（multiline 模式下 `^` 应匹配每行开头，非 multiline 且 start_pos>0 时才需阻止 `^` 匹配子串起点）；P2-2：`regexp_exec`/`vm_regexp_exec` 空匹配时只设 `last_index_ = match_end`（不再额外 +1），全局 match 循环中空匹配后 `rx->last_index_++` 防死循环（职责分离，与规范对齐）。interpreter.cpp + vm.cpp 两侧对称修复，共 4 处改动。2944/2944 通过（coverage），0 LSan 泄漏。
+- [x] **RegExp 运行时 Testing Agent 边界补测**（2026-05-18）：追加 26 个测试（RX-25～RX-37，Interp+VM 对称）。覆盖：exec 结果 groups===undefined/input 一致/index 精确值（RX-25）；lastIndex NaN/负数/超出长度边界（RX-26）；exec this 非 RegExp 对象 TypeError（RX-27）；g 模式三次 exec 循环终止（第三次 null，lastIndex 回 0）（RX-28）；toString 斜杠转义（new RegExp('/') → "/\\//")（RX-29）；全局 match 空匹配防死循环（"abc".match(/(?:)/g) → 4 元素）（RX-30）；new RegExp(rx, flags) 覆盖原 flags（RX-31）；new RegExp(undefined) source 为 "(?:)"（RX-32）；flags 访问器规范化顺序（"mig" → "gim"）（RX-33）；exec 数组 length == 捕获组数+1（RX-34）；sticky flag 基础行为（RX-35）；非全局 match groups===undefined（RX-36）；match 字符串参数（RX-37）。同步修复 3 处 Bug：(1) JSRegExp 构造函数规范化 flags_str_ 为 gimsuy 顺序（js_regexp.cpp）；(2) interpreter.cpp + vm.cpp 两侧 toString 添加 EscapeRegExpPattern（未转义 '/' 替换为 '\\/'）；(3) interpreter.cpp + vm.cpp 两侧 String.prototype.match 全局循环删除多余的 last_index++（regexp_exec 内部已处理空匹配防死循环，重复递增导致步长为 2）。2944/2944 通过（coverage），0 LSan 泄漏。
+- [x] **RegExp 运行时**（2026-05-18）：完整实现 RegExp 运行时，包含 JSRegExp 类（ObjectKind::kRegExp，继承 JSObject）、make_regexp/regexp_exec 核心函数、eval_regex_literal（替换 stub）、regexp_prototype_（exec/test/toString）、regexp_constructor_（RegExp(rx)/new RegExp()）、kRegExp member access 特殊处理（source/flags/global/ignoreCase/multiline/dotAll/sticky/unicode/lastIndex getter，lastIndex setter）、String.prototype.match（非全局+全局）、VM kNewRegExp 指令（4 字节：2 字节 pattern_idx + 2 字节 flags_idx）、Compiler RegexLiteral 分支替换 stub、kRegExp 分支加入 kGetProp/kSetProp/kInstanceof/kCallMethod、GC roots 和 cleanup（两处 exec 和 exec_module 对称）、NativeErrorType::kSyntaxError 新增（interpreter+vm 两侧 kSubErrors 追加）、GcHeap 析构函数（清零残留对象的 gc_heap_ 指针防 UAF）、LSan suppressions 新增 3 条 macOS 系统库误报（dyld setErrorString/refstring_imp/TLS 初始化）。新增 tests/unit/regexp_test.cpp（52 个测试：RX-01～RX-24 + 2 额外，Interp+VM 对称）；更新 regex_literal_test.cpp（4 个 stub 测试改为验证正确行为）。2916/2916 通过（coverage），0 LSan 泄漏。
 
 - [x] **模板字符串 Review 修复**（2026-05-18）：P2-1：`decode_template_cooked` 补加 `case '1'`–`'7'` 返回 `std::nullopt`，修复 `\1`–`\7` 遗留八进制未报 SyntaxError 的 bug；P1：`kAdd` 字符串分支当两端均为字符串时改用 `sv()` 直接拼接（`reserve` + `+=`），避免 2 次 `as_string()` 值拷贝；新增 TL-52/53/54 三个 Parser SyntaxError 测试。2866/2866 通过（coverage），0 LSan 泄漏。
 - [x] **模板字符串（Template Literals）**（2026-05-18）：新增 4 种 TokenKind（TemplateNoSub/TemplateHead/TemplateMiddle/TemplateTail）；Lexer 新增 `scan_template_part` 函数，`next_token` 添加 `` ` `` 分支；Parser 新增 `decode_template_cooked`（转义解码，支持 `\n\t\r\b\f\v\\\`\$\0\xHH\uHHHH\u{H...}` 及行延续）、`advance_template_part`（回退 pos 后调用 scan_template_part）、nud 添加 TemplateNoSub/TemplateHead 分支、`expr_range` 添加 TemplateLiteral 分支；AST 新增 `TemplateElement`/`TemplateLiteral` 节点并加入 ExprNode variant；ast_dump 添加 TemplateLiteral 输出；Interpreter `eval_template_literal` 拼接 cooked + to_string_val 插值；opcode.h 新增 `kToString`；Compiler `compile_template_literal`（快路径 LoadString + 有插值路径 kToString + kAdd）；VM `kToString` 实现；新增 template_literal_test.cpp（7 Lexer + 10 Parser/Dump + 14 Interp + 14 VM = 45 个测试）。2769/2769 通过（coverage），2769/2769 通过（run_ut ASAN），0 LSan 泄漏。
