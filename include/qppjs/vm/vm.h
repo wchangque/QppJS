@@ -11,6 +11,7 @@
 #include "qppjs/runtime/native_errors.h"
 #include "qppjs/runtime/promise.h"
 #include "qppjs/runtime/rc_object.h"
+#include "qppjs/runtime/symbol_table.h"
 #include "qppjs/runtime/value.h"
 #include "qppjs/vm/bytecode.h"
 
@@ -108,6 +109,7 @@ private:
     GcHeap gc_heap_;
     ModuleLoader module_loader_;
     JobQueue job_queue_;
+    SymbolTable symbol_table_;
 
     // Pending throw value for native functions that need to re-throw
     // (used when call_stack_ may be empty, e.g., during job queue drain).
@@ -133,11 +135,13 @@ private:
     RcPtr<JSObject> math_obj_;           // Math object
     RcPtr<JSObject> number_prototype_;   // Number.prototype
     RcPtr<JSObject> regexp_prototype_;   // RegExp.prototype
+    RcPtr<JSObject> symbol_prototype_;   // Symbol.prototype (toString/valueOf)
     RcPtr<JSFunction> object_constructor_;  // global Object function
     RcPtr<JSFunction> number_constructor_;  // global Number function
     RcPtr<JSFunction> boolean_constructor_;  // global Boolean function
     RcPtr<JSFunction> string_constructor_;  // global String function
     RcPtr<JSFunction> regexp_constructor_;  // global RegExp function
+    RcPtr<JSFunction> symbol_constructor_;  // global Symbol function
     uint64_t math_random_state_ = 1;    // xorshift64* PRNG state
     RcPtr<Environment> global_env_;
 

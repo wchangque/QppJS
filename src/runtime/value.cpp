@@ -134,6 +134,12 @@ Value Value::string(std::string_view sv) {
     return v;
 }
 
+Value Value::symbol(uint64_t id) {
+    Value v;
+    v.raw_ = encode_tag_payload(kTagSymbol, id & kPayloadMask);
+    return v;
+}
+
 Value Value::object(ObjectPtr value) {
     Value v;
     RcObject* raw = value.get();
@@ -162,6 +168,7 @@ ValueKind Value::kind() const {
     case kTagBool:      return ValueKind::Bool;
     case kTagString:    return ValueKind::String;
     case kTagObject:    return ValueKind::Object;
+    case kTagSymbol:    return ValueKind::Symbol;
     default:            return ValueKind::Number;
     }
 }
@@ -174,9 +181,11 @@ bool Value::is_object()    const { return tag() == kTagObject; }
 
 bool Value::is_number() const {
     int32_t t = tag();
-    // A double has tag NOT in [kTagUndefined, kTagObject] = [-5, -1].
-    return t < kTagUndefined || t > kTagObject;
+    // A double has tag NOT in [kTagSymbol, kTagObject] = [-6, -1].
+    return t < kTagSymbol || t > kTagObject;
 }
+
+bool Value::is_symbol() const { return tag() == kTagSymbol; }
 
 // ============================================================
 // Accessors
@@ -220,6 +229,11 @@ ObjectPtr Value::as_object() const {
 RcObject* Value::as_object_raw() const {
     assert(is_object());
     return reinterpret_cast<RcObject*>(static_cast<uintptr_t>(payload()));
+}
+
+uint64_t Value::as_symbol_id() const {
+    assert(is_symbol());
+    return payload();
 }
 
 }  // namespace qppjs

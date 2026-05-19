@@ -12,6 +12,7 @@
 #include "qppjs/runtime/native_errors.h"
 #include "qppjs/runtime/promise.h"
 #include "qppjs/runtime/rc_object.h"
+#include "qppjs/runtime/symbol_table.h"
 
 #include <array>
 #include <memory>
@@ -88,7 +89,10 @@ private:
     // Type conversions (static)
     static bool to_boolean(const Value& v);
     static EvalResult to_number(const Value& v);
+    // Returns empty string on Symbol (caller must handle TypeError separately if needed).
     static std::string to_string_val(const Value& v);
+    // Returns symbol description string for toString() ("Symbol(desc)").
+    static std::string symbol_to_string(uint64_t id, const SymbolTable& table);
 
     // Statement execution for async functions
     StmtResult eval_async_function_decl(const AsyncFunctionDeclaration& stmt);
@@ -159,6 +163,7 @@ private:
     GcHeap gc_heap_;
     ModuleLoader module_loader_;
     JobQueue job_queue_;
+    SymbolTable symbol_table_;
 
     RcPtr<Environment> global_env_;
     RcPtr<Environment> current_env_;
@@ -172,11 +177,13 @@ private:
     RcPtr<JSObject> math_obj_;           // Math object
     RcPtr<JSObject> number_prototype_;   // Number.prototype
     RcPtr<JSObject> regexp_prototype_;   // RegExp.prototype
+    RcPtr<JSObject> symbol_prototype_;   // Symbol.prototype (toString/valueOf)
     RcPtr<JSFunction> object_constructor_;  // global Object function
     RcPtr<JSFunction> number_constructor_;  // global Number function
     RcPtr<JSFunction> boolean_constructor_;  // global Boolean function
     RcPtr<JSFunction> string_constructor_;  // global String function
     RcPtr<JSFunction> regexp_constructor_;  // global RegExp function
+    RcPtr<JSFunction> symbol_constructor_;  // global Symbol function
     uint64_t math_random_state_ = 1;    // xorshift64* PRNG state
     int call_depth_ = 0;
     static constexpr int kMaxCallDepth = 500;

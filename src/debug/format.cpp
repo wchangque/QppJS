@@ -27,6 +27,8 @@ std::string format_value(const Value& value) {
             return value.as_string();
         case ValueKind::Object:
             return "[object]";
+        case ValueKind::Symbol:
+            return "[symbol]";
     }
 
     return "[unknown]";

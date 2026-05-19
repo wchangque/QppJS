@@ -16,7 +16,7 @@ using ObjectPtr = RcPtr<RcObject>;
 struct Undefined final {};
 struct Null final {};
 
-enum class ValueKind { Undefined, Null, Bool, Number, String, Object };
+enum class ValueKind { Undefined, Null, Bool, Number, String, Object, Symbol };
 
 // NaN-boxing Value (8 bytes).
 //
@@ -28,8 +28,9 @@ enum class ValueKind { Undefined, Null, Bool, Number, String, Object };
 //     tag = -3 (0xFFFD): Bool,      payload = 0 (false) or 1 (true)
 //     tag = -4 (0xFFFC): Null,      payload = 0
 //     tag = -5 (0xFFFB): Undefined, payload = 0
+//     tag = -6 (0xFFFA): Symbol,    payload = symbol id (uint64_t, low 48 bits)
 //
-// A double is detected when tag is NOT in [-5, -1].
+// A double is detected when tag is NOT in [-6, -1].
 class Value {
 public:
     // Default constructs as undefined.
@@ -48,6 +49,7 @@ public:
     static Value number(double value);
     static Value string(std::string_view value);
     static Value object(ObjectPtr value);
+    static Value symbol(uint64_t id);
 
     // Type predicates
     [[nodiscard]] ValueKind kind() const;
@@ -57,6 +59,7 @@ public:
     [[nodiscard]] bool is_number() const;
     [[nodiscard]] bool is_string() const;
     [[nodiscard]] bool is_object() const;
+    [[nodiscard]] bool is_symbol() const;
 
     // Accessors
     [[nodiscard]] bool as_bool() const;
@@ -71,6 +74,8 @@ public:
     [[nodiscard]] ObjectPtr as_object() const;
     // Returns raw pointer without incrementing ref count. Valid as long as Value is alive.
     [[nodiscard]] RcObject* as_object_raw() const;
+    // Returns the symbol id (only valid if is_symbol()).
+    [[nodiscard]] uint64_t as_symbol_id() const;
 
 private:
     static constexpr int32_t kTagObject    = -1;
@@ -78,6 +83,7 @@ private:
     static constexpr int32_t kTagBool      = -3;
     static constexpr int32_t kTagNull      = -4;
     static constexpr int32_t kTagUndefined = -5;
+    static constexpr int32_t kTagSymbol    = -6;
     static constexpr uint64_t kPayloadMask = (1ULL << 48) - 1;
     // Canonical quiet NaN used to represent all NaN doubles.
     static constexpr uint64_t kCanonicalNaN = 0x7FF8'0000'0000'0000ULL;
