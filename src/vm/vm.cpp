@@ -44,7 +44,7 @@ bool VM::to_boolean(const Value& v) {
         double n = v.as_number();
         return n != 0.0 && !std::isnan(n);
     }
-    case ValueKind::String:  return !v.as_string().empty();
+    case ValueKind::String:  return !v.sv().empty();
     case ValueKind::Object:  return true;
     case ValueKind::Symbol:  return true;
     }

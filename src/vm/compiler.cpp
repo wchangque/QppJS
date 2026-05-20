@@ -549,6 +549,7 @@ void Compiler::compile_expr(const ExprNode& expr) {
             },
             [this](const TemplateLiteral& e) { compile_template_literal(e); },
             [this](const ArrowFunctionExpression& e) { compile_arrow_function_expr(e); },
+            [this](const ConditionalExpression& e) { compile_conditional_expr(e); },
         },
         expr.v);
 }
@@ -651,6 +652,16 @@ void Compiler::compile_logical(const LogicalExpression& expr) {
         compile_expr(*expr.right);
         patch_jump(patch);
     }
+}
+
+void Compiler::compile_conditional_expr(const ConditionalExpression& expr) {
+    compile_expr(*expr.condition);
+    size_t patch1 = emit_jump(Opcode::kJumpIfFalse);
+    compile_expr(*expr.consequent);
+    size_t patch2 = emit_jump(Opcode::kJump);
+    patch_jump(patch1);
+    compile_expr(*expr.alternate);
+    patch_jump(patch2);
 }
 
 void Compiler::compile_assignment(const AssignmentExpression& expr) {

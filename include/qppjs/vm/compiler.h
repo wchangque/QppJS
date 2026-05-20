@@ -77,6 +77,7 @@ private:
     void compile_unary(const UnaryExpression& expr);
     void compile_binary(const BinaryExpression& expr);
     void compile_logical(const LogicalExpression& expr);
+    void compile_conditional_expr(const ConditionalExpression& expr);
     void compile_assignment(const AssignmentExpression& expr);
     void compile_object_expr(const ObjectExpression& expr);
     void compile_member_expr(const MemberExpression& expr);

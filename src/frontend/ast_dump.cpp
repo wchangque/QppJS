@@ -290,6 +290,15 @@ std::string dump_expr(const ExprNode& node, int indent) {
                                result += dump_stmt(s, indent + 2);
                            }
                        },
+                       [&](const ConditionalExpression& ce) {
+                           result = prefix + "ConditionalExpression\n";
+                           result += ind(indent + 1) + "condition:\n";
+                           result += dump_expr(*ce.condition, indent + 2);
+                           result += ind(indent + 1) + "then:\n";
+                           result += dump_expr(*ce.consequent, indent + 2);
+                           result += ind(indent + 1) + "else:\n";
+                           result += dump_expr(*ce.alternate, indent + 2);
+                       },
                },
                node.v);
 

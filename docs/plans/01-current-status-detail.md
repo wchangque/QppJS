@@ -4,6 +4,27 @@
 
 ## 1. 已完成任务
 
+- [x] **三元运算符 Testing Agent 边界补测**（2026-05-20）：
+  - 追加 40 个测试（CE-26～CE-45 Interp + CE-46～CE-65 VM）
+  - 覆盖 6 大盲区：
+    1. 异常传播：未声明变量作为条件抛 ReferenceError；条件中 getter 抛异常向上传播；被选中分支 getter 抛异常传播（CE-26/27/30 × Interp+VM）
+    2. 短路副作用验证：true 条件下 else getter 不调用；false 条件下 then getter 不调用（CE-28/29 × 2）
+    3. 嵌套三元：(nested) ? d : e 作为外层条件；三层右结合深嵌套（CE-31/32 × 2）
+    4. 函数调用副作用：条件函数恰好调用一次；仅被选分支函数执行（CE-33/34 × 2）
+    5. 逻辑运算符混合：&& / || 作为条件；&& / || 在分支中（结果是操作数值而非 ToBoolean 值）（CE-35~38 × 2）
+    6. 结果用途与控制流：函数参数 Math.abs/Math.max；对象属性赋值；数组元素；while 条件；return 链式三元；for 条件；NaN 为 falsy（CE-39~45 × 2）
+  - 3388/3388 通过（coverage）
+
+- [x] **三元运算符 `?:`（ConditionalExpression）**（2026-05-20）：
+  - AST：`ConditionalExpression` struct（condition/consequent/alternate/range）加入 `ExprNode` variant（ast.h）
+  - Parser：`lbp(Question)=4`；`led(Question)` 使用 `parse_expr(1)` 解析 then/else（允许 AssignmentExpression，lbp=2>1）；右结合性由 parse_expr(1) 递归自然产生；`expr_range` 补全 ConditionalExpression arm（parser.cpp）
+  - AST Dump：`ast_dump.cpp` 添加 ConditionalExpression 输出（condition/then/else 子树）
+  - Interpreter：`interpreter.h` 声明 + `interpreter.cpp` 实现 `eval_conditional_expr`（短路求值，错误透传）；`eval_expr` visitor 添加 ConditionalExpression lambda
+  - Compiler：`compiler.h` 声明 + `compiler.cpp` 实现 `compile_conditional_expr`（两标签三段式：kJumpIfFalse → consequent → kJump → alternate）；`compile_expr` visitor 添加 ConditionalExpression lambda
+  - 顺带修复 P2：`to_boolean` 字符串分支 `!v.as_string().empty()` → `!v.sv().empty()`（interpreter.cpp + vm.cpp 各 1 处，避免堆分配）
+  - 测试：`conditional_expression_test.cpp`（CE-01～CE-05 Parser + CE-06～CE-15 Interp + CE-16～CE-25 VM = 25 个测试）
+  - 3348/3348 通过（coverage），3346/3346（run_ut ASAN），0 LSan 泄漏
+
 - [x] **String/Boolean 构造函数测试修复**（2026-05-19）：
   - `string_prototype_` 新增 `valueOf` 方法：this 为 string primitive 直接返回，kStringObject 返回 wrapped_value_，其他 TypeError（interpreter.cpp + vm.cpp）
   - `string_prototype_` 新增 `toString` 方法：逻辑同 valueOf（interpreter.cpp + vm.cpp）

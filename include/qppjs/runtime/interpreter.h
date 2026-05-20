@@ -65,6 +65,7 @@ private:
     EvalResult eval_unary(const UnaryExpression& expr);
     EvalResult eval_binary(const BinaryExpression& expr);
     EvalResult eval_logical(const LogicalExpression& expr);
+    EvalResult eval_conditional_expr(const ConditionalExpression& expr);
     EvalResult eval_assignment(const AssignmentExpression& expr);
     EvalResult eval_object_expr(const ObjectExpression& expr);
     EvalResult eval_member_expr(const MemberExpression& expr);

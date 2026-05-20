@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 3323/3323 通过（coverage），3321/3321（run_ut ASAN），0 LSan 泄漏 |
-| 最近更新 | 2026-05-19 |
-| 下一步 | 继续提升 test262 通过率（三元运算符、for...in/for...of、解构、spread/rest 等） |
+| 测试计数 | 3388/3388 通过（coverage），3346/3346（run_ut ASAN），0 LSan 泄漏 |
+| 最近更新 | 2026-05-20 |
+| 下一步 | 继续提升 test262 通过率（for...in/for...of、解构、spread/rest、in 运算符等） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
@@ -22,6 +22,10 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **三元运算符 Testing Agent 边界补测**（2026-05-20）：追加 40 个测试（CE-26～CE-45 Interp + CE-46～CE-65 VM）。覆盖：未声明变量作为条件抛 ReferenceError（CE-26/46）；条件中 getter 抛异常向上传播（CE-27/47）；短路——true 条件 else 分支 getter 不被调用（CE-28/48）；短路——false 条件 then 分支 getter 不被调用（CE-29/49）；被选中分支 getter 抛异常仍传播（CE-30/50）；嵌套三元作为外层条件（CE-31/51）；三层深嵌套三元（CE-32/52）；条件函数恰好调用一次（CE-33/53）；仅被选中分支函数执行（CE-34/54）；逻辑 && 作为条件（CE-35/55）；逻辑 || 作为条件（CE-36/56）；逻辑 && 在 then 分支（结果是操作数值）（CE-37/57）；逻辑 || 在 else 分支（CE-38/58）；三元结果作为函数参数（Math.abs/Math.max）（CE-39/59）；三元结果赋值给对象属性（CE-40/60）；三元结果作为数组元素（CE-41/61）；while 条件中使用三元（CE-42/62）；return 中使用链式三元（CE-43/63）；for 条件中使用三元（CE-44/64）；NaN 为 falsy（CE-45/65）。3388/3388 通过（coverage）。
+
+- [x] **三元运算符 `?:`（ConditionalExpression）**（2026-05-20）：`ConditionalExpression` AST 节点（condition/consequent/alternate）；`lbp(Question)=4`；`led(Question)` 使用 `parse_expr(1)` 允许 AssignmentExpression 级别的 then/else；`expr_range` + `ast_dump` 补全；Interpreter `eval_conditional_expr` 短路求值；Compiler `compile_conditional_expr` 两标签三段式；VM 复用现有 `kJumpIfFalse`/`kJump`；顺带修复 `to_boolean` 字符串分支（interpreter.cpp + vm.cpp 各 1 处，`as_string()` → `sv()` 避免堆分配）。新增 25 个测试（CE-01～CE-05 Parser + CE-06～CE-15 Interp + CE-16～CE-25 VM）。3348/3348 通过（coverage），0 LSan 泄漏。
 
 - [x] **String/Boolean 构造函数测试修复**（2026-05-19）：`string_prototype_` 新增 `valueOf`/`toString` 方法（this 为 string primitive 直接返回，kStringObject 返回 wrapped_value_，其他 TypeError）；`String.fromCharCode` ToUint16 修正——将 `static_cast<uint32_t>` 中间转换改为 `fmod(trunc_n, 65536.0) + 负数修正` 正确处理负数参数（-1 → 65535 = U+FFFF）；Interpreter + VM 两侧对称。修复 6 个失败测试（SB-24/25/26 × Interp+VM）。3323/3323 通过（coverage），3321/3321（run_ut ASAN），0 LSan 泄漏。
 

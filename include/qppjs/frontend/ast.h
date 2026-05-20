@@ -184,6 +184,14 @@ struct UpdateExpression {
     SourceRange range;
 };
 
+// 三元条件表达式 condition ? consequent : alternate
+struct ConditionalExpression {
+    std::unique_ptr<ExprNode> condition;
+    std::unique_ptr<ExprNode> consequent;
+    std::unique_ptr<ExprNode> alternate;
+    SourceRange range;
+};
+
 // async 函数表达式 async function [name](params) { body }
 struct AsyncFunctionExpression {
     std::optional<std::string> name;
@@ -215,7 +223,7 @@ struct ExprNode {
                  FunctionExpression, CallExpression, NewExpression, ArrayExpression,
                  AwaitExpression, UpdateExpression, AsyncFunctionExpression,
                  MetaProperty, ImportCallExpression, RegexLiteral, TemplateLiteral,
-                 ArrowFunctionExpression>
+                 ArrowFunctionExpression, ConditionalExpression>
             v;
 
     ExprNode() = default;

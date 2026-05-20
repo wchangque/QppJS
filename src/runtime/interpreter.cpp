@@ -3284,7 +3284,7 @@ bool Interpreter::to_boolean(const Value& v) {
         return n != 0.0 && !std::isnan(n);
     }
     case ValueKind::String:
-        return !v.as_string().empty();
+        return !v.sv().empty();
     case ValueKind::Object:
         return true;
     case ValueKind::Symbol:
@@ -3890,6 +3890,7 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const RegexLiteral& e) { return eval_regex_literal(e); },
             [this](const TemplateLiteral& e) { return eval_template_literal(e); },
             [this](const ArrowFunctionExpression& e) { return eval_arrow_function_expr(e); },
+            [this](const ConditionalExpression& e) { return eval_conditional_expr(e); },
         },
         expr.v);
 }
@@ -4444,6 +4445,15 @@ EvalResult Interpreter::eval_logical(const LogicalExpression& expr) {
         return eval_expr(*expr.right);
     }
     return EvalResult::ok(Value::undefined());
+}
+
+EvalResult Interpreter::eval_conditional_expr(const ConditionalExpression& expr) {
+    auto cond = eval_expr(*expr.condition);
+    if (!cond.is_ok()) return cond;
+    if (to_boolean(cond.value()))
+        return eval_expr(*expr.consequent);
+    else
+        return eval_expr(*expr.alternate);
 }
 
 EvalResult Interpreter::eval_assignment(const AssignmentExpression& expr) {

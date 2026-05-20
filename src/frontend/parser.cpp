@@ -384,6 +384,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const RegexLiteral& n) { return n.range; },
                               [](const TemplateLiteral& n) { return n.range; },
                               [](const ArrowFunctionExpression& n) { return n.range; },
+                              [](const ConditionalExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -510,6 +511,8 @@ struct Parser {
             case TokenKind::SlashEq:
             case TokenKind::PercentEq:
                 return 2;
+            case TokenKind::Question:
+                return 4;
             case TokenKind::PipePipe:
                 return 4;
             case TokenKind::AmpAmp:
@@ -1152,6 +1155,23 @@ struct Parser {
         }
 
         // || 和 &&：LogicalExpression
+        // 条件（三元）表达式：condition ? consequent : alternate
+        // parse_expr(1): 允许 AssignmentExpression（lbp=2>1），停在逗号（lbp=0）处
+        if (kind == TokenKind::Question) {
+            auto then_result = parse_expr(1);
+            if (!then_result.ok()) return then_result;
+            auto colon = expect(TokenKind::Colon);
+            if (!colon.ok()) return ParseResult<ExprNode>::Err(colon.error());
+            auto else_result = parse_expr(1);
+            if (!else_result.ok()) return else_result;
+            auto r = span(expr_range(left).offset, range_end(expr_range(else_result.value())));
+            return ParseResult<ExprNode>::Ok(ExprNode{ConditionalExpression{
+                std::make_unique<ExprNode>(std::move(left)),
+                std::make_unique<ExprNode>(std::move(then_result.value())),
+                std::make_unique<ExprNode>(std::move(else_result.value())),
+                r}});
+        }
+
         if (kind == TokenKind::PipePipe || kind == TokenKind::AmpAmp) {
             auto right = parse_expr(bp);
             if (!right.ok()) return right;
