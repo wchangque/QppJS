@@ -467,6 +467,51 @@ std::vector<std::string> JSObject::own_enumerable_string_keys() const {
     return result;
 }
 
+std::vector<std::string> JSObject::enumerate_properties() const {
+    // P1 fast path: no prototype chain, just return own keys directly.
+    if (proto_ == nullptr) {
+        return own_enumerable_string_keys();
+    }
+    // Walk the prototype chain, collecting enumerable string keys and deduplicating.
+    // Shadowing rule (ES spec): an own property (even non-enumerable) must prevent an
+    // inherited property with the same name from appearing in the result.
+    std::vector<std::string> result;
+    std::unordered_set<std::string> seen;
+    const JSObject* cur = this;
+    while (cur != nullptr) {
+        // For arrays: enumerate integer indices from elements_ (sorted), then named properties.
+        // Without this, arrays with a prototype (i.e. all normal arrays) skip their elements_.
+        if (cur->object_kind() == ObjectKind::kArray) {
+            std::vector<uint32_t> indices;
+            indices.reserve(cur->elements_.size());
+            for (const auto& [k, v] : cur->elements_) {
+                indices.push_back(k);
+            }
+            std::sort(indices.begin(), indices.end());
+            for (uint32_t idx : indices) {
+                std::string key = std::to_string(idx);
+                bool is_new = seen.insert(key).second;
+                if (is_new) {
+                    result.push_back(key);
+                }
+            }
+        }
+        // Iterate all own string property entries (preserves insertion order via properties_).
+        for (size_t i = 0; i < cur->properties_.size(); ++i) {
+            const auto& entry = cur->properties_[i];
+            auto it = cur->index_map_.find(entry.key);
+            if (it == cur->index_map_.end() || it->second != i) continue;  // stale/deleted slot
+            // Always insert into seen so that non-enumerable own keys shadow inherited ones.
+            bool is_new = seen.insert(entry.key).second;
+            if (is_new && (entry.flags & kPropEnumerable)) {
+                result.push_back(entry.key);
+            }
+        }
+        cur = cur->proto_.get();
+    }
+    return result;
+}
+
 Value JSObject::get_property_by_symbol(uint64_t symbol_id) const {
     if (symbol_index_ && symbol_props_) {
         auto it = symbol_index_->find(symbol_id);

@@ -450,6 +450,18 @@ std::string dump_stmt(const StmtNode& node, int indent) {
                            result += ind(indent + 1) + "body:\n";
                            result += dump_stmt(*fs.body, indent + 2);
                        },
+                       [&](const ForInStatement& fi) {
+                           std::string decl_info = fi.has_decl
+                               ? (fi.var_kind == VarKind::Var     ? "var"
+                                  : fi.var_kind == VarKind::Let   ? "let"
+                                                                  : "const")
+                               : "(no decl)";
+                           result = prefix + "ForInStatement " + decl_info + " " + fi.binding + "\n";
+                           result += ind(indent + 1) + "right:\n";
+                           result += dump_expr(*fi.right, indent + 2);
+                           result += ind(indent + 1) + "body:\n";
+                           result += dump_stmt(*fi.body, indent + 2);
+                       },
                        [&](const ImportDeclaration& id) {
                            result = prefix + "ImportDeclaration \"" + id.specifier + "\"\n";
                            for (const auto& spec : id.specifiers) {

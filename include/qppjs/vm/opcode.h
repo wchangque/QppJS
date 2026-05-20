@@ -110,7 +110,10 @@ namespace qppjs {
     /* delete operator */              \
     X(DeleteProp, 2)                   \
     X(DeleteElem, 0)                   \
-    X(DeleteVar, 2)
+    X(DeleteVar, 2)                    \
+    /* for...in */                     \
+    X(ForInStart, 0)                   \
+    X(ForInNext, 0)
 
 enum class Opcode : uint8_t {
 #define X(name, _operand_bytes) k##name,

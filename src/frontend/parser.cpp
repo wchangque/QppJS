@@ -406,6 +406,7 @@ static SourceRange stmt_range(const StmtNode& s) {
                               [](const ContinueStatement& n) { return n.range; },
                               [](const LabeledStatement& n) { return n.range; },
                               [](const ForStatement& n) { return n.range; },
+                              [](const ForInStatement& n) { return n.range; },
                               [](const ImportDeclaration& n) { return n.range; },
                               [](const ExportNamedDeclaration& n) { return n.range; },
                               [](const ExportDefaultDeclaration& n) { return n.range; },
@@ -424,6 +425,9 @@ struct Parser {
     bool in_async_function_; // P2-E: await 只在 async 函数体内有效
     bool in_module_;         // TLA: 模块顶层上下文，允许 await 表达式
     bool in_module_context_; // import.meta: 模块内任意位置（含函数体）均合法
+    // When true, the `in` identifier is not treated as a binary operator.
+    // Set during the LHS of for...in to prevent ambiguity with the `in` keyword.
+    bool no_in_ = false;
 
     explicit Parser(std::string_view src, bool is_module = false)
         : source(src), lex(lexer_init(src)), cur{TokenKind::Eof, {0, 0}}, got_lf(false),
@@ -1676,33 +1680,188 @@ struct Parser {
         return ParseResult<StmtNode>::Ok(StmtNode{ContinueStatement{std::move(label), span(kw.range.offset, end)}});
     }
 
+    // Returns true if cur is the identifier "in" (not a keyword, just contextual).
+    bool is_in_token() const {
+        return cur.kind == TokenKind::Ident && token_text(cur) == "in";
+    }
+
     ParseResult<StmtNode> parse_for_stmt() {
         Token kw = cur;
         advance();  // 消费 for
         auto lp = expect(TokenKind::LParen);
         if (!lp.ok()) return ParseResult<StmtNode>::Err(lp.error());
 
-        // init（var/let/const 声明会内部消费分号；表达式 init 需要在外层消费分号）
-        std::optional<std::unique_ptr<StmtNode>> init;
-        bool var_decl_init = false;
-        if (cur.kind != TokenKind::Semicolon) {
-            if (cur.kind == TokenKind::KwLet || cur.kind == TokenKind::KwConst || cur.kind == TokenKind::KwVar) {
-                auto init_stmt = parse_var_decl();
-                if (!init_stmt.ok()) return init_stmt;
-                init = std::make_unique<StmtNode>(std::move(init_stmt.value()));
-                var_decl_init = true;
-            } else {
-                auto expr = parse_expr(0);
-                if (!expr.ok()) return ParseResult<StmtNode>::Err(expr.error());
-                SourceRange er = expr_range(expr.value());
-                init = std::make_unique<StmtNode>(StmtNode{ExpressionStatement{std::move(expr.value()), er}});
+        // ---- for...in 检测 ----
+        // Case 1: for (var/let/const binding in right)
+        if (cur.kind == TokenKind::KwVar || cur.kind == TokenKind::KwLet || cur.kind == TokenKind::KwConst) {
+            VarKind var_kind = (cur.kind == TokenKind::KwVar)   ? VarKind::Var
+                               : (cur.kind == TokenKind::KwLet) ? VarKind::Let
+                                                                 : VarKind::Const;
+            Token kw_tok = cur;
+            advance();  // 消费 var/let/const
+            // Must be followed by an identifier (binding name)
+            if (cur.kind == TokenKind::Ident) {
+                std::string binding_name{token_text(cur)};
+                Token id_tok = cur;
+                advance();  // 消费 binding name
+                // Check for `in`
+                if (is_in_token()) {
+                    advance();  // 消费 `in`
+                    auto right = parse_expr(0);
+                    if (!right.ok()) return ParseResult<StmtNode>::Err(right.error());
+                    auto rp = expect(TokenKind::RParen);
+                    if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
+                    bool saved_top = is_top_level_;
+                    is_top_level_ = false;
+                    auto body = parse_stmt();
+                    is_top_level_ = saved_top;
+                    if (!body.ok()) return body;
+                    uint32_t end = range_end(stmt_range(body.value()));
+                    return ParseResult<StmtNode>::Ok(StmtNode{ForInStatement{
+                            true, var_kind, std::move(binding_name),
+                            std::make_unique<ExprNode>(std::move(right.value())),
+                            std::make_unique<StmtNode>(std::move(body.value())),
+                            span(kw.range.offset, end)}});
+                }
+                // Not for...in — reconstruct a var_decl init and fall through to ForStatement.
+                // Build a VariableDeclaration StmtNode manually.
+                std::optional<ExprNode> var_init;
+                SourceRange decl_end = id_tok.range;
+                if (cur.kind == TokenKind::Eq) {
+                    advance();  // 消费 =
+                    auto init_expr = parse_expr(0);
+                    if (!init_expr.ok()) return ParseResult<StmtNode>::Err(init_expr.error());
+                    decl_end = expr_range(init_expr.value());
+                    var_init = std::move(init_expr.value());
+                }
+                auto semi1 = expect(TokenKind::Semicolon);
+                if (!semi1.ok()) return ParseResult<StmtNode>::Err(semi1.error());
+                SourceRange decl_range = span(kw_tok.range.offset, range_end(decl_end));
+                auto init_node = std::make_unique<StmtNode>(StmtNode{VariableDeclaration{
+                        var_kind, std::move(binding_name), std::move(var_init), decl_range}});
+
+                // test
+                std::optional<ExprNode> test;
+                if (cur.kind != TokenKind::Semicolon) {
+                    auto t = parse_expr(0);
+                    if (!t.ok()) return ParseResult<StmtNode>::Err(t.error());
+                    test = std::move(t.value());
+                }
+                {
+                    auto semi2 = expect(TokenKind::Semicolon);
+                    if (!semi2.ok()) return ParseResult<StmtNode>::Err(semi2.error());
+                }
+                // update
+                std::optional<ExprNode> update;
+                if (cur.kind != TokenKind::RParen) {
+                    auto u = parse_expr(0);
+                    if (!u.ok()) return ParseResult<StmtNode>::Err(u.error());
+                    update = std::move(u.value());
+                }
+                {
+                    auto rp2 = expect(TokenKind::RParen);
+                    if (!rp2.ok()) return ParseResult<StmtNode>::Err(rp2.error());
+                }
+                bool saved_top = is_top_level_;
+                is_top_level_ = false;
+                auto body = parse_stmt();
+                is_top_level_ = saved_top;
+                if (!body.ok()) return body;
+                uint32_t for_end = range_end(stmt_range(body.value()));
+                return ParseResult<StmtNode>::Ok(StmtNode{ForStatement{
+                        std::move(init_node), std::move(test), std::move(update),
+                        std::make_unique<StmtNode>(std::move(body.value())),
+                        span(kw.range.offset, for_end)}});
             }
+            // Not an ident after var/let/const — fall through to normal ForStatement parsing
+            // by re-invoking parse_var_decl won't work cleanly since we consumed the keyword.
+            // Handle by building the VariableDeclaration: cur must have been a non-ident token.
+            // This is a rare case (e.g. `for (var ; ...)`) — use parse_var_decl-like logic here.
+            // Actually: parse the rest of the declaration (may have no binding name at all).
+            // For simplicity, return a parse error since `for (var ; ...)` is not valid JS.
+            return ParseResult<StmtNode>::Err(
+                    make_parse_error(source, cur, "expected identifier after var/let/const in for statement"));
         }
-        // 若 init 是 var_decl，分号已被 parse_var_decl 消费；否则显式消费
-        if (!var_decl_init) {
+
+        // Case 2: for (expr in right) — no declaration, existing variable
+        if (cur.kind != TokenKind::Semicolon) {
+            // Save no_in_ state and set to true to prevent `in` from being parsed as binary op
+            bool saved_no_in = no_in_;
+            no_in_ = true;
+            auto expr = parse_expr(0);
+            no_in_ = saved_no_in;
+            if (!expr.ok()) return ParseResult<StmtNode>::Err(expr.error());
+
+            // Check if this is for...in
+            if (is_in_token()) {
+                // LHS must be an identifier for simple binding
+                if (!std::holds_alternative<Identifier>(expr.value().v)) {
+                    return ParseResult<StmtNode>::Err(
+                            make_parse_error(source, cur, "invalid for...in left-hand side"));
+                }
+                std::string binding_name = std::get<Identifier>(expr.value().v).name;
+                advance();  // 消费 `in`
+                auto right = parse_expr(0);
+                if (!right.ok()) return ParseResult<StmtNode>::Err(right.error());
+                auto rp = expect(TokenKind::RParen);
+                if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
+                bool saved_top = is_top_level_;
+                is_top_level_ = false;
+                auto body = parse_stmt();
+                is_top_level_ = saved_top;
+                if (!body.ok()) return body;
+                uint32_t end = range_end(stmt_range(body.value()));
+                return ParseResult<StmtNode>::Ok(StmtNode{ForInStatement{
+                        false, VarKind::Var /* unused */, std::move(binding_name),
+                        std::make_unique<ExprNode>(std::move(right.value())),
+                        std::make_unique<StmtNode>(std::move(body.value())),
+                        span(kw.range.offset, end)}});
+            }
+
+            // Not for...in: treat as ForStatement with expression init
+            SourceRange er = expr_range(expr.value());
+            auto init = std::make_unique<StmtNode>(StmtNode{ExpressionStatement{std::move(expr.value()), er}});
+
             auto semi1 = expect(TokenKind::Semicolon);
             if (!semi1.ok()) return ParseResult<StmtNode>::Err(semi1.error());
+
+            // test
+            std::optional<ExprNode> test;
+            if (cur.kind != TokenKind::Semicolon) {
+                auto t = parse_expr(0);
+                if (!t.ok()) return ParseResult<StmtNode>::Err(t.error());
+                test = std::move(t.value());
+            }
+            {
+                auto semi2 = expect(TokenKind::Semicolon);
+                if (!semi2.ok()) return ParseResult<StmtNode>::Err(semi2.error());
+            }
+            // update
+            std::optional<ExprNode> update;
+            if (cur.kind != TokenKind::RParen) {
+                auto u = parse_expr(0);
+                if (!u.ok()) return ParseResult<StmtNode>::Err(u.error());
+                update = std::move(u.value());
+            }
+            {
+                auto rp2 = expect(TokenKind::RParen);
+                if (!rp2.ok()) return ParseResult<StmtNode>::Err(rp2.error());
+            }
+            bool saved_top = is_top_level_;
+            is_top_level_ = false;
+            auto body = parse_stmt();
+            is_top_level_ = saved_top;
+            if (!body.ok()) return body;
+            uint32_t for_end = range_end(stmt_range(body.value()));
+            return ParseResult<StmtNode>::Ok(StmtNode{ForStatement{
+                    std::move(init), std::move(test), std::move(update),
+                    std::make_unique<StmtNode>(std::move(body.value())),
+                    span(kw.range.offset, for_end)}});
         }
+
+        // Case 3: for (; ...) — empty init
+        auto semi1 = expect(TokenKind::Semicolon);
+        if (!semi1.ok()) return ParseResult<StmtNode>::Err(semi1.error());
 
         // test
         std::optional<ExprNode> test;
@@ -1735,7 +1894,7 @@ struct Parser {
         if (!body.ok()) return body;
         uint32_t for_end = range_end(stmt_range(body.value()));
         return ParseResult<StmtNode>::Ok(StmtNode{ForStatement{
-                std::move(init), std::move(test), std::move(update),
+                std::nullopt, std::move(test), std::move(update),
                 std::make_unique<StmtNode>(std::move(body.value())),
                 span(kw.range.offset, for_end)}});
     }

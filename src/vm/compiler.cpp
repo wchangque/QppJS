@@ -161,6 +161,18 @@ void Compiler::hoist_vars_scan_stmt(const StmtNode& stmt) {
         const auto& for_stmt = std::get<ForStatement>(stmt.v);
         if (for_stmt.init.has_value()) hoist_vars_scan_stmt(**for_stmt.init);
         if (for_stmt.body) hoist_vars_scan_stmt(*for_stmt.body);
+    } else if (std::holds_alternative<ForInStatement>(stmt.v)) {
+        const auto& for_in = std::get<ForInStatement>(stmt.v);
+        if (for_in.has_decl && for_in.var_kind == VarKind::Var) {
+            // Hoist var binding (same as a var declaration)
+            uint16_t idx = add_name(for_in.binding);
+            bool found = false;
+            for (uint16_t v : current_->var_decls) {
+                if (v == idx) { found = true; break; }
+            }
+            if (!found) current_->var_decls.push_back(idx);
+        }
+        if (for_in.body) hoist_vars_scan_stmt(*for_in.body);
     } else if (std::holds_alternative<TryStatement>(stmt.v)) {
         const auto& try_stmt = std::get<TryStatement>(stmt.v);
         hoist_vars_scan(try_stmt.block.body);
@@ -309,6 +321,7 @@ void Compiler::compile_stmt(const StmtNode& stmt) {
             [this](const ContinueStatement& s) { compile_continue_stmt(s); },
             [this](const LabeledStatement& s) { compile_labeled_stmt(s); },
             [this](const ForStatement& s) { compile_for_stmt(s); },
+            [this](const ForInStatement& s) { compile_for_in_stmt(s); },
             [](const ImportDeclaration&) {
                 // Link 阶段已处理，编译时 no-op
             },
@@ -1060,9 +1073,20 @@ void Compiler::compile_break_stmt(const BreakStatement& stmt) {
                 size_t gosub_pos = emit_jump(Opcode::kGosub);
                 fi_it->gosub_patches.push_back(gosub_pos);
             }
+            // If this is a lexical for-in, pop the per-iteration scope before breaking.
+            if (it->is_for_in && it->for_in_has_scope) {
+                emit(Opcode::kPopScope);
+            }
             size_t patch_pos = emit_jump(Opcode::kJump);
             it->break_patches.push_back(patch_pos);
             return;
+        }
+        // Crossing this loop without targeting it: pop its for-in scope+iterator from the stack.
+        if (it->is_for_in) {
+            if (it->for_in_has_scope) {
+                emit(Opcode::kPopScope);
+            }
+            emit(Opcode::kPop);
         }
     }
     assert(false && "break: no matching loop");
@@ -1078,9 +1102,18 @@ void Compiler::compile_continue_stmt(const ContinueStatement& stmt) {
                 size_t gosub_pos = emit_jump(Opcode::kGosub);
                 fi_it->gosub_patches.push_back(gosub_pos);
             }
+            // For a lexical for-in continue, label_continue already emits kPopScope before
+            // jumping to label_check — no extra emit needed here.
             size_t patch_pos = emit_jump(Opcode::kJump);
             it->continue_patches.push_back(patch_pos);
             return;
+        }
+        // Crossing this loop without targeting it: pop its for-in scope+iterator.
+        if (it->is_for_in) {
+            if (it->for_in_has_scope) {
+                emit(Opcode::kPopScope);
+            }
+            emit(Opcode::kPop);
         }
     }
     assert(false && "continue: no matching loop");
@@ -1089,6 +1122,8 @@ void Compiler::compile_continue_stmt(const ContinueStatement& stmt) {
 void Compiler::compile_labeled_stmt(const LabeledStatement& stmt) {
     if (std::holds_alternative<ForStatement>(stmt.body->v)) {
         compile_for_stmt(std::get<ForStatement>(stmt.body->v), stmt.label);
+    } else if (std::holds_alternative<ForInStatement>(stmt.body->v)) {
+        compile_for_in_stmt(std::get<ForInStatement>(stmt.body->v), stmt.label);
     } else if (std::holds_alternative<WhileStatement>(stmt.body->v)) {
         compile_while_stmt(std::get<WhileStatement>(stmt.body->v), stmt.label);
     } else {
@@ -1147,6 +1182,82 @@ void Compiler::compile_for_stmt(const ForStatement& stmt, std::optional<std::str
     loop_env_stack_.pop_back();
 
     emit(Opcode::kPopScope);
+}
+
+void Compiler::compile_for_in_stmt(const ForInStatement& stmt, std::optional<std::string> label) {
+    bool need_scope = stmt.has_decl && stmt.var_kind != VarKind::Var;
+    uint16_t name_idx = add_name(stmt.binding);
+
+    // Evaluate RHS in outer scope and build iterator.
+    compile_expr(*stmt.right);
+    emit(Opcode::kForInStart);
+    // Jump forward to label_check (first condition test).
+    size_t jump_to_check = emit_jump(Opcode::kJump);
+
+    // label_body_start: entered each iteration when done=false.
+    // Stack on entry: [iter, key]
+    size_t label_body_start = current_offset();
+
+    if (need_scope) {
+        // Per-iteration scope: each iteration gets its own environment for let/const.
+        emit(Opcode::kPushScope);
+        emit(stmt.var_kind == VarKind::Let ? Opcode::kDefLet : Opcode::kDefConst);
+        emit_u16(name_idx);
+        emit(Opcode::kInitVar);
+        emit_u16(name_idx);
+        emit(Opcode::kPop);  // kInitVar pushes the value back; discard it
+    } else {
+        // var or no_decl: assign key to binding.
+        emit(Opcode::kSetVar);
+        emit_u16(name_idx);
+        emit(Opcode::kPop);
+    }
+
+    // Push LoopEnv; break/continue handlers consult for_in_has_scope to emit kPopScope.
+    loop_env_stack_.push_back({label, 0, {}, {}, {}, /*is_for_in=*/true, /*for_in_has_scope=*/need_scope});
+    compile_stmt(*stmt.body);
+
+    // Normal end of iteration: pop per-iteration scope and jump to condition check.
+    if (need_scope) {
+        emit(Opcode::kPopScope);
+    }
+    size_t jump_body_to_check = emit_jump(Opcode::kJump);  // → label_check (patched below)
+
+    // label_continue: continue patches target here.
+    // Must pop the per-iteration scope before re-testing the condition.
+    size_t label_continue = current_offset();
+    loop_env_stack_.back().continue_target = label_continue;
+    for (size_t p : loop_env_stack_.back().continue_patches) {
+        patch_jump_to(p, label_continue);
+    }
+    if (need_scope) {
+        emit(Opcode::kPopScope);
+    }
+    size_t jump_cont_to_check = emit_jump(Opcode::kJump);  // → label_check (patched below)
+
+    // label_check: test whether iteration is done.
+    // Stack on entry: [iter]
+    size_t label_check = current_offset();
+    patch_jump_to(jump_to_check, label_check);
+    patch_jump_to(jump_body_to_check, label_check);
+    patch_jump_to(jump_cont_to_check, label_check);
+
+    emit(Opcode::kForInNext);
+    // done=false → jump back to label_body_start; stack leaves as [iter, key]
+    emit_jump_to(Opcode::kJumpIfFalse, label_body_start);
+    // done=true: pop undefined key; stack: [iter]
+    emit(Opcode::kPop);
+
+    // label_break: break patches (and done=true fall-through) land here.
+    // Stack on entry: [iter]
+    size_t label_break = current_offset();
+    for (size_t p : loop_env_stack_.back().break_patches) {
+        patch_jump_to(p, label_break);
+    }
+    loop_env_stack_.pop_back();
+
+    // Pop the iterator.
+    emit(Opcode::kPop);
 }
 
 void Compiler::compile_update_expr(const UpdateExpression& expr) {

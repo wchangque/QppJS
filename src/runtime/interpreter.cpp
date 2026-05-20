@@ -3406,6 +3406,12 @@ void Interpreter::hoist_vars_stmt(const StmtNode& stmt, Environment& var_target)
             }
         }
         hoist_vars_stmt(*for_stmt.body, var_target);
+    } else if (std::holds_alternative<ForInStatement>(stmt.v)) {
+        const auto& for_in = std::get<ForInStatement>(stmt.v);
+        if (for_in.has_decl && for_in.var_kind == VarKind::Var) {
+            var_target.define_initialized(for_in.binding);
+        }
+        hoist_vars_stmt(*for_in.body, var_target);
     } else if (std::holds_alternative<TryStatement>(stmt.v)) {
         const auto& try_stmt = std::get<TryStatement>(stmt.v);
         hoist_vars(try_stmt.block.body, var_target);
@@ -3649,6 +3655,7 @@ StmtResult Interpreter::eval_stmt(const StmtNode& stmt) {
             [this](const ContinueStatement& s) { return eval_continue_stmt(s); },
             [this](const LabeledStatement& s) { return eval_labeled_stmt(s); },
             [this](const ForStatement& s) { return eval_for_stmt(s); },
+            [this](const ForInStatement& s) { return eval_for_in_stmt(s); },
             [](const ImportDeclaration&) -> StmtResult {
                 // Link 阶段已处理，执行时 no-op
                 return StmtResult::ok(Completion::normal(Value::undefined()));
@@ -5046,6 +5053,8 @@ StmtResult Interpreter::eval_labeled_stmt(const LabeledStatement& stmt) {
     // Pass label directly to loops so they can handle labeled continue internally
     if (std::holds_alternative<ForStatement>(stmt.body->v)) {
         result = eval_for_stmt(std::get<ForStatement>(stmt.body->v), stmt.label);
+    } else if (std::holds_alternative<ForInStatement>(stmt.body->v)) {
+        result = eval_for_in_stmt(std::get<ForInStatement>(stmt.body->v), stmt.label);
     } else if (std::holds_alternative<WhileStatement>(stmt.body->v)) {
         result = eval_while_stmt(std::get<WhileStatement>(stmt.body->v), stmt.label);
     } else {
@@ -5139,6 +5148,107 @@ StmtResult Interpreter::eval_for_stmt(const ForStatement& stmt,
                                                    kPendingThrowSentinel);
                 return StmtResult::ok(Completion::throw_(std::move(thrown)));
             }
+        }
+    }
+
+    current_env_ = old_env;
+    return loop_result;
+}
+
+StmtResult Interpreter::eval_for_in_stmt(const ForInStatement& stmt,
+                                          std::optional<std::string> label) {
+    // Evaluate the right-hand side object
+    auto obj_r = eval_expr(*stmt.right);
+    if (!obj_r.is_ok()) {
+        if (obj_r.error().message() == kAsyncSuspendSentinel) {
+            return StmtResult::err(obj_r.error());
+        }
+        Value thrown = extract_throw_value(pending_throw_, obj_r.error().message(), kPendingThrowSentinel);
+        return StmtResult::ok(Completion::throw_(std::move(thrown)));
+    }
+    const Value& obj_val = obj_r.value();
+
+    // null/undefined → skip the loop entirely
+    if (obj_val.is_null() || obj_val.is_undefined()) {
+        return StmtResult::ok(Completion::normal(Value::undefined()));
+    }
+
+    // Non-object → no enumerable string keys, skip loop
+    if (!obj_val.is_object()) {
+        return StmtResult::ok(Completion::normal(Value::undefined()));
+    }
+
+    // Guard: only JSObject subclasses can be safely cast and enumerated.
+    // kFunction/kPromise/kEnvironment/kModule/kForInIterator are RcObject, not JSObject.
+    {
+        ObjectKind k = obj_val.as_object_raw()->object_kind();
+        if (k != ObjectKind::kOrdinary && k != ObjectKind::kArray &&
+            k != ObjectKind::kRegExp && k != ObjectKind::kStringObject &&
+            k != ObjectKind::kBooleanObject) {
+            return StmtResult::ok(Completion::normal(Value::undefined()));
+        }
+    }
+
+    JSObject* obj = static_cast<JSObject*>(obj_val.as_object_raw());
+    std::vector<std::string> keys = obj->enumerate_properties();
+
+    RcPtr<Environment> old_env = current_env_;
+    const bool is_lexical = stmt.has_decl && stmt.var_kind != VarKind::Var;
+
+    StmtResult loop_result = StmtResult::ok(Completion::normal(Value::undefined()));
+
+    for (const auto& key : keys) {
+        Value key_val = Value::string(key);
+
+        // Assign the key to the loop variable
+        if (stmt.has_decl && stmt.var_kind == VarKind::Var) {
+            var_env_->set(stmt.binding, key_val);
+        } else if (is_lexical) {
+            // let/const: create a fresh per-iteration scope so each iteration's closure
+            // captures an independent binding (ES spec per-iteration environment semantics).
+            auto iter_env = RcPtr<Environment>::make(old_env);
+            gc_heap_.Register(iter_env.get());
+            current_env_ = iter_env;
+            current_env_->define(stmt.binding, stmt.var_kind);
+            current_env_->initialize(stmt.binding, key_val);
+        } else {
+            // no_decl: assign to existing variable in scope chain
+            auto set_r = current_env_->set(stmt.binding, key_val);
+            if (!set_r.is_ok()) {
+                current_env_ = old_env;
+                Value thrown = extract_throw_value(pending_throw_, set_r.error().message(),
+                                                   kPendingThrowSentinel);
+                return StmtResult::ok(Completion::throw_(std::move(thrown)));
+            }
+        }
+
+        // Execute loop body
+        auto body_r = eval_stmt(*stmt.body);
+        if (is_lexical) {
+            current_env_ = old_env;
+        }
+        if (!body_r.is_ok()) {
+            current_env_ = old_env;
+            return body_r;
+        }
+        const Completion& c = body_r.completion();
+        if (c.is_break()) {
+            if (!c.target.has_value() || c.target == label) {
+                break;
+            }
+            current_env_ = old_env;
+            return body_r;
+        }
+        if (c.is_continue()) {
+            if (!c.target.has_value() || c.target == label) {
+                // continue to next iteration
+            } else {
+                current_env_ = old_env;
+                return body_r;
+            }
+        } else if (c.is_return() || c.is_throw()) {
+            current_env_ = old_env;
+            return body_r;
         }
     }
 

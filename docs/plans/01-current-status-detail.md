@@ -4,6 +4,31 @@
 
 ## 1. 已完成任务
 
+- [x] **`for...in` Review 必修问题修复 M1/M2/M3/M4**（2026-05-20）：
+  - M1：`interpreter.cpp eval_for_in_stmt` + `vm.cpp kForInStart` — 在调用 `enumerate_properties()` 前添加 ObjectKind 守卫。仅 kOrdinary/kArray/kRegExp/kStringObject/kBooleanObject（JSObject 子类）合法；kFunction/kPromise/kEnvironment/kModule/kForInIterator 为 RcObject，static_cast<JSObject*> 是 UB，现在对这些类型直接返回空键集合。两处对称修复。
+  - M2：`js_object.cpp enumerate_properties()` 慢路径 — 原实现只遍历 `properties_`，跳过了 `elements_`（整数索引）。数组通常都有 array_prototype_ 作为原型（proto ≠ nullptr），所以走慢路径，导致 for-in 完全跳过数组的数值索引。修复：在慢路径 while 循环中，对每个节点若为 kArray 先枚举 `elements_`（排序、uint32→string）加入 seen+result，再枚举 properties_。
+  - M3：`compiler.cpp compile_for_in_stmt` — 重构字节码布局实现 per-iteration scope 语义。原实现：kPushScope 在循环外执行一次，所有迭代共享同一 Environment，闭包捕获到的是最后一次迭代的值。新布局：RHS + kForInStart 在外层求值，Jump 到 label_check；label_body_start（每次迭代入口）：kPushScope + kDefLet/kDefConst + kInitVar（per-iteration 新建 scope）；body 正常结束：kPopScope + Jump label_check；label_continue（continue 目标）：kPopScope（if lexical）+ Jump label_check；label_check：kForInNext + kJumpIfFalse label_body_start；label_break（break 目标）：kPop(iter)。
+  - M4：`compiler.h LoopEnv` 新增 `for_in_has_scope` 字段；`compile_break_stmt`：匹配 lexical for-in 时先 emit kPopScope 再 emit break Jump；跨越 lexical for-in 时 emit kPopScope + kPop（原仅 kPop）。`compile_continue_stmt`：跨越 lexical for-in 时 emit kPopScope + kPop（匹配情况由 label_continue 处理，无需额外 emit）。
+  - 3446/3446 通过（coverage + ASAN），0 LSan 泄漏。
+
+- [x] **`for...in` Testing Agent 边界补测 + 3 处 Bug 修复**（2026-05-20）：
+  - 新增 23 个测试（FI-31～FI-53，Interp+VM 对称，FI-39 仅 Interpreter）
+  - 覆盖 8 大盲区：
+    1. 原型链遮蔽（FI-31/32）：own non-enumerable 属性应遮蔽继承链同名 enumerable 属性
+    2. 深层原型链（FI-33/34）：A→B→C 三层，各层键均可枚举，验证收集完整且无重复
+    3. labeled break outer（FI-35/36）：跨嵌套 for-in 的 break outer 正确退出外层
+    4. labeled continue outer（FI-37/38）：跨嵌套 for-in 的 continue outer 正确跳到下轮外层迭代
+    5. let 每迭代独立绑定（FI-39，Interpreter only）：闭包捕获 let 变量，各迭代独立
+    6. const 重赋值 TypeError（FI-40/41）：for (const k in obj) { k=1 } 抛 TypeError，try/catch 验证
+    7. Symbol 键不枚举（FI-42/43）：Symbol 属性不出现在 for-in 结果中
+    8. 原始值右侧（FI-44～FI-49）：42/"abc"/true 作为右侧操作数时零迭代
+    9. defineProperty 非枚举键（FI-50/51）：enumerable:false 键不出现，enumerable:true 出现
+    10. 深层链同名键去重（FI-52/53）：三层同名 'x' 只输出一次
+  - 修复 Bug 1：`js_object.cpp enumerate_properties()` — 仅 `own_enumerable_string_keys()` 加入 `seen`，non-enum own 无法遮蔽继承 enum。修复：遍历 `properties_` 所有条目全加 `seen`，仅 enumerable 加 `result`
+  - 修复 Bug 2：`interpreter.cpp eval_for_in_stmt` — let/const 所有迭代共用同一 env，闭包捕获同一 Cell。修复：每迭代创建独立 `iter_env`（per-iteration binding）
+  - 修复 Bug 3：`compiler.cpp compile_break_stmt`/`compile_continue_stmt` — labeled 跳转跨 for-in 时未弹出内层迭代器，导致 VM 栈状态错误（FI38 挂死）。修复：`LoopEnv` 新增 `is_for_in` 字段（compiler.h），跨越 for-in 时 emit `kPop`
+  - 3446/3446 通过（coverage），0 LSan 泄漏
+
 - [x] **三元运算符 Testing Agent 边界补测**（2026-05-20）：
   - 追加 40 个测试（CE-26～CE-45 Interp + CE-46～CE-65 VM）
   - 覆盖 6 大盲区：

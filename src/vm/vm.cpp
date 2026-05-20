@@ -5,6 +5,7 @@
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/environment.h"
 #include "qppjs/runtime/js_function.h"
+#include "qppjs/runtime/for_in_iterator.h"
 #include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/js_regexp.h"
 #include "qppjs/runtime/module_loader.h"
@@ -5718,6 +5719,40 @@ EvalResult VM::run(size_t exit_depth) {
             // TODO: strict mode Early Error (SyntaxError for delete of unqualified identifier)
             bool deleted = frame.env->delete_binding(name);
             stack.push_back(Value::boolean(deleted));
+            break;
+        }
+
+        case Opcode::kForInStart: {
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            auto iter = RcPtr<ForInIterator>::make();
+            gc_heap_.Register(iter.get());
+            if (!obj_val.is_null() && !obj_val.is_undefined() && obj_val.is_object()) {
+                // Guard: only JSObject subclasses can be safely cast and enumerated.
+                ObjectKind k = obj_val.as_object_raw()->object_kind();
+                if (k == ObjectKind::kOrdinary || k == ObjectKind::kArray ||
+                    k == ObjectKind::kRegExp || k == ObjectKind::kStringObject ||
+                    k == ObjectKind::kBooleanObject) {
+                    JSObject* obj = static_cast<JSObject*>(obj_val.as_object_raw());
+                    for (const auto& key : obj->enumerate_properties()) {
+                        iter->keys_.push_back(Value::string(key));
+                    }
+                }
+            }
+            stack.push_back(Value::object(ObjectPtr(iter)));
+            break;
+        }
+
+        case Opcode::kForInNext: {
+            // Peek the iterator (do not pop)
+            ForInIterator* iter = static_cast<ForInIterator*>(stack.back().as_object_raw());
+            if (iter->index_ >= iter->keys_.size()) {
+                stack.push_back(Value::undefined());
+                stack.push_back(Value::boolean(true));
+            } else {
+                stack.push_back(iter->keys_[iter->index_++]);
+                stack.push_back(Value::boolean(false));
+            }
             break;
         }
 

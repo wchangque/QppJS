@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 3388/3388 通过（coverage），3346/3346（run_ut ASAN），0 LSan 泄漏 |
+| 测试计数 | 3446/3446 通过（coverage + ASAN），0 LSan 泄漏 |
 | 最近更新 | 2026-05-20 |
-| 下一步 | 继续提升 test262 通过率（for...in/for...of、解构、spread/rest、in 运算符等） |
+| 下一步 | 继续提升 test262 通过率（for...of、展开运算符 spread/rest、解构、in 运算符等） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
@@ -22,6 +22,10 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **`for...in` Review 必修问题修复 M1/M2/M3/M4**（2026-05-20）：M1：interpreter.cpp eval_for_in_stmt + vm.cpp kForInStart 在调用 enumerate_properties() 前添加 ObjectKind 守卫（仅 kOrdinary/kArray/kRegExp/kStringObject/kBooleanObject 是 JSObject 子类，可安全调用；kFunction/kPromise/kEnvironment/kModule/kForInIterator 为非 JSObject，直接返回空键集合）；M2：js_object.cpp enumerate_properties() 慢路径对原型链每个节点若为 kArray，先枚举 elements_（排序后 uint32→string），再枚举 properties_，修复数组带原型时整数索引不被 for-in 枚举的 Bug；M3：compiler.cpp compile_for_in_stmt 重构为 RHS+kForInStart 在外层求值，kPushScope/kDefLet/kDefConst/kInitVar 移入 label_body_start（per-iteration 新建 scope），label_continue 负责 kPopScope+Jump，break patches 在 label_break 处到达；M4：LoopEnv 新增 for_in_has_scope 字段；compile_break_stmt/compile_continue_stmt 在匹配 lexical for-in 时（break）先 emit kPopScope，在跨越 lexical for-in 时 emit kPopScope+kPop（原仅 kPop）。3446/3446 通过（coverage + ASAN），0 LSan 泄漏。
+- [x] **`for...in` Testing Agent 边界补测 + 3 处 Bug 修复**（2026-05-20）：新增 23 个测试（FI-31～FI-53，Interp+VM 对称，FI-39 仅 Interpreter）。覆盖：原型链遮蔽（own non-enumerable suppresses inherited enumerable）；深层原型链 3 层（A→B→C，3 键无重复）；labeled break outer（跨 for-in 嵌套）；labeled continue outer（跨 for-in 嵌套）；let 每迭代独立绑定（闭包捕获独立值，仅 Interpreter）；const 循环变量重赋值 → TypeError（try/catch 验证）；Symbol 键不被 for-in 枚举；右侧为原始值（number/string/boolean）→ 零迭代；defineProperty 非枚举键验证；深层链同名键去重（3 层 'x' 只出现一次）。同步修复 3 处 Bug：(1) `js_object.cpp enumerate_properties()` — 只将 `own_enumerable_string_keys()` 加入 `seen`，导致 own 非枚举键无法遮蔽继承链同名枚举键；修复为遍历 `properties_`（含非枚举项）全部加入 `seen`，仅枚举项加入 `result`；(2) `interpreter.cpp eval_for_in_stmt` — 所有迭代共用同一 let/const env，闭包捕获同一 Cell；修复为每迭代创建独立 iter_env（per-iteration binding 语义）；(3) `compiler.cpp compile_break_stmt`/`compile_continue_stmt` — labeled break/continue 跨 for-in 嵌套时未弹出内层迭代器，导致 VM 栈错误（挂死）；修复为在 `LoopEnv` 新增 `is_for_in` 字段，跨越时 emit `kPop`。3446/3446 通过（coverage），0 LSan 泄漏。
+- [x] **`for...in` 循环**（2026-05-20）：`ForInStatement` AST 节点（has_decl/var_kind/binding/right/body）；Parser `is_in_token()` 辅助函数，`parse_for_stmt` 重写（var/let/const+ident+in 三路径 + 表达式+in 路径 + 空 init ForStatement fallback）；`no_in_` 成员（预留 in 运算符后向兼容）；`stmt_range` + `ast_dump` 补全 ForInStatement；`JSObject::enumerate_properties()`（原型链遍历 + unordered_set 去重，P1 fast-path：proto==nullptr 直接返回 own keys）；`ForInIterator` 类（继承 RcObject，kForInIterator，keys_: vector<Value>，TraceRefs: no-op，ClearRefs: keys_.clear()）；`kForInStart`/`kForInNext` 两条新 opcode；VM 侧：kForInStart（pop obj → ForInIterator，enumerate_properties 预构建 keys）+ kForInNext（peek iter，push key+done）+ GC 注册；Interpreter `eval_for_in_stmt`（null/undefined/非对象跳过，let/const 外层 scope，var set in var_env_，body break/continue/return/throw 四路处理）；Compiler `compile_for_in_stmt`（四标签布局：Jump→label_expr→label_next→label_cont→label_break→label_expr→loop_exit；let/const PushScope/kInitVar+Pop/PopScope；var/no_decl kSetVar+kPop）；`hoist_vars_stmt` + `hoist_vars_scan_stmt` ForInStatement 分支；`eval_labeled_stmt` + `compile_labeled_stmt` ForInStatement 分支；新建 `for_in_iterator.h`；新增 37 个测试（FI-01~FI-30, Interp+VM 对称）。3425/3425 通过（coverage），3423/3423（run_ut ASAN），0 LSan 泄漏。
 
 - [x] **三元运算符 Testing Agent 边界补测**（2026-05-20）：追加 40 个测试（CE-26～CE-45 Interp + CE-46～CE-65 VM）。覆盖：未声明变量作为条件抛 ReferenceError（CE-26/46）；条件中 getter 抛异常向上传播（CE-27/47）；短路——true 条件 else 分支 getter 不被调用（CE-28/48）；短路——false 条件 then 分支 getter 不被调用（CE-29/49）；被选中分支 getter 抛异常仍传播（CE-30/50）；嵌套三元作为外层条件（CE-31/51）；三层深嵌套三元（CE-32/52）；条件函数恰好调用一次（CE-33/53）；仅被选中分支函数执行（CE-34/54）；逻辑 && 作为条件（CE-35/55）；逻辑 || 作为条件（CE-36/56）；逻辑 && 在 then 分支（结果是操作数值）（CE-37/57）；逻辑 || 在 else 分支（CE-38/58）；三元结果作为函数参数（Math.abs/Math.max）（CE-39/59）；三元结果赋值给对象属性（CE-40/60）；三元结果作为数组元素（CE-41/61）；while 条件中使用三元（CE-42/62）；return 中使用链式三元（CE-43/63）；for 条件中使用三元（CE-44/64）；NaN 为 falsy（CE-45/65）。3388/3388 通过（coverage）。
 

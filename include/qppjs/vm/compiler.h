@@ -19,6 +19,8 @@ struct LoopEnv {
     std::vector<size_t> break_patches;        // Jump placeholders waiting for after-loop offset
     std::vector<size_t> continue_patches;     // Jump placeholders waiting for continue_target offset
     std::vector<size_t> finally_labels;       // active finally subroutine offsets crossed by this loop
+    bool is_for_in = false;                   // true when this loop has a for-in iterator on the stack
+    bool for_in_has_scope = false;            // true when this for-in uses a lexical per-iteration scope
 };
 
 // Tracks an active finally block being compiled.
@@ -71,6 +73,7 @@ private:
     void compile_continue_stmt(const ContinueStatement& stmt);
     void compile_labeled_stmt(const LabeledStatement& stmt);
     void compile_for_stmt(const ForStatement& stmt, std::optional<std::string> label = std::nullopt);
+    void compile_for_in_stmt(const ForInStatement& stmt, std::optional<std::string> label = std::nullopt);
 
     // Expression compilation; always leaves exactly one value on stack
     void compile_expr(const ExprNode& expr);

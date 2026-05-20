@@ -61,6 +61,9 @@ public:
     bool has_own_property(const std::string& key) const;
     void clear_function_properties();
     std::vector<std::string> own_enumerable_string_keys() const;
+    // Enumerate all string keys reachable via this object and its prototype chain,
+    // including only enumerable properties, deduplicating by name.
+    std::vector<std::string> enumerate_properties() const;
 
     bool extensible() const { return extensible_; }
     void set_extensible(bool v) { extensible_ = v; }

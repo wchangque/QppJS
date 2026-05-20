@@ -330,6 +330,17 @@ struct ForStatement {
     SourceRange range;
 };
 
+// for (var/let/const binding in right) body
+// or  for (binding in right) body  (has_decl=false)
+struct ForInStatement {
+    bool has_decl;
+    VarKind var_kind;          // valid when has_decl=true
+    std::string binding;
+    std::unique_ptr<ExprNode> right;
+    std::unique_ptr<StmtNode> body;
+    SourceRange range;
+};
+
 struct ImportSpecifier {
     std::string imported_name;  // 模块内名称；默认导入时为 "default"
     std::string local_name;     // 本地绑定名
@@ -368,7 +379,7 @@ struct StmtNode {
     std::variant<ExpressionStatement, VariableDeclaration, BlockStatement, IfStatement, WhileStatement,
                  ReturnStatement, FunctionDeclaration, AsyncFunctionDeclaration,
                  ThrowStatement, TryStatement, BreakStatement, ContinueStatement,
-                 LabeledStatement, ForStatement,
+                 LabeledStatement, ForStatement, ForInStatement,
                  ImportDeclaration, ExportNamedDeclaration, ExportDefaultDeclaration>
             v;
 
