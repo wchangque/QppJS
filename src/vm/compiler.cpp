@@ -28,6 +28,8 @@ static bool has_block_scope_decl(const std::vector<StmtNode>& stmts) {
     return false;
 }
 
+static constexpr const char* kReturnTempName = "$__qppjs_return_temp__";
+
 // ============================================================
 // Emit helpers
 // ============================================================
@@ -172,7 +174,20 @@ void Compiler::hoist_vars_scan_stmt(const StmtNode& stmt) {
             }
             if (!found) current_->var_decls.push_back(idx);
         }
+        hoist_vars_scan_expr(*for_in.right);
         if (for_in.body) hoist_vars_scan_stmt(*for_in.body);
+    } else if (std::holds_alternative<ForOfStatement>(stmt.v)) {
+        const auto& for_of = std::get<ForOfStatement>(stmt.v);
+        if (for_of.has_decl && for_of.var_kind == VarKind::Var) {
+            uint16_t idx = add_name(for_of.binding);
+            bool found = false;
+            for (uint16_t v : current_->var_decls) {
+                if (v == idx) { found = true; break; }
+            }
+            if (!found) current_->var_decls.push_back(idx);
+        }
+        hoist_vars_scan_expr(*for_of.right);
+        if (for_of.body) hoist_vars_scan_stmt(*for_of.body);
     } else if (std::holds_alternative<TryStatement>(stmt.v)) {
         const auto& try_stmt = std::get<TryStatement>(stmt.v);
         hoist_vars_scan(try_stmt.block.body);
@@ -194,6 +209,89 @@ void Compiler::hoist_vars_scan_stmt(const StmtNode& stmt) {
     // Do NOT recurse into FunctionDeclaration/FunctionExpression bodies
 }
 
+void Compiler::hoist_vars_scan_expr(const ExprNode& expr) {
+    std::visit(
+        overloaded{
+            [](const NumberLiteral&) {},
+            [](const StringLiteral&) {},
+            [](const BooleanLiteral&) {},
+            [](const NullLiteral&) {},
+            [](const Identifier&) {},
+            [this](const UnaryExpression& e) {
+                hoist_vars_scan_expr(*e.operand);
+            },
+            [this](const BinaryExpression& e) {
+                hoist_vars_scan_expr(*e.left);
+                hoist_vars_scan_expr(*e.right);
+            },
+            [this](const LogicalExpression& e) {
+                hoist_vars_scan_expr(*e.left);
+                hoist_vars_scan_expr(*e.right);
+            },
+            [this](const AssignmentExpression& e) {
+                hoist_vars_scan_expr(*e.value);
+            },
+            [this](const ObjectExpression& e) {
+                for (const auto& prop : e.properties) {
+                    hoist_vars_scan_expr(*prop.value);
+                }
+            },
+            [this](const MemberExpression& e) {
+                hoist_vars_scan_expr(*e.object);
+                hoist_vars_scan_expr(*e.property);
+            },
+            [this](const MemberAssignmentExpression& e) {
+                hoist_vars_scan_expr(*e.object);
+                hoist_vars_scan_expr(*e.property);
+                hoist_vars_scan_expr(*e.value);
+            },
+            [](const FunctionExpression&) {},
+            [this](const CallExpression& e) {
+                hoist_vars_scan_expr(*e.callee);
+                for (const auto& arg : e.arguments) {
+                    hoist_vars_scan_expr(*arg);
+                }
+            },
+            [this](const NewExpression& e) {
+                hoist_vars_scan_expr(*e.callee);
+                for (const auto& arg : e.arguments) {
+                    hoist_vars_scan_expr(*arg);
+                }
+            },
+            [this](const ArrayExpression& e) {
+                for (const auto& elem : e.elements) {
+                    if (elem.has_value()) {
+                        hoist_vars_scan_expr(**elem);
+                    }
+                }
+            },
+            [this](const AwaitExpression& e) {
+                hoist_vars_scan_expr(*e.argument);
+            },
+            [this](const UpdateExpression& e) {
+                hoist_vars_scan_expr(*e.operand);
+            },
+            [](const AsyncFunctionExpression&) {},
+            [](const MetaProperty&) {},
+            [this](const ImportCallExpression& e) {
+                hoist_vars_scan_expr(*e.specifier);
+            },
+            [](const RegexLiteral&) {},
+            [this](const TemplateLiteral& e) {
+                for (const auto& part : e.expressions) {
+                    hoist_vars_scan_expr(*part);
+                }
+            },
+            [](const ArrowFunctionExpression&) {},
+            [this](const ConditionalExpression& e) {
+                hoist_vars_scan_expr(*e.condition);
+                hoist_vars_scan_expr(*e.consequent);
+                hoist_vars_scan_expr(*e.alternate);
+            },
+        },
+        expr.v);
+}
+
 // ============================================================
 // compile_function (core)
 // ============================================================
@@ -212,10 +310,24 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
     BytecodeFunction* saved = current_;
     auto saved_name_index = std::move(name_index_);
     name_index_.clear();
+    auto saved_loop_env_stack = std::move(loop_env_stack_);
+    loop_env_stack_.clear();
+    auto saved_finally_info_stack = std::move(finally_info_stack_);
+    finally_info_stack_.clear();
     current_ = fn.get();
 
     // Pre-scan for var declarations
     hoist_vars_scan(body);
+
+    uint16_t return_temp_idx = add_name(kReturnTempName);
+    bool found_return_temp = false;
+    for (uint16_t idx : fn->var_decls) {
+        if (idx == return_temp_idx) {
+            found_return_temp = true;
+            break;
+        }
+    }
+    if (!found_return_temp) fn->var_decls.push_back(return_temp_idx);
 
     // Emit DefVar for all hoisted vars at function entry
     for (uint16_t idx : fn->var_decls) {
@@ -289,6 +401,8 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
 
     current_ = saved;
     name_index_ = std::move(saved_name_index);
+    loop_env_stack_ = std::move(saved_loop_env_stack);
+    finally_info_stack_ = std::move(saved_finally_info_stack);
     return fn;
 }
 
@@ -322,6 +436,7 @@ void Compiler::compile_stmt(const StmtNode& stmt) {
             [this](const LabeledStatement& s) { compile_labeled_stmt(s); },
             [this](const ForStatement& s) { compile_for_stmt(s); },
             [this](const ForInStatement& s) { compile_for_in_stmt(s); },
+            [this](const ForOfStatement& s) { compile_for_of_stmt(s); },
             [](const ImportDeclaration&) {
                 // Link 阶段已处理，编译时 no-op
             },
@@ -447,7 +562,7 @@ void Compiler::compile_while_stmt(const WhileStatement& stmt, std::optional<std:
     compile_expr(stmt.test);
     size_t exit_patch = emit_jump(Opcode::kJumpIfFalse);
 
-    loop_env_stack_.push_back({label, 0, {}, {}, {}});
+    loop_env_stack_.push_back({label, 0, {}, {}, {}, false, false, false, false, finally_info_stack_.size()});
 
     compile_stmt(*stmt.body);
 
@@ -470,29 +585,53 @@ void Compiler::compile_while_stmt(const WhileStatement& stmt, std::optional<std:
 }
 
 void Compiler::compile_return_stmt(const ReturnStatement& stmt) {
-    if (!finally_info_stack_.empty()) {
-        // There are active finally blocks that must run before the function exits.
-        // Push the return value onto the stack first (kReturn always pops one value).
-        if (stmt.argument.has_value()) {
-            compile_expr(stmt.argument.value());
-        } else {
-            emit(Opcode::kLoadUndefined);
-        }
-        // For each active finally (innermost first), emit LeaveTry + Gosub.
-        // The Gosub placeholder is recorded in gosub_patches; compile_try_stmt patches it
-        // once the finally subroutine label is known.
-        for (auto fi_it = finally_info_stack_.rbegin(); fi_it != finally_info_stack_.rend(); ++fi_it) {
+    uint16_t return_temp_idx = add_name(kReturnTempName);
+    if (stmt.argument.has_value()) {
+        compile_expr(stmt.argument.value());
+    } else {
+        emit(Opcode::kLoadUndefined);
+    }
+    emit(Opcode::kSetVar);
+    emit_u16(return_temp_idx);
+    emit(Opcode::kPop);
+
+    size_t unwind_finally_depth = finally_info_stack_.size();
+    for (auto it = loop_env_stack_.rbegin(); it != loop_env_stack_.rend(); ++it) {
+        for (size_t i = unwind_finally_depth; i > it->finally_depth_at_entry; --i) {
             emit(Opcode::kLeaveTry);
             size_t gosub_pos = emit_jump(Opcode::kGosub);
-            fi_it->gosub_patches.push_back(gosub_pos);
+            finally_info_stack_[i - 1].gosub_patches.push_back(gosub_pos);
         }
-        emit(Opcode::kReturn);
-    } else if (stmt.argument.has_value()) {
-        compile_expr(stmt.argument.value());
-        emit(Opcode::kReturn);
-    } else {
-        emit(Opcode::kReturnUndefined);
+        unwind_finally_depth = it->finally_depth_at_entry;
+        if (it->is_for_in) {
+            if (it->for_in_has_scope) {
+                emit(Opcode::kPopScope);
+            }
+            emit(Opcode::kPop);
+        }
+        if (it->is_for_of) {
+            if (it->for_of_has_scope) {
+                emit(Opcode::kPopScope);
+            }
+            emit(Opcode::kLeaveTry);
+            emit(Opcode::kIteratorClose);
+        }
     }
+
+    for (size_t i = unwind_finally_depth; i > 0; --i) {
+        emit(Opcode::kLeaveTry);
+        size_t gosub_pos = emit_jump(Opcode::kGosub);
+        finally_info_stack_[i - 1].gosub_patches.push_back(gosub_pos);
+    }
+    emit(Opcode::kGetVar);
+    emit_u16(return_temp_idx);
+    // Clear the temp binding before returning to break potential reference cycles
+    // (e.g. a returned closure capturing its own call env via $__qppjs_return_temp__).
+    emit(Opcode::kLoadUndefined);
+    emit(Opcode::kSetVar);
+    emit_u16(return_temp_idx);
+    emit(Opcode::kPop);
+    emit(Opcode::kReturn);
 }
 
 void Compiler::compile_function_decl(const FunctionDeclaration& stmt) {
@@ -1062,58 +1201,92 @@ void Compiler::compile_try_stmt(const TryStatement& stmt) {
 }
 
 void Compiler::compile_break_stmt(const BreakStatement& stmt) {
+    size_t unwind_finally_depth = finally_info_stack_.size();
     for (auto it = loop_env_stack_.rbegin(); it != loop_env_stack_.rend(); ++it) {
         bool matches = !stmt.label.has_value() || (it->label == stmt.label);
         if (matches) {
-            // For each active finally being crossed (innermost first), emit:
-            //   LeaveTry (clear the EnterTry handler)
-            //   Gosub [finally_label] (run the finally subroutine)
-            for (auto fi_it = finally_info_stack_.rbegin(); fi_it != finally_info_stack_.rend(); ++fi_it) {
+            for (size_t i = unwind_finally_depth; i > it->finally_depth_at_entry; --i) {
                 emit(Opcode::kLeaveTry);
                 size_t gosub_pos = emit_jump(Opcode::kGosub);
-                fi_it->gosub_patches.push_back(gosub_pos);
+                finally_info_stack_[i - 1].gosub_patches.push_back(gosub_pos);
             }
+            unwind_finally_depth = it->finally_depth_at_entry;
             // If this is a lexical for-in, pop the per-iteration scope before breaking.
             if (it->is_for_in && it->for_in_has_scope) {
                 emit(Opcode::kPopScope);
+            }
+            if (it->is_for_of) {
+                if (it->for_of_has_scope) {
+                    emit(Opcode::kPopScope);
+                }
+                emit(Opcode::kLeaveTry);
+                emit(Opcode::kIteratorClose);
             }
             size_t patch_pos = emit_jump(Opcode::kJump);
             it->break_patches.push_back(patch_pos);
             return;
         }
-        // Crossing this loop without targeting it: pop its for-in scope+iterator from the stack.
+        for (size_t i = unwind_finally_depth; i > it->finally_depth_at_entry; --i) {
+            emit(Opcode::kLeaveTry);
+            size_t gosub_pos = emit_jump(Opcode::kGosub);
+            finally_info_stack_[i - 1].gosub_patches.push_back(gosub_pos);
+        }
+        unwind_finally_depth = it->finally_depth_at_entry;
         if (it->is_for_in) {
             if (it->for_in_has_scope) {
                 emit(Opcode::kPopScope);
             }
             emit(Opcode::kPop);
+        }
+        if (it->is_for_of) {
+            if (it->for_of_has_scope) {
+                emit(Opcode::kPopScope);
+            }
+            emit(Opcode::kLeaveTry);
+            emit(Opcode::kIteratorClose);
         }
     }
     assert(false && "break: no matching loop");
 }
 
 void Compiler::compile_continue_stmt(const ContinueStatement& stmt) {
+    size_t unwind_finally_depth = finally_info_stack_.size();
     for (auto it = loop_env_stack_.rbegin(); it != loop_env_stack_.rend(); ++it) {
         bool matches = !stmt.label.has_value() || (it->label == stmt.label);
         if (matches) {
-            // Same LeaveTry + Gosub pattern as break.
-            for (auto fi_it = finally_info_stack_.rbegin(); fi_it != finally_info_stack_.rend(); ++fi_it) {
+            for (size_t i = unwind_finally_depth; i > it->finally_depth_at_entry; --i) {
                 emit(Opcode::kLeaveTry);
                 size_t gosub_pos = emit_jump(Opcode::kGosub);
-                fi_it->gosub_patches.push_back(gosub_pos);
+                finally_info_stack_[i - 1].gosub_patches.push_back(gosub_pos);
             }
+            unwind_finally_depth = it->finally_depth_at_entry;
             // For a lexical for-in continue, label_continue already emits kPopScope before
             // jumping to label_check — no extra emit needed here.
+            if (it->is_for_of && it->for_of_has_scope) {
+                emit(Opcode::kPopScope);
+            }
             size_t patch_pos = emit_jump(Opcode::kJump);
             it->continue_patches.push_back(patch_pos);
             return;
         }
-        // Crossing this loop without targeting it: pop its for-in scope+iterator.
+        for (size_t i = unwind_finally_depth; i > it->finally_depth_at_entry; --i) {
+            emit(Opcode::kLeaveTry);
+            size_t gosub_pos = emit_jump(Opcode::kGosub);
+            finally_info_stack_[i - 1].gosub_patches.push_back(gosub_pos);
+        }
+        unwind_finally_depth = it->finally_depth_at_entry;
         if (it->is_for_in) {
             if (it->for_in_has_scope) {
                 emit(Opcode::kPopScope);
             }
             emit(Opcode::kPop);
+        }
+        if (it->is_for_of) {
+            if (it->for_of_has_scope) {
+                emit(Opcode::kPopScope);
+            }
+            emit(Opcode::kLeaveTry);
+            emit(Opcode::kIteratorClose);
         }
     }
     assert(false && "continue: no matching loop");
@@ -1124,10 +1297,13 @@ void Compiler::compile_labeled_stmt(const LabeledStatement& stmt) {
         compile_for_stmt(std::get<ForStatement>(stmt.body->v), stmt.label);
     } else if (std::holds_alternative<ForInStatement>(stmt.body->v)) {
         compile_for_in_stmt(std::get<ForInStatement>(stmt.body->v), stmt.label);
+    } else if (std::holds_alternative<ForOfStatement>(stmt.body->v)) {
+        compile_for_of_stmt(std::get<ForOfStatement>(stmt.body->v), stmt.label);
     } else if (std::holds_alternative<WhileStatement>(stmt.body->v)) {
         compile_while_stmt(std::get<WhileStatement>(stmt.body->v), stmt.label);
     } else {
-        loop_env_stack_.push_back(LoopEnv{stmt.label, 0, {}, {}, {}});
+        loop_env_stack_.push_back(LoopEnv{stmt.label, 0, {}, {}, {}, false, false, false, false,
+                                          finally_info_stack_.size()});
         compile_stmt(*stmt.body);
         size_t after_block = current_offset();
         for (size_t p : loop_env_stack_.back().break_patches) {
@@ -1153,7 +1329,7 @@ void Compiler::compile_for_stmt(const ForStatement& stmt, std::optional<std::str
         exit_patch = emit_jump(Opcode::kJumpIfFalse);
     }
 
-    loop_env_stack_.push_back({label, 0, {}, {}, {}});
+    loop_env_stack_.push_back({label, 0, {}, {}, {}, false, false, false, false, finally_info_stack_.size()});
 
     compile_stmt(*stmt.body);
 
@@ -1214,7 +1390,9 @@ void Compiler::compile_for_in_stmt(const ForInStatement& stmt, std::optional<std
     }
 
     // Push LoopEnv; break/continue handlers consult for_in_has_scope to emit kPopScope.
-    loop_env_stack_.push_back({label, 0, {}, {}, {}, /*is_for_in=*/true, /*for_in_has_scope=*/need_scope});
+    loop_env_stack_.push_back({label, 0, {}, {}, {}, /*is_for_in=*/true, /*for_in_has_scope=*/need_scope,
+                               /*is_for_of=*/false, /*for_of_has_scope=*/false,
+                               /*finally_depth_at_entry=*/finally_info_stack_.size()});
     compile_stmt(*stmt.body);
 
     // Normal end of iteration: pop per-iteration scope and jump to condition check.
@@ -1258,6 +1436,74 @@ void Compiler::compile_for_in_stmt(const ForInStatement& stmt, std::optional<std
 
     // Pop the iterator.
     emit(Opcode::kPop);
+}
+
+void Compiler::compile_for_of_stmt(const ForOfStatement& stmt, std::optional<std::string> label) {
+    bool need_scope = stmt.has_decl && stmt.var_kind != VarKind::Var;
+    uint16_t name_idx = add_name(stmt.binding);
+
+    compile_expr(*stmt.right);
+    emit(Opcode::kForOfStart);
+    size_t enter_try_pos = emit_jump(Opcode::kEnterTry);
+    size_t jump_to_check = emit_jump(Opcode::kJump);
+
+    size_t label_body_start = current_offset();
+
+    if (need_scope) {
+        emit(Opcode::kPushScope);
+        emit(stmt.var_kind == VarKind::Let ? Opcode::kDefLet : Opcode::kDefConst);
+        emit_u16(name_idx);
+        emit(Opcode::kInitVar);
+        emit_u16(name_idx);
+        emit(Opcode::kPop);
+    } else {
+        emit(Opcode::kSetVar);
+        emit_u16(name_idx);
+        emit(Opcode::kPop);
+    }
+
+    loop_env_stack_.push_back(
+        {label, 0, {}, {}, {}, /*is_for_in=*/false, /*for_in_has_scope=*/false,
+         /*is_for_of=*/true, /*for_of_has_scope=*/need_scope,
+         /*finally_depth_at_entry=*/finally_info_stack_.size()});
+    compile_stmt(*stmt.body);
+
+    if (need_scope) {
+        emit(Opcode::kPopScope);
+    }
+    size_t jump_body_to_check = emit_jump(Opcode::kJump);
+
+    size_t label_continue = current_offset();
+    loop_env_stack_.back().continue_target = label_continue;
+    for (size_t p : loop_env_stack_.back().continue_patches) {
+        patch_jump_to(p, label_continue);
+    }
+    size_t jump_cont_to_check = emit_jump(Opcode::kJump);
+
+    size_t label_check = current_offset();
+    patch_jump_to(jump_to_check, label_check);
+    patch_jump_to(jump_body_to_check, label_check);
+    patch_jump_to(jump_cont_to_check, label_check);
+
+    emit(Opcode::kForOfNext);
+    emit_jump_to(Opcode::kJumpIfFalse, label_body_start);
+    emit(Opcode::kPop);
+    emit(Opcode::kLeaveTry);
+    emit(Opcode::kIteratorClose);
+    size_t jump_after_loop = emit_jump(Opcode::kJump);
+
+    size_t exception_handler = current_offset();
+    patch_jump_to(enter_try_pos, exception_handler);
+    emit(Opcode::kGetException);
+    emit(Opcode::kIteratorCloseAbnormal);
+    emit(Opcode::kThrow);
+
+    size_t after_loop = current_offset();
+    patch_jump_to(jump_after_loop, after_loop);
+    for (size_t p : loop_env_stack_.back().break_patches) {
+        patch_jump_to(p, after_loop);
+    }
+    loop_env_stack_.pop_back();
 }
 
 void Compiler::compile_update_expr(const UpdateExpression& expr) {

@@ -42,6 +42,7 @@ add_executable(qppjs_unit_tests
     unit/string_boolean_constructor_test.cpp
     unit/conditional_expression_test.cpp
     unit/for_in_test.cpp
+    unit/for_of_test.cpp
     # unit/global_stubs_test.cpp  # FIXME: pre-existing compilation error (is_err not a member of EvalResult)
 )
 

@@ -113,7 +113,12 @@ namespace qppjs {
     X(DeleteVar, 2)                    \
     /* for...in */                     \
     X(ForInStart, 0)                   \
-    X(ForInNext, 0)
+    X(ForInNext, 0)                    \
+    /* for...of */                     \
+    X(ForOfStart, 0)                   \
+    X(ForOfNext, 0)                    \
+    X(IteratorClose, 0)                \
+    X(IteratorCloseAbnormal, 0)
 
 enum class Opcode : uint8_t {
 #define X(name, _operand_bytes) k##name,

@@ -21,6 +21,9 @@ struct LoopEnv {
     std::vector<size_t> finally_labels;       // active finally subroutine offsets crossed by this loop
     bool is_for_in = false;                   // true when this loop has a for-in iterator on the stack
     bool for_in_has_scope = false;            // true when this for-in uses a lexical per-iteration scope
+    bool is_for_of = false;                   // true when this loop has a for-of iterator on the stack
+    bool for_of_has_scope = false;            // true when this for-of uses a lexical per-iteration scope
+    size_t finally_depth_at_entry = 0;        // active finally stack depth when entering the loop
 };
 
 // Tracks an active finally block being compiled.
@@ -54,6 +57,7 @@ private:
     // Pre-scan body for var declarations and function declarations (non-recursive into nested fns).
     void hoist_vars_scan(const std::vector<StmtNode>& body);
     void hoist_vars_scan_stmt(const StmtNode& stmt);
+    void hoist_vars_scan_expr(const ExprNode& expr);
 
     // Statement compilation
     void compile_stmt(const StmtNode& stmt);
@@ -74,6 +78,7 @@ private:
     void compile_labeled_stmt(const LabeledStatement& stmt);
     void compile_for_stmt(const ForStatement& stmt, std::optional<std::string> label = std::nullopt);
     void compile_for_in_stmt(const ForInStatement& stmt, std::optional<std::string> label = std::nullopt);
+    void compile_for_of_stmt(const ForOfStatement& stmt, std::optional<std::string> label = std::nullopt);
 
     // Expression compilation; always leaves exactly one value on stack
     void compile_expr(const ExprNode& expr);

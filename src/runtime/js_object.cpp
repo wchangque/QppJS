@@ -407,6 +407,27 @@ void JSObject::clear_function_properties(std::unordered_set<const JSObject*>& vi
         }
     }
 
+    // Clear function references held in symbol properties (e.g. Symbol.iterator closures).
+    if (symbol_props_) {
+        for (auto& entry : *symbol_props_) {
+            if (!entry.value.is_object()) continue;
+            RcObject* raw = entry.value.as_object_raw();
+            if (raw == nullptr) continue;
+            ObjectPtr keep_alive(raw);
+            if (raw->object_kind() == ObjectKind::kFunction) {
+                auto* function = static_cast<JSFunction*>(raw);
+                RcPtr<JSObject> prototype = function->prototype_obj();
+                if (prototype) {
+                    prototype->clear_function_properties(visited);
+                }
+                entry.value = Value::undefined();
+            } else if (raw->object_kind() == ObjectKind::kOrdinary ||
+                       raw->object_kind() == ObjectKind::kArray) {
+                static_cast<JSObject*>(raw)->clear_function_properties(visited);
+            }
+        }
+    }
+
     // Also clear function references held in array elements_
     if (object_kind() == ObjectKind::kArray) {
         for (auto& [k, elem] : elements_) {

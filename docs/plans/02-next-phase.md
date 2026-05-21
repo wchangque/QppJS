@@ -23,7 +23,7 @@
 **新一批候选目标（第二轮）：**
 
 9. ~~**`for...in` 循环** — 已完成（2026-05-20）~~
-10. **`for...of` 循环** — 依赖 `Symbol.iterator` 协议，解锁数组/字符串迭代
+10. ~~**`for...of` 循环** — 已完成（2026-05-21）~~
 11. **展开运算符 `...`** — 函数调用/数组字面量 spread
 12. **rest 参数 `...args`** — 函数参数 rest 收集
 13. **默认参数值 `(a = 1)`** — 函数参数默认值
@@ -35,6 +35,7 @@
 
 当前已具备：
 - Phase 1～11 + P2-A 全部完成（1891/1891 测试通过，0 LSan 失败）
+- for...of 循环已完成（2026-05-21，3489/3489 测试通过，0 LSan 泄漏）
 - Array.map/filter/reduce/reduceRight 已完成（2026-04-28）
 - Array.find/findIndex/some/every/indexOf/includes 已完成（2026-04-28）
 - export async function 解析修复已完成（2026-04-28）

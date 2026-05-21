@@ -4,6 +4,7 @@
 #include "qppjs/frontend/ast.h"
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/environment.h"
+#include "qppjs/runtime/for_of_iterator.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/js_regexp.h"
@@ -1513,6 +1514,53 @@ void Interpreter::init_runtime() {
     });
     array_prototype_->set_property("lastIndexOf", Value::object(ObjectPtr(lastindexof_fn)));
 
+    // Array.prototype[Symbol.iterator]
+    {
+        auto array_iter_fn = RcPtr<JSFunction>::make();
+        array_iter_fn->set_name(std::string("[Symbol.iterator]"));
+        array_iter_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+            auto iter_obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(iter_obj.get());
+            iter_obj->set_property("__arr__", this_val);
+            iter_obj->set_property("__idx__", Value::number(0.0));
+
+            auto next_fn = RcPtr<JSFunction>::make();
+            next_fn->set_name(std::string("next"));
+            next_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+                auto make_done = [&]() -> EvalResult {
+                    auto r = RcPtr<JSObject>::make();
+                    gc_heap_.Register(r.get());
+                    r->set_property("value", Value::undefined());
+                    r->set_property("done", Value::boolean(true));
+                    return EvalResult::ok(Value::object(ObjectPtr(r)));
+                };
+                if (!this_val.is_object()) return make_done();
+                auto* iter = static_cast<JSObject*>(this_val.as_object_raw());
+                Value arr_val = iter->get_property("__arr__");
+                Value idx_val = iter->get_property("__idx__");
+                uint32_t idx = idx_val.is_number() ? static_cast<uint32_t>(idx_val.as_number()) : 0u;
+                if (!arr_val.is_object() || arr_val.as_object_raw()->object_kind() != ObjectKind::kArray)
+                    return make_done();
+                auto* arr = static_cast<JSObject*>(arr_val.as_object_raw());
+                if (idx >= arr->array_length_) return make_done();
+                auto elem_it = arr->elements_.find(idx);
+                Value value = (elem_it != arr->elements_.end()) ? elem_it->second : Value::undefined();
+                iter->set_property("__idx__", Value::number(static_cast<double>(idx + 1)));
+                auto r = RcPtr<JSObject>::make();
+                gc_heap_.Register(r.get());
+                r->set_property("value", std::move(value));
+                r->set_property("done", Value::boolean(false));
+                return EvalResult::ok(Value::object(ObjectPtr(r)));
+            });
+            gc_heap_.Register(next_fn.get());
+            iter_obj->set_property("next", Value::object(ObjectPtr(next_fn)));
+            return EvalResult::ok(Value::object(ObjectPtr(iter_obj)));
+        });
+        gc_heap_.Register(array_iter_fn.get());
+        array_prototype_->set_property_by_symbol(symbol_table_.well_known_iterator,
+                                                  Value::object(ObjectPtr(array_iter_fn)));
+    }
+
     // Build Array constructor
     auto array_constructor = RcPtr<JSFunction>::make();
     array_constructor->set_name(std::string("Array"));
@@ -1680,6 +1728,25 @@ void Interpreter::init_runtime() {
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
         auto* obj = static_cast<JSObject*>(raw);
+        // Symbol key: store as symbol property (data value only)
+        if (args.size() >= 2 && args[1].is_symbol()) {
+            uint64_t sym_id = args[1].as_symbol_id();
+            if (args.size() < 3 || !args[2].is_object()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Property description must be an object");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            RcObject* desc_raw2 = args[2].as_object_raw();
+            if (desc_raw2->object_kind() != ObjectKind::kOrdinary) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Property description must be an object");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            auto* desc_obj2 = static_cast<JSObject*>(desc_raw2);
+            Value val = desc_obj2->has_own_property("value") ? desc_obj2->get_property("value") : Value::undefined();
+            obj->set_property_by_symbol(sym_id, std::move(val));
+            return EvalResult::ok(args[0]);
+        }
         std::string key = args.size() >= 2 ? to_string_val(args[1]) : "undefined";
         if (args.size() < 3 || !args[2].is_object()) {
             pending_throw_ = make_error_value(NativeErrorType::kTypeError,
@@ -2469,6 +2536,60 @@ void Interpreter::init_runtime() {
     });
     gc_heap_.Register(str_tostring_fn.get());
     string_prototype_->set_property("toString", Value::object(ObjectPtr(str_tostring_fn)));
+
+    // String.prototype[Symbol.iterator]
+    {
+        auto string_iter_fn = RcPtr<JSFunction>::make();
+        string_iter_fn->set_name(std::string("[Symbol.iterator]"));
+        string_iter_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+            if (this_val.is_null() || this_val.is_undefined()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "String.prototype[Symbol.iterator] called on null or undefined");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            Value str_val = string_this_value(this_val);
+            auto iter_obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(iter_obj.get());
+            iter_obj->set_property("__str__", std::move(str_val));
+            iter_obj->set_property("__pos__", Value::number(0.0));
+
+            auto next_fn = RcPtr<JSFunction>::make();
+            next_fn->set_name(std::string("next"));
+            next_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+                auto make_done = [&]() -> EvalResult {
+                    auto r = RcPtr<JSObject>::make();
+                    gc_heap_.Register(r.get());
+                    r->set_property("value", Value::undefined());
+                    r->set_property("done", Value::boolean(true));
+                    return EvalResult::ok(Value::object(ObjectPtr(r)));
+                };
+                if (!this_val.is_object()) return make_done();
+                auto* iter = static_cast<JSObject*>(this_val.as_object_raw());
+                Value str_val = iter->get_property("__str__");
+                Value pos_val = iter->get_property("__pos__");
+                if (!str_val.is_string()) return make_done();
+                std::string_view sv = str_val.sv();
+                size_t pos = pos_val.is_number() ? static_cast<size_t>(pos_val.as_number()) : 0u;
+                if (pos >= sv.size()) return make_done();
+                unsigned char c0 = static_cast<unsigned char>(sv[pos]);
+                size_t cp_bytes = (c0 < 0x80) ? 1 : (c0 < 0xE0) ? 2 : (c0 < 0xF0) ? 3 : 4;
+                if (pos + cp_bytes > sv.size()) cp_bytes = sv.size() - pos;
+                std::string ch(sv.data() + pos, cp_bytes);
+                iter->set_property("__pos__", Value::number(static_cast<double>(pos + cp_bytes)));
+                auto r = RcPtr<JSObject>::make();
+                gc_heap_.Register(r.get());
+                r->set_property("value", Value::string(std::move(ch)));
+                r->set_property("done", Value::boolean(false));
+                return EvalResult::ok(Value::object(ObjectPtr(r)));
+            });
+            gc_heap_.Register(next_fn.get());
+            iter_obj->set_property("next", Value::object(ObjectPtr(next_fn)));
+            return EvalResult::ok(Value::object(ObjectPtr(iter_obj)));
+        });
+        gc_heap_.Register(string_iter_fn.get());
+        string_prototype_->set_property_by_symbol(symbol_table_.well_known_iterator,
+                                                   Value::object(ObjectPtr(string_iter_fn)));
+    }
 
     // ---- Global constants: NaN, Infinity ----
 
@@ -3412,6 +3533,12 @@ void Interpreter::hoist_vars_stmt(const StmtNode& stmt, Environment& var_target)
             var_target.define_initialized(for_in.binding);
         }
         hoist_vars_stmt(*for_in.body, var_target);
+    } else if (std::holds_alternative<ForOfStatement>(stmt.v)) {
+        const auto& for_of = std::get<ForOfStatement>(stmt.v);
+        if (for_of.has_decl && for_of.var_kind == VarKind::Var) {
+            var_target.define_initialized(for_of.binding);
+        }
+        hoist_vars_stmt(*for_of.body, var_target);
     } else if (std::holds_alternative<TryStatement>(stmt.v)) {
         const auto& try_stmt = std::get<TryStatement>(stmt.v);
         hoist_vars(try_stmt.block.body, var_target);
@@ -3656,6 +3783,7 @@ StmtResult Interpreter::eval_stmt(const StmtNode& stmt) {
             [this](const LabeledStatement& s) { return eval_labeled_stmt(s); },
             [this](const ForStatement& s) { return eval_for_stmt(s); },
             [this](const ForInStatement& s) { return eval_for_in_stmt(s); },
+            [this](const ForOfStatement& s) { return eval_for_of_stmt(s); },
             [](const ImportDeclaration&) -> StmtResult {
                 // Link 阶段已处理，执行时 no-op
                 return StmtResult::ok(Completion::normal(Value::undefined()));
@@ -5055,6 +5183,8 @@ StmtResult Interpreter::eval_labeled_stmt(const LabeledStatement& stmt) {
         result = eval_for_stmt(std::get<ForStatement>(stmt.body->v), stmt.label);
     } else if (std::holds_alternative<ForInStatement>(stmt.body->v)) {
         result = eval_for_in_stmt(std::get<ForInStatement>(stmt.body->v), stmt.label);
+    } else if (std::holds_alternative<ForOfStatement>(stmt.body->v)) {
+        result = eval_for_of_stmt(std::get<ForOfStatement>(stmt.body->v), stmt.label);
     } else if (std::holds_alternative<WhileStatement>(stmt.body->v)) {
         result = eval_while_stmt(std::get<WhileStatement>(stmt.body->v), stmt.label);
     } else {
@@ -5256,6 +5386,195 @@ StmtResult Interpreter::eval_for_in_stmt(const ForInStatement& stmt,
     return loop_result;
 }
 
+StmtResult Interpreter::eval_for_of_stmt(const ForOfStatement& stmt,
+                                          std::optional<std::string> label) {
+    auto rhs_r = eval_expr(*stmt.right);
+    if (!rhs_r.is_ok()) {
+        if (rhs_r.error().message() == kAsyncSuspendSentinel) {
+            return StmtResult::err(rhs_r.error());
+        }
+        Value thrown = extract_throw_value(pending_throw_, rhs_r.error().message(), kPendingThrowSentinel);
+        return StmtResult::ok(Completion::throw_(std::move(thrown)));
+    }
+    Value iterable = rhs_r.value();
+
+    // null/undefined → TypeError (for...of does not skip, unlike for...in)
+    if (iterable.is_null() || iterable.is_undefined()) {
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            iterable.is_null() ? "null is not iterable" : "undefined is not iterable");
+        return StmtResult::ok(Completion::throw_(*pending_throw_));
+    }
+
+    const bool is_lexical = stmt.has_decl && stmt.var_kind != VarKind::Var;
+    RcPtr<Environment> old_env = current_env_;
+
+    // Helper lambda: execute one iteration body with iter_val as the loop variable.
+    // Returns nullopt to continue looping, or a StmtResult to break/return/throw.
+    auto run_body = [&](Value iter_val) -> std::optional<StmtResult> {
+        if (stmt.has_decl && stmt.var_kind == VarKind::Var) {
+            var_env_->set(stmt.binding, iter_val);
+        } else if (is_lexical) {
+            auto iter_env = RcPtr<Environment>::make(old_env);
+            gc_heap_.Register(iter_env.get());
+            current_env_ = iter_env;
+            current_env_->define(stmt.binding, stmt.var_kind);
+            current_env_->initialize(stmt.binding, iter_val);
+        } else {
+            // no-decl: assign to existing variable
+            auto set_r = current_env_->set(stmt.binding, iter_val);
+            if (!set_r.is_ok()) {
+                current_env_ = old_env;
+                Value thrown = extract_throw_value(pending_throw_, set_r.error().message(),
+                                                   kPendingThrowSentinel);
+                return StmtResult::ok(Completion::throw_(std::move(thrown)));
+            }
+        }
+
+        auto body_r = eval_stmt(*stmt.body);
+        if (is_lexical) current_env_ = old_env;
+
+        if (!body_r.is_ok()) {
+            current_env_ = old_env;
+            return body_r;
+        }
+        const Completion& c = body_r.completion();
+        if (c.is_break()) {
+            if (!c.target.has_value() || c.target == label) {
+                return StmtResult::ok(Completion::normal(Value::undefined()));
+            }
+            current_env_ = old_env;
+            return body_r;
+        }
+        if (c.is_continue()) {
+            if (!c.target.has_value() || c.target == label) {
+                return std::nullopt;  // continue to next iteration
+            }
+            current_env_ = old_env;
+            return body_r;
+        }
+        if (c.is_return() || c.is_throw()) {
+            current_env_ = old_env;
+            return body_r;
+        }
+        return std::nullopt;  // normal: next iteration
+    };
+
+    // Fast path: arrays
+    if (iterable.is_object() && iterable.as_object_raw()->object_kind() == ObjectKind::kArray) {
+        JSObject* arr = static_cast<JSObject*>(iterable.as_object_raw());
+        uint32_t len = arr->array_length_;
+        for (uint32_t i = 0; i < len; i++) {
+            Value val;
+            auto it = arr->elements_.find(i);
+            val = (it != arr->elements_.end()) ? it->second : Value::undefined();
+            auto res = run_body(std::move(val));
+            if (res.has_value()) return *res;
+            // Re-read length in case body mutated the array
+            len = arr->array_length_;
+        }
+        current_env_ = old_env;
+        return StmtResult::ok(Completion::normal(Value::undefined()));
+    }
+
+    // Fast path: strings
+    if (iterable.is_string()) {
+        std::string_view sv = iterable.sv();
+        size_t pos = 0;
+        while (pos < sv.size()) {
+            size_t start = pos;
+            // Decode one UTF-8 code point
+            unsigned char c0 = static_cast<unsigned char>(sv[pos]);
+            size_t cp_bytes = (c0 < 0x80) ? 1 : (c0 < 0xE0) ? 2 : (c0 < 0xF0) ? 3 : 4;
+            if (pos + cp_bytes > sv.size()) cp_bytes = sv.size() - pos;
+            pos += cp_bytes;
+            std::string char_str(sv.data() + start, cp_bytes);
+            auto res = run_body(Value::string(char_str));
+            if (res.has_value()) return *res;
+        }
+        current_env_ = old_env;
+        return StmtResult::ok(Completion::normal(Value::undefined()));
+    }
+
+    // Generic path: object with Symbol.iterator
+    if (iterable.is_object()) {
+        ObjectKind k = iterable.as_object_raw()->object_kind();
+        JSObject* obj = nullptr;
+        if (k == ObjectKind::kOrdinary || k == ObjectKind::kRegExp ||
+            k == ObjectKind::kStringObject || k == ObjectKind::kBooleanObject) {
+            obj = static_cast<JSObject*>(iterable.as_object_raw());
+        }
+        if (obj) {
+            Value iter_method = obj->get_property_by_symbol(symbol_table_.well_known_iterator);
+            if (!iter_method.is_undefined() && !iter_method.is_null()) {
+                // Call Symbol.iterator()
+                auto iter_r = call_function_val(iter_method, iterable, std::span<Value>());
+                if (!iter_r.is_ok()) {
+                    current_env_ = old_env;
+                    Value thrown = extract_throw_value(pending_throw_, iter_r.error().message(),
+                                                       kPendingThrowSentinel);
+                    return StmtResult::ok(Completion::throw_(std::move(thrown)));
+                }
+                Value iterator = iter_r.value();
+                if (!iterator.is_object()) {
+                    current_env_ = old_env;
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                        "iterator must be an object");
+                    return StmtResult::ok(Completion::throw_(*pending_throw_));
+                }
+
+                // Get next() method from iterator
+                Value next_method = Value::undefined();
+                ObjectKind ik = iterator.as_object_raw()->object_kind();
+                if (ik == ObjectKind::kOrdinary || ik == ObjectKind::kArray ||
+                    ik == ObjectKind::kRegExp || ik == ObjectKind::kStringObject ||
+                    ik == ObjectKind::kBooleanObject) {
+                    auto* iter_obj = static_cast<JSObject*>(iterator.as_object_raw());
+                    next_method = iter_obj->get_property("next");
+                }
+
+                // Iterate
+                while (true) {
+                    auto next_r = call_function_val(next_method, iterator, std::span<Value>());
+                    if (!next_r.is_ok()) {
+                        current_env_ = old_env;
+                        Value thrown = extract_throw_value(pending_throw_, next_r.error().message(),
+                                                           kPendingThrowSentinel);
+                        return StmtResult::ok(Completion::throw_(std::move(thrown)));
+                    }
+                    Value result = next_r.value();
+                    if (!result.is_object()) {
+                        current_env_ = old_env;
+                        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                            "iterator result must be an object");
+                        return StmtResult::ok(Completion::throw_(*pending_throw_));
+                    }
+                    // Read done/value
+                    Value done_val = Value::undefined();
+                    Value value = Value::undefined();
+                    ObjectKind rk = result.as_object_raw()->object_kind();
+                    if (rk == ObjectKind::kOrdinary || rk == ObjectKind::kArray) {
+                        auto* result_obj = static_cast<JSObject*>(result.as_object_raw());
+                        done_val = result_obj->get_property("done");
+                        value = result_obj->get_property("value");
+                    }
+                    if (to_boolean(done_val)) break;
+
+                    auto iter_res = run_body(std::move(value));
+                    if (iter_res.has_value()) return *iter_res;
+                }
+
+                current_env_ = old_env;
+                return StmtResult::ok(Completion::normal(Value::undefined()));
+            }
+        }
+    }
+
+    // Not iterable
+    current_env_ = old_env;
+    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "value is not iterable");
+    return StmtResult::ok(Completion::throw_(*pending_throw_));
+}
+
 EvalResult Interpreter::eval_function_expr(const FunctionExpression& expr) {
     return EvalResult::ok(make_function_value(expr.name, expr.params, expr.body, current_env_,
                                               expr.name.has_value()));
@@ -5297,6 +5616,33 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
         if (!key_result.is_ok()) {
             return key_result;
         }
+
+        // Symbol key: look up symbol property on object or prototype
+        if (key_result.value().is_symbol()) {
+            uint64_t sym_id = key_result.value().as_symbol_id();
+            if (this_val.is_string()) {
+                // String primitive: look up symbol in string_prototype_
+                if (string_prototype_) {
+                    callee_val = string_prototype_->get_property_by_symbol(sym_id);
+                } else {
+                    callee_val = Value::undefined();
+                }
+            } else if (!this_val.is_object()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot read properties of " + to_string_val(this_val));
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            } else {
+                RcObject* sym_raw = this_val.as_object_raw();
+                if (sym_raw->object_kind() == ObjectKind::kOrdinary ||
+                    sym_raw->object_kind() == ObjectKind::kArray) {
+                    callee_val = static_cast<JSObject*>(sym_raw)->get_property_by_symbol(sym_id);
+                } else {
+                    callee_val = Value::undefined();
+                }
+            }
+            // Fall through to function call below
+        } else {
+
         std::string key = to_string_val(key_result.value());
 
         if (this_val.is_string()) {
@@ -5351,6 +5697,7 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
             callee_val = Value::undefined();
         }
         }
+        } // end of string-key else branch
     } else {
         auto callee_result = eval_expr(*expr.callee);
         if (!callee_result.is_ok()) {

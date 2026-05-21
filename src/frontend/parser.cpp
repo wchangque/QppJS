@@ -407,6 +407,7 @@ static SourceRange stmt_range(const StmtNode& s) {
                               [](const LabeledStatement& n) { return n.range; },
                               [](const ForStatement& n) { return n.range; },
                               [](const ForInStatement& n) { return n.range; },
+                              [](const ForOfStatement& n) { return n.range; },
                               [](const ImportDeclaration& n) { return n.range; },
                               [](const ExportNamedDeclaration& n) { return n.range; },
                               [](const ExportDefaultDeclaration& n) { return n.range; },
@@ -1685,6 +1686,11 @@ struct Parser {
         return cur.kind == TokenKind::Ident && token_text(cur) == "in";
     }
 
+    // Returns true if cur is the contextual keyword "of".
+    bool is_of_token() const {
+        return cur.kind == TokenKind::Ident && token_text(cur) == "of";
+    }
+
     ParseResult<StmtNode> parse_for_stmt() {
         Token kw = cur;
         advance();  // 消费 for
@@ -1723,7 +1729,26 @@ struct Parser {
                             std::make_unique<StmtNode>(std::move(body.value())),
                             span(kw.range.offset, end)}});
                 }
-                // Not for...in — reconstruct a var_decl init and fall through to ForStatement.
+                // Check for `of`
+                if (is_of_token()) {
+                    advance();  // 消费 `of`
+                    auto right = parse_expr(0);
+                    if (!right.ok()) return ParseResult<StmtNode>::Err(right.error());
+                    auto rp = expect(TokenKind::RParen);
+                    if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
+                    bool saved_top = is_top_level_;
+                    is_top_level_ = false;
+                    auto body = parse_stmt();
+                    is_top_level_ = saved_top;
+                    if (!body.ok()) return body;
+                    uint32_t end = range_end(stmt_range(body.value()));
+                    return ParseResult<StmtNode>::Ok(StmtNode{ForOfStatement{
+                            true, var_kind, std::move(binding_name),
+                            std::make_unique<ExprNode>(std::move(right.value())),
+                            std::make_unique<StmtNode>(std::move(body.value())),
+                            span(kw.range.offset, end)}});
+                }
+                // Not for...in or for...of — reconstruct a var_decl init and fall through to ForStatement.
                 // Build a VariableDeclaration StmtNode manually.
                 std::optional<ExprNode> var_init;
                 SourceRange decl_end = id_tok.range;
@@ -1818,7 +1843,33 @@ struct Parser {
                         span(kw.range.offset, end)}});
             }
 
-            // Not for...in: treat as ForStatement with expression init
+            // Check if this is for...of
+            if (is_of_token()) {
+                // LHS must be an identifier for simple binding
+                if (!std::holds_alternative<Identifier>(expr.value().v)) {
+                    return ParseResult<StmtNode>::Err(
+                            make_parse_error(source, cur, "invalid for...of left-hand side"));
+                }
+                std::string binding_name = std::get<Identifier>(expr.value().v).name;
+                advance();  // 消费 `of`
+                auto right = parse_expr(0);
+                if (!right.ok()) return ParseResult<StmtNode>::Err(right.error());
+                auto rp = expect(TokenKind::RParen);
+                if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
+                bool saved_top = is_top_level_;
+                is_top_level_ = false;
+                auto body = parse_stmt();
+                is_top_level_ = saved_top;
+                if (!body.ok()) return body;
+                uint32_t end = range_end(stmt_range(body.value()));
+                return ParseResult<StmtNode>::Ok(StmtNode{ForOfStatement{
+                        false, VarKind::Var /* unused */, std::move(binding_name),
+                        std::make_unique<ExprNode>(std::move(right.value())),
+                        std::make_unique<StmtNode>(std::move(body.value())),
+                        span(kw.range.offset, end)}});
+            }
+
+            // Not for...in or for...of: treat as ForStatement with expression init
             SourceRange er = expr_range(expr.value());
             auto init = std::make_unique<StmtNode>(StmtNode{ExpressionStatement{std::move(expr.value()), er}});
 

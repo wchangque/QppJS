@@ -59,6 +59,8 @@ private:
                              std::optional<std::string> label = std::nullopt);
     StmtResult eval_for_in_stmt(const ForInStatement& stmt,
                                 std::optional<std::string> label = std::nullopt);
+    StmtResult eval_for_of_stmt(const ForOfStatement& stmt,
+                                std::optional<std::string> label = std::nullopt);
     StmtResult exec_catch(const CatchClause& handler, Value thrown_val);
 
     // Expression evaluation
