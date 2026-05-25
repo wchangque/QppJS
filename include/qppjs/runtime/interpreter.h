@@ -111,14 +111,14 @@ private:
     void hoist_module_vars(const std::vector<StmtNode>& stmts, Environment& module_env);
 
     // Create a JSFunction value with eager prototype initialization.
-    Value make_function_value(std::optional<std::string> name, std::vector<std::string> params,
+    Value make_function_value(std::optional<std::string> name, const std::vector<ParamDef>& params,
                               std::shared_ptr<std::vector<StmtNode>> body,
                               RcPtr<Environment> closure_env,
                               bool is_named_expr = false,
                               std::optional<std::string> rest_param = std::nullopt);
 
     // Create an async JSFunction value (wraps call in Promise).
-    Value make_async_function_value(std::optional<std::string> name, std::vector<std::string> params,
+    Value make_async_function_value(std::optional<std::string> name, const std::vector<ParamDef>& params,
                                     std::shared_ptr<std::vector<StmtNode>> body,
                                     RcPtr<Environment> closure_env,
                                     std::optional<std::string> rest_param = std::nullopt);

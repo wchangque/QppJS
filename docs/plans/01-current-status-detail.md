@@ -4,6 +4,26 @@
 
 ## 1. 已完成任务
 
+- [x] **函数默认参数值 Review 必修修复 M1/M2/M3/M4**（2026-05-25）：
+  - **M1（P1-A）解释器求值顺序**：`call_function` 的 param_defs 循环改为先 `fn_env->define(name, VarKind::Var)` + `fn_env->initialize(name, arg_val)`（实参或 undefined），再按需 `eval_expr(default)` + `fn_env->set(name, default_val)`。确保前序参数在后续默认值求值时已经在 fn_env 中可见（`f(a=1, b=a+1)` 无参调用 b=2 正确）。
+  - **M2（P1-B）解释器 arguments/this 早建立**：将 `arguments` 对象创建和 `actual_this` 计算移到 param_defs 绑定循环之前（含临时设置/恢复 `current_this_`），使默认值表达式可引用 `arguments` 和 `this`（`f(a=arguments.length)` 正确）。
+  - **M3（P1-C）VM hoist_vars 顺序**：`compiler.cpp` 将 kDefVar 字节码序列从 prologue 之前移到 prologue 之后；`vm.cpp push_call_frame` 移除对 `bc->var_decls` 的预定义（保留 `function_decls`）。body var 在默认值求值期间不可见，外层同名变量被正确引用（`f(a=x){var x='inner'}` 在外层 `x='outer'` 时 a='outer'）。
+  - **M4（P2-A）解析器优先级**：`parser.cpp` 将默认值解析从 `parse_expr(2)` 改为 `parse_expr(1)`（允许 lbp=2 的赋值运算符作为默认值，`f(a=x=1)` 正确解析）。
+  - **新增测试（DP-42～DP-45）**：双默认前序引用（Interp+VM）、arguments 在默认值中（Interp）、body var 不可见（VM+Interp）、赋值表达式默认值（Interp+VM）。
+  - **修改文件**：`src/frontend/parser.cpp`（1 行），`src/vm/compiler.cpp`（kDefVar 移位），`src/vm/vm.cpp`（移除 var_decls 预定义），`src/runtime/interpreter.cpp`（M1+M2 重构）。
+  - 3601/3601 通过（coverage），0 LSan 泄漏。
+
+- [x] **函数默认参数值（Default Parameter Values）**（2026-05-25）：
+  - **AST 变更**：新增 `ParamDef{string name, shared_ptr<ExprNode> default_init}` 结构体（`ast.h`）；`FunctionExpression`/`ArrowFunctionExpression`/`AsyncFunctionExpression`/`FunctionDeclaration`/`AsyncFunctionDeclaration` 五个 AST 节点的 `params` 字段从 `vector<string>` 改为 `vector<ParamDef>`；`ast_dump.cpp` 5 处 `params[i]` → `params[i].name`。
+  - **JSFunction / BytecodeFunction 扩展**：`JSFunction` 新增 `param_defs_`（`shared_ptr<vector<ParamDef>>`，getter/setter/ClearRefs 重置）；`BytecodeFunction` 新增 `param_defs`（shared_ptr）+ `length_count`（uint16_t，首个默认参数前的参数数量）。
+  - **Parser 变更**：`parse_function_params` 返回 `ParseResult<vector<ParamDef>>`，`...rest = expr` → SyntaxError（DP-00）；`parse_arrow_body` 签名改为接受 `vector<ParamDef>`；`nud(LParen)` 中 `parse_expr(2)` → `parse_expr(1)` 允许 AssignmentExpression 节点作为箭头函数参数，通过检测 `AssignmentExpression{op: Assign}` 提取默认值（使用 `std::move(*ae.value)` 解决 ExprNode 不可复制问题）；`led(Arrow)` 单 ident 路径改为 `ParamDef{name, nullptr}`。
+  - **Interpreter 变更**：`make_function_value`/`eval_arrow_function_expr`/`make_async_function_value` 计算 `length_count`、提取 param_names、存储 param_defs；`call_function` 有 `param_defs` 时在 fn_env 中求值默认值（env 切换：`current_env_`/`var_env_` 临时设为 fn_env，逐参数绑定，出错后恢复）。`null` 不触发默认值，仅 `undefined` 触发。
+  - **VM Compiler 变更**：`compile_function` 提取 param_names、计算 `length_count`、存储 `param_defs`；为每个有 `default_init` 的参数在函数体前发射 `kGetVar / kLoadUndefined / kStrictEq / kJumpIfFalse(skip) / default_expr / kSetVar / kPop / label_skip` 序列。
+  - **VM 变更**：`kMakeFunction` 用 `fn_bc->length_count` 设置 `.length` 属性，并将 `fn_bc->param_defs` 存入 JSFunction。
+  - **function.length 截断规则**：`length_count` = 首个有默认值参数的索引（rest 参数不计入）。
+  - **测试**：新建 `tests/unit/default_params_test.cpp`（DP-00～DP-26，27 个测试），含 Parser SyntaxError、Interpreter、VM 三路径对称覆盖；修复已有测试（`function_test.cpp`、`parser_module_test.cpp`）中 `params[i]` → `params[i].name`。
+  - 3578/3578 通过（coverage），0 LSan 泄漏。
+
 - [x] **展开运算符 Spread / Rest — Review 必修问题修复 M1/M2**（2026-05-25）：
   - **M1 Compiler 安全修复**：`compile_expr` 中 `SpreadElement` 分支从 no-op 改为 emit `kLoadString(SyntaxError: invalid use of spread element) + kThrow`。原 no-op 在 `var x = ...arr` 等非法位置时不 push 任何值，后续 `kPop`/赋值 会下溢栈，触发 heap-buffer-overflow；现在会在运行时抛 SyntaxError，栈始终保持一致。
   - **M2a 迭代器 self-iterable 修复（根本原因）**：vm.cpp `array_iterator_fn` 和 `string_iterator_fn` 创建 iter_obj 后，额外注册 `[Symbol.iterator]() { return this; }` 的 NativeFn（gc_heap_.Register，无捕获 lambda）。同步在 interpreter.cpp 数组迭代器 / 字符串迭代器工厂中对称修复。修复后 `[...[1,2][Symbol.iterator]()]` / `[...'ab'[Symbol.iterator]()]` 能走 spread 的 Symbol.iterator 通用路径正确展开。

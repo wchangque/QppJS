@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 3551/3551 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 3601/3601 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-05-25 |
-| 下一步 | 继续提升 test262 通过率（默认参数值、解构赋值、in 运算符等） |
+| 下一步 | 继续提升 test262 通过率（解构赋值、in 运算符等） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
@@ -22,6 +22,12 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **函数默认参数值 Review 必修修复 M1/M2/M3/M4**（2026-05-25）：M1：解释器 param_defs 循环改为先 define+initialize（实参或 undefined），再 eval default 后用 set() 更新，确保前序参数在后续默认值求值时可见；M2：解释器将 arguments 对象创建和 actual_this 计算移到参数绑定循环之前（含临时设置 current_this_），使默认值表达式可引用 arguments 和 this；M3：compiler.cpp 将 kDefVar 字节码序列从 prologue 之前移到 prologue 之后，vm.cpp push_call_frame 移除对 var_decls 的预定义（保留 function_decls），确保 body var 在默认值求值期间不可见；M4：parser.cpp 将默认值解析从 parse_expr(2) 改为 parse_expr(1)，允许赋值表达式作为默认值。新增 8 个测试（DP-42～DP-45，Interp+VM 对称）。3601/3601 通过（coverage），0 LSan 泄漏。
+
+- [x] **函数默认参数值 Testing Agent 边界补测 + arguments[n] Bug 修复**（2026-05-25）：新增 17 个测试（DP-27～DP-41，Interp+VM 对称）。覆盖：`0`/`false`/`""`/`NaN` 不触发默认值；默认值后跟必选参数；多次调用副作用计数；rest+default 共存；默认值表达式中调用辅助函数/IIFE；函数声明与函数表达式默认值一致性；`arguments` unmapped 语义（length 反映实际 arity，`arguments[0]` 反映原始调用值）；简单参数列表重复参数宽松模式允许。同步修复 1 处 Bug：`arguments` 对象为 kOrdinary，原实现将元素存入 `elements_[i]`（整型 map），但 kOrdinary `get_property("0")` 只查 `index_map_["0"]`（字符串 map），导致 `arguments[0]` 返回 undefined；修复为改用 `set_property(std::to_string(i), args[i])`（interpreter.cpp + vm.cpp 各 1 处）。3595/3595 通过（coverage），0 LSan 泄漏。
+
+- [x] **函数默认参数值（Default Parameter Values）**（2026-05-25）：`ParamDef{name, shared_ptr<ExprNode> default_init}` 结构体；5 个函数 AST 节点 `params` 字段从 `vector<string>` 改为 `vector<ParamDef>`；JSFunction 新增 `param_defs_`（shared_ptr<vector<ParamDef>>，getter/setter，ClearRefs 重置）；BytecodeFunction 新增 `param_defs`/`length_count`（int→params 首个默认值前的参数数量）；Parser `parse_function_params` 返回 `ParseResult<vector<ParamDef>>`，`...rest = expr` → SyntaxError，箭头函数 `(a = 1) =>` 通过 `parse_expr(1)` + AssignmentExpression 检测支持；Interpreter `call_function` 有 `param_defs` 时切换到 fn_env 环境求值默认值（环境保存/恢复）；Compiler 为每个有 `default_init` 的参数在函数体前发射 `kGetVar/kLoadUndefined/kStrictEq/kJumpIfFalse/default_expr/kSetVar/kPop` 序列；`kMakeFunction` 用 `length_count` 设置 `.length`，存储 `param_defs`；`function.length` 截断规则：首个有默认值的参数位置；`null` 不触发默认值，仅 `undefined` 触发；新增 27 个测试（DP-00～DP-26，Parser+Interpreter+VM 对称）。3578/3578 通过（coverage），0 LSan 泄漏。
 
 - [x] **展开运算符 Spread / Rest — Review 必修问题修复 M1/M2**（2026-05-25）：M1：Compiler `compile_expr` 的 `SpreadElement` 分支从 no-op 改为 emit `kLoadString + kThrow`（SyntaxError: invalid use of spread element），防止非法位置 SpreadElement 导致 VM 栈下溢/heap-buffer-overflow；M2a：vm.cpp 数组/字符串 `[Symbol.iterator]()` 工厂函数在创建的 iter_obj 上额外设置 `[Symbol.iterator]() { return this; }`（注册 gc_heap_，无捕获 lambda），使迭代器对象本身也是 iterable；interpreter.cpp 同步对称修复；M2b：`spread_into`（interpreter.cpp）和 `kSpreadAppend`（vm.cpp）泛型路径前增加 `kArrayIterator`/`kStringIterator`/`kForOfIterator` 三类原生迭代器快路径（直接按 C++ 字段消费迭代器，无 JS 函数调用）；新增 5 个测试（M1 VM illegal position throw / M2 interp+VM array iterator spread / M2 interp+VM string iterator spread）。3551/3551 通过（coverage），0 LSan 泄漏。
 - [x] **展开运算符 Spread / Rest 参数**（2026-05-25）：`DotDotDot` token（词法器一次性扫描 `...`）；`SpreadElement` AST 节点（argument 指针 + range）；Parser 数组字面量/函数调用/new 调用中识别 `...expr`，函数参数列表识别 `...rest`（rest_param 字段写入 FunctionDeclaration/FunctionExpression/ArrowFunctionExpression）；Interpreter：`spread_into` 辅助函数（数组快路径/字符串快路径/Symbol.iterator 通用路径），`eval_array_expr` 展开，`eval_call_expr`/`eval_new_expr` 参数展开，`call_function` rest 参数绑定；`make_function_value`/`make_async_function_value`/`eval_arrow_function_expr` 传递 rest_param；VM：新增 4 条 opcode（`kSwap`/`kArrayAppend`/`kSpreadAppend`/`kApplyArgs`），`compile_array_expr` 有展开时切换 append 模式，`compile_call_expr`/`compile_new_expr` 有展开时构造 [func, this, args_array]+kApplyArgs 布局，`kMakeFunction` 复制 rest_param 到 JSFunction，`push_call_frame` 绑定 rest 数组；`ast_dump`/`parser.cpp expr_range`/`hoist_vars_scan_expr` 新增 SpreadElement 分支；`LexerTest.OperatorSpreadSplitsToDotDotDot` 测试同步更新为期待 DotDotDot token；新增 `spread_rest_test.cpp`（27 个测试：数组展开 × Interp+VM、调用参数展开 × Interp+VM、rest 参数 × Interp+VM、spread+rest 组合、new 调用展开）。3516/3516 通过（coverage），0 LSan 新增泄漏。

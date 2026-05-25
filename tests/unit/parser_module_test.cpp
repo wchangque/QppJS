@@ -344,8 +344,8 @@ TEST(ParserModule, ExportDefaultNamedFunctionWithParams) {
     ASSERT_TRUE(fe.name.has_value());
     EXPECT_EQ(*fe.name, "add");
     ASSERT_EQ(fe.params.size(), 2u);
-    EXPECT_EQ(fe.params[0], "a");
-    EXPECT_EQ(fe.params[1], "b");
+    EXPECT_EQ(fe.params[0].name, "a");
+    EXPECT_EQ(fe.params[1].name, "b");
 }
 
 // ---- 重复导出：具名声明与 specifier 混合 ----
@@ -591,8 +591,8 @@ TEST(ParserModule, ExportAsyncFunctionWithParams) {
     const auto& afd = std::get<AsyncFunctionDeclaration>(decl.declaration->v);
     EXPECT_EQ(afd.name, "add");
     ASSERT_EQ(afd.params.size(), 2u);
-    EXPECT_EQ(afd.params[0], "a");
-    EXPECT_EQ(afd.params[1], "b");
+    EXPECT_EQ(afd.params[0].name, "a");
+    EXPECT_EQ(afd.params[1].name, "b");
 }
 
 // export async function 与 export function 在同一模块顶层，两个节点均正确

@@ -76,6 +76,10 @@ public:
     const std::optional<std::string>& rest_param() const { return rest_param_; }
     void set_rest_param(std::optional<std::string> v) { rest_param_ = std::move(v); }
 
+    // 参数默认值定义（nullptr = native 函数或无默认值参数）
+    const std::shared_ptr<std::vector<ParamDef>>& param_defs() const { return param_defs_; }
+    void set_param_defs(std::shared_ptr<std::vector<ParamDef>> v) { param_defs_ = std::move(v); }
+
     // Static properties on the function object itself (e.g., Object.keys, Array.isArray).
     void set_property(const std::string& key, Value value);
     Value get_property(const std::string& key) const;
@@ -108,6 +112,9 @@ private:
 
     // rest 参数名
     std::optional<std::string> rest_param_;
+
+    // 参数默认值定义（nullptr = native 函数或无默认值参数）
+    std::shared_ptr<std::vector<ParamDef>> param_defs_;
 };
 
 }  // namespace qppjs

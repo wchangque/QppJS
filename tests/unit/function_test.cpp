@@ -218,8 +218,8 @@ TEST(FunctionParserTest, ParseFunctionDeclaration) {
     const auto& fd = std::get<FunctionDeclaration>(r.value().body[0].v);
     EXPECT_EQ(fd.name, "f");
     ASSERT_EQ(fd.params.size(), 2u);
-    EXPECT_EQ(fd.params[0], "a");
-    EXPECT_EQ(fd.params[1], "b");
+    EXPECT_EQ(fd.params[0].name, "a");
+    EXPECT_EQ(fd.params[1].name, "b");
 }
 
 TEST(FunctionParserTest, ParseFunctionExpression) {

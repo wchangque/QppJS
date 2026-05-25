@@ -50,7 +50,7 @@ private:
 
     // Compile a function body (params + statements). Creates a new BytecodeFunction.
     std::shared_ptr<BytecodeFunction> compile_function(std::optional<std::string> name,
-                                                        const std::vector<std::string>& params,
+                                                        const std::vector<ParamDef>& params,
                                                         const std::vector<StmtNode>& body,
                                                         bool is_program = false,
                                                         std::optional<std::string> rest_param = std::nullopt);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "qppjs/frontend/ast.h"
 #include "qppjs/runtime/value.h"
 
 #include <cstdint>
@@ -23,6 +24,8 @@ struct BytecodeFunction {
     bool is_async = false;                                       // true for async functions
     bool is_arrow = false;                                       // true for arrow functions
     std::optional<std::string> rest_param;                       // rest parameter name (...args)
+    std::shared_ptr<std::vector<ParamDef>> param_defs;           // parameter default value definitions
+    uint16_t length_count = 0;                                   // number of params before first default
     // If the last statement is a simple identifier expression, its name is stored here
     // (used by VM::exec() to re-read the value after DrainAll)
     std::optional<std::string> last_expr_name;

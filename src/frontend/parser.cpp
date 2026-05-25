@@ -656,8 +656,8 @@ struct Parser {
                         make_parse_error(source, cur, "unexpected ')'"));
                 }
 
-                // 解析第一个表达式（赋值级别，不吞逗号）
-                auto first = parse_expr(2);
+                // 解析第一个表达式（允许赋值表达式，以支持 (a = 1) => a 语法）
+                auto first = parse_expr(1);
                 if (!first.ok()) return first;
 
                 // (a, b, ...) — 先收集所有表达式，再按 ) 后是否跟 => 决定路径
@@ -666,15 +666,15 @@ struct Parser {
                     items.push_back(std::move(first.value()));
                     while (cur.kind == TokenKind::Comma) {
                         advance();  // 消费 ,
-                        auto item = parse_expr(2);
+                        auto item = parse_expr(1);
                         if (!item.ok()) return item;
                         items.push_back(std::move(item.value()));
                     }
                     auto rp2 = expect(TokenKind::RParen);
                     if (!rp2.ok()) return ParseResult<ExprNode>::Err(rp2.error());
                     if (cur.kind == TokenKind::Arrow && !got_lf) {
-                        // 箭头函数：验证每项都是 Identifier 或最后一项是 SpreadElement(Identifier)
-                        std::vector<std::string> params;
+                        // 箭头函数：每项为 Identifier / AssignmentExpression(=) / 末尾 SpreadElement
+                        std::vector<ParamDef> params;
                         std::optional<std::string> rest;
                         for (size_t i = 0; i < items.size(); ++i) {
                             auto& item = items[i];
@@ -690,7 +690,16 @@ struct Parser {
                                 }
                                 rest = std::get<Identifier>(sp.argument->v).name;
                             } else if (std::holds_alternative<Identifier>(item.v)) {
-                                params.push_back(std::get<Identifier>(item.v).name);
+                                params.push_back(ParamDef{std::get<Identifier>(item.v).name, nullptr});
+                            } else if (std::holds_alternative<AssignmentExpression>(item.v)) {
+                                // (a = expr) => ...  参数默认值
+                                auto& ae = std::get<AssignmentExpression>(item.v);
+                                if (ae.op != AssignOp::Assign) {
+                                    return ParseResult<ExprNode>::Err(make_parse_error(
+                                        source, cur, "arrow function parameter must be an identifier"));
+                                }
+                                auto default_expr = std::make_shared<ExprNode>(std::move(*ae.value));
+                                params.push_back(ParamDef{std::move(ae.target), std::move(default_expr)});
                             } else {
                                 return ParseResult<ExprNode>::Err(make_parse_error(
                                     source, cur, "arrow function parameter must be an identifier"));
@@ -707,7 +716,7 @@ struct Parser {
                 auto rp = expect(TokenKind::RParen);
                 if (!rp.ok()) return ParseResult<ExprNode>::Err(rp.error());
 
-                // (a) => ...  单参括号箭头函数 或 (...rest) => ...
+                // (a) => ...  单参括号箭头函数 或 (...rest) => ... 或 (a = 1) => ...
                 if (cur.kind == TokenKind::Arrow && !got_lf) {
                     if (std::holds_alternative<SpreadElement>(first.value().v)) {
                         // (...rest) => body
@@ -720,13 +729,25 @@ struct Parser {
                         advance();  // 消费 =>
                         return parse_arrow_body({}, paren_start, std::move(rest_name));
                     }
-                    if (!std::holds_alternative<Identifier>(first.value().v)) {
-                        return ParseResult<ExprNode>::Err(
-                            make_parse_error(source, cur, "arrow function parameter must be an identifier"));
+                    if (std::holds_alternative<Identifier>(first.value().v)) {
+                        std::string param_name = std::get<Identifier>(first.value().v).name;
+                        advance();  // 消費 =>
+                        return parse_arrow_body({ParamDef{std::move(param_name), nullptr}}, paren_start);
                     }
-                    std::string param_name = std::get<Identifier>(first.value().v).name;
-                    advance();  // 消費 =>
-                    return parse_arrow_body({std::move(param_name)}, paren_start);
+                    if (std::holds_alternative<AssignmentExpression>(first.value().v)) {
+                        // (a = expr) => ...  单参数默认值
+                        auto& ae = std::get<AssignmentExpression>(first.value().v);
+                        if (ae.op != AssignOp::Assign) {
+                            return ParseResult<ExprNode>::Err(
+                                make_parse_error(source, cur, "arrow function parameter must be an identifier"));
+                        }
+                        auto default_expr = std::make_shared<ExprNode>(std::move(*ae.value));
+                        advance();  // 消费 =>
+                        return parse_arrow_body({ParamDef{std::move(ae.target), std::move(default_expr)}},
+                                                paren_start);
+                    }
+                    return ParseResult<ExprNode>::Err(
+                        make_parse_error(source, cur, "arrow function parameter must be an identifier"));
                 }
 
                 // 普通括号表达式
@@ -1051,7 +1072,7 @@ struct Parser {
             }
             std::string param_name = std::get<Identifier>(left.v).name;
             uint32_t fn_start = std::get<Identifier>(left.v).range.offset;
-            return parse_arrow_body({std::move(param_name)}, fn_start);
+            return parse_arrow_body({ParamDef{std::move(param_name), nullptr}}, fn_start);
         }
 
         // 后缀自增/自减：x++ / x--
@@ -1310,35 +1331,48 @@ struct Parser {
 
     // ---- 函数辅助 ----
 
-    // 解析参数列表 (a, b, c)，返回参数名向量
-    ParseResult<std::vector<std::string>> parse_function_params(
+    // 解析参数列表 (a, b = expr, ...rest)，返回 ParamDef 向量
+    ParseResult<std::vector<ParamDef>> parse_function_params(
             std::optional<std::string>& rest_param_out) {
         rest_param_out = std::nullopt;
         auto lp = expect(TokenKind::LParen);
-        if (!lp.ok()) return ParseResult<std::vector<std::string>>::Err(lp.error());
-        std::vector<std::string> params;
+        if (!lp.ok()) return ParseResult<std::vector<ParamDef>>::Err(lp.error());
+        std::vector<ParamDef> params;
         while (cur.kind != TokenKind::RParen && cur.kind != TokenKind::Eof) {
             if (cur.kind == TokenKind::DotDotDot) {
-                // rest parameter: ...name
+                // rest parameter: ...name（不允许默认值）
                 advance();  // 消费 ...
                 if (cur.kind != TokenKind::Ident) {
-                    return ParseResult<std::vector<std::string>>::Err(
+                    return ParseResult<std::vector<ParamDef>>::Err(
                         make_parse_error(source, cur, "expected identifier for rest parameter"));
                 }
                 rest_param_out = std::string(token_text(cur));
                 advance();
+                if (cur.kind == TokenKind::Eq) {
+                    return ParseResult<std::vector<ParamDef>>::Err(
+                        make_parse_error(source, cur, "SyntaxError: rest parameter may not have a default initializer"));
+                }
                 if (cur.kind == TokenKind::Comma) {
-                    return ParseResult<std::vector<std::string>>::Err(
+                    return ParseResult<std::vector<ParamDef>>::Err(
                         make_parse_error(source, cur, "rest element must be last parameter"));
                 }
                 break;
             }
             if (cur.kind != TokenKind::Ident) {
-                return ParseResult<std::vector<std::string>>::Err(
+                return ParseResult<std::vector<ParamDef>>::Err(
                         make_parse_error(source, cur, "expected parameter name"));
             }
-            params.push_back(std::string(token_text(cur)));
+            std::string pname = std::string(token_text(cur));
             advance();
+            // 默认值
+            std::shared_ptr<ExprNode> default_init;
+            if (cur.kind == TokenKind::Eq) {
+                advance();  // 消费 =
+                auto dexpr = parse_expr(1);  // AssignmentExpression 级，允许赋值，不吞逗号
+                if (!dexpr.ok()) return ParseResult<std::vector<ParamDef>>::Err(dexpr.error());
+                default_init = std::make_shared<ExprNode>(std::move(dexpr.value()));
+            }
+            params.push_back(ParamDef{std::move(pname), std::move(default_init)});
             if (cur.kind == TokenKind::Comma) {
                 advance();
             } else {
@@ -1346,8 +1380,8 @@ struct Parser {
             }
         }
         auto rp = expect(TokenKind::RParen);
-        if (!rp.ok()) return ParseResult<std::vector<std::string>>::Err(rp.error());
-        return ParseResult<std::vector<std::string>>::Ok(std::move(params));
+        if (!rp.ok()) return ParseResult<std::vector<ParamDef>>::Err(rp.error());
+        return ParseResult<std::vector<ParamDef>>::Ok(std::move(params));
     }
 
     // 解析函数体 { stmts }，返回 (body, range)
@@ -1381,7 +1415,7 @@ struct Parser {
 
     // 解析箭头函数体（已消费 =>）
     // params: 参数列表；range_start: 整个箭头函数起始偏移；rest_param: 可选 rest 参数名
-    ParseResult<ExprNode> parse_arrow_body(std::vector<std::string> params, uint32_t range_start,
+    ParseResult<ExprNode> parse_arrow_body(std::vector<ParamDef> params, uint32_t range_start,
                                            std::optional<std::string> rest_param = std::nullopt) {
         std::vector<StmtNode> stmts;
         SourceRange body_range;

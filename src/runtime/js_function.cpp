@@ -37,6 +37,7 @@ void JSFunction::ClearRefs() {
     if (is_arrow_) {
         lexical_this_ = Value::undefined();
     }
+    param_defs_.reset();
 }
 
 void JSFunction::set_property(const std::string& key, Value value) {

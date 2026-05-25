@@ -5146,20 +5146,35 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
     return EvalResult::ok(val_result.value());
 }
 
-Value Interpreter::make_function_value(std::optional<std::string> name, std::vector<std::string> params,
+Value Interpreter::make_function_value(std::optional<std::string> name, const std::vector<ParamDef>& params,
                                         std::shared_ptr<std::vector<StmtNode>> body,
                                         RcPtr<Environment> closure_env,
                                         bool is_named_expr,
                                         std::optional<std::string> rest_param) {
+    // 计算 length_count（第一个有默认值的参数的索引）
+    uint32_t length_count = static_cast<uint32_t>(params.size());
+    for (uint32_t i = 0; i < static_cast<uint32_t>(params.size()); ++i) {
+        if (params[i].default_init != nullptr) {
+            length_count = i;
+            break;
+        }
+    }
+
     auto fn = RcPtr<JSFunction>::make();
     fn->set_name(name);
-    fn->set_params(std::move(params));
+    // 提取参数名列表（供原有绑定逻辑和 arguments 使用）
+    std::vector<std::string> param_names;
+    param_names.reserve(params.size());
+    for (const auto& pd : params) param_names.push_back(pd.name);
+    fn->set_params(std::move(param_names));
+    // 设置 param_defs 以供 call_function 中默认值求值
+    fn->set_param_defs(std::make_shared<std::vector<ParamDef>>(params));
     fn->set_body(std::move(body));
     fn->set_closure_env(std::move(closure_env));
     fn->set_is_named_expr(is_named_expr);
     fn->set_defining_module(current_module_);
     fn->set_rest_param(std::move(rest_param));
-    fn->set_property("length", Value::number(static_cast<double>(fn->params().size())));
+    fn->set_property("length", Value::number(static_cast<double>(length_count)));
 
     // Eager prototype initialization: F.prototype = { constructor: F }
     Value fn_val = Value::object(ObjectPtr(fn));
@@ -5202,11 +5217,60 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
         }
     }
 
-    const auto& params = fn->params();
-    for (size_t i = 0; i < params.size(); ++i) {
-        Value arg_val = (i < args.size()) ? args[i] : Value::undefined();
-        fn_env->define(params[i], VarKind::Var);
-        fn_env->initialize(params[i], std::move(arg_val));
+    // 守卫 2：arguments 对象在参数绑定前建立（M2：默认值表达式可引用 arguments）
+    // 箭头函数不创建 arguments（词法穿透外层）
+    if (!fn->is_arrow()) {
+        auto arg_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(arg_obj.get());
+        arg_obj->set_proto(object_prototype_);
+        // arguments 是 kOrdinary 对象，用 set_property 存储数字索引属性
+        // 这样 arguments[0] / arguments["0"] 才能通过 get_property("0") 正确读到
+        for (size_t i = 0; i < args.size(); ++i) {
+            arg_obj->set_property(std::to_string(i), args[i]);
+        }
+        arg_obj->set_property("length", Value::number(static_cast<double>(args.size())));
+        fn_env->define("arguments", VarKind::Var);
+        fn_env->initialize("arguments", Value::object(ObjectPtr(arg_obj)));
+    }
+
+    // 守卫 3：箭头函数使用词法 this（M2：actual_this 在参数绑定前确定）
+    Value actual_this = fn->is_arrow() ? fn->lexical_this() : std::move(this_val);
+
+    // 参数绑定：若有 param_defs 则支持默认值求值
+    if (fn->param_defs() != nullptr) {
+        const auto& defs = *fn->param_defs();
+        // 切换到 fn_env 并临时设置 this，以便默认值表达式能引用前面已绑定的参数、arguments 和 this
+        RcPtr<Environment> old_env = current_env_;
+        RcPtr<Environment> old_var_env = var_env_;
+        Value old_this = current_this_;
+        current_env_ = fn_env;
+        var_env_ = fn_env;
+        current_this_ = actual_this;  // 临时设置 this（M2）
+        for (size_t i = 0; i < defs.size(); ++i) {
+            Value arg_val = (i < args.size()) ? args[i] : Value::undefined();
+            fn_env->define(defs[i].name, VarKind::Var);   // 先声明（M1）
+            fn_env->initialize(defs[i].name, arg_val);    // 初始化为实参或 undefined（M1）
+            if (arg_val.is_undefined() && defs[i].default_init != nullptr) {
+                auto default_r = eval_expr(*defs[i].default_init);
+                if (!default_r.is_ok()) {
+                    current_env_ = old_env;
+                    var_env_ = old_var_env;
+                    current_this_ = std::move(old_this);
+                    return StmtResult::err(default_r.error());
+                }
+                fn_env->set(defs[i].name, default_r.value());  // 更新为默认值（M1）
+            }
+        }
+        current_env_ = old_env;
+        var_env_ = old_var_env;
+        current_this_ = std::move(old_this);  // 恢复 this（M2）
+    } else {
+        const auto& params = fn->params();
+        for (size_t i = 0; i < params.size(); ++i) {
+            Value arg_val = (i < args.size()) ? args[i] : Value::undefined();
+            fn_env->define(params[i], VarKind::Var);
+            fn_env->initialize(params[i], std::move(arg_val));
+        }
     }
 
     // Bind rest parameter
@@ -5215,7 +5279,7 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
         auto rest_arr = RcPtr<JSObject>::make(ObjectKind::kArray);
         gc_heap_.Register(rest_arr.get());
         rest_arr->set_proto(array_prototype_);
-        size_t rest_start = params.size();
+        size_t rest_start = fn->params().size();
         for (size_t i = rest_start; i < args.size(); ++i) {
             rest_arr->elements_[static_cast<uint32_t>(i - rest_start)] = args[i];
         }
@@ -5224,23 +5288,6 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
         fn_env->define(rest_name, VarKind::Var);
         fn_env->initialize(rest_name, Value::object(ObjectPtr(rest_arr)));
     }
-
-    // 守卫 2：箭头函数不创建 arguments（词法穿透外层）
-    if (!fn->is_arrow()) {
-        auto arg_obj = RcPtr<JSObject>::make();
-        gc_heap_.Register(arg_obj.get());
-        arg_obj->set_proto(object_prototype_);
-        for (size_t i = 0; i < args.size(); ++i) {
-            arg_obj->elements_[static_cast<uint32_t>(i)] = args[i];
-        }
-        arg_obj->array_length_ = static_cast<uint32_t>(args.size());
-        arg_obj->set_property("length", Value::number(static_cast<double>(args.size())));
-        fn_env->define("arguments", VarKind::Var);
-        fn_env->initialize("arguments", Value::object(ObjectPtr(arg_obj)));
-    }
-
-    // 守卫 3：箭头函数使用词法 this
-    Value actual_this = fn->is_arrow() ? fn->lexical_this() : std::move(this_val);
 
     ScopeGuard guard(*this, fn_env, fn_env, std::move(actual_this), /*is_call=*/true);
     hoist_vars(*fn->body(), *fn_env);
@@ -5790,10 +5837,21 @@ EvalResult Interpreter::eval_function_expr(const FunctionExpression& expr) {
 }
 
 EvalResult Interpreter::eval_arrow_function_expr(const ArrowFunctionExpression& expr) {
+    uint32_t length_count = static_cast<uint32_t>(expr.params.size());
+    for (uint32_t i = 0; i < static_cast<uint32_t>(expr.params.size()); ++i) {
+        if (expr.params[i].default_init != nullptr) {
+            length_count = i;
+            break;
+        }
+    }
     auto fn = RcPtr<JSFunction>::make();
-    fn->set_params(expr.params);
+    std::vector<std::string> param_names;
+    param_names.reserve(expr.params.size());
+    for (const auto& pd : expr.params) param_names.push_back(pd.name);
+    fn->set_params(std::move(param_names));
+    fn->set_param_defs(std::make_shared<std::vector<ParamDef>>(expr.params));
     fn->set_rest_param(expr.rest_param);
-    fn->set_property("length", Value::number(static_cast<double>(expr.params.size())));
+    fn->set_property("length", Value::number(static_cast<double>(length_count)));
     fn->set_body(expr.body_stmts);
     fn->set_closure_env(current_env_);
     fn->set_defining_module(current_module_);
@@ -6682,16 +6740,25 @@ EvalResult Interpreter::eval_update_expr(const UpdateExpression& expr) {
 // ---- async/await ----
 
 Value Interpreter::make_async_function_value(std::optional<std::string> name,
-                                              std::vector<std::string> params,
+                                              const std::vector<ParamDef>& params,
                                               std::shared_ptr<std::vector<StmtNode>> body,
                                               RcPtr<Environment> closure_env,
                                               std::optional<std::string> rest_param) {
+    // 计算 length_count
+    uint32_t length_count = static_cast<uint32_t>(params.size());
+    for (uint32_t i = 0; i < static_cast<uint32_t>(params.size()); ++i) {
+        if (params[i].default_init != nullptr) { length_count = i; break; }
+    }
+
     // Create a native JSFunction that wraps the async body execution
     auto fn = RcPtr<JSFunction>::make();
     fn->set_name(name);
-    fn->set_params(params);
+    std::vector<std::string> param_names;
+    param_names.reserve(params.size());
+    for (const auto& pd : params) param_names.push_back(pd.name);
+    fn->set_params(param_names);
     fn->set_rest_param(rest_param);
-    fn->set_property("length", Value::number(static_cast<double>(params.size())));
+    fn->set_property("length", Value::number(static_cast<double>(length_count)));
     fn->set_body(body);
     fn->set_closure_env(closure_env);
     fn->set_defining_module(current_module_);
@@ -6704,8 +6771,12 @@ Value Interpreter::make_async_function_value(std::optional<std::string> name,
     // P2-D: capture fn as raw pointer for the self-reference binding inside the body.
     JSFunction* fn_self_raw = fn.get();
 
+    // 捕获 param_defs 供 lambda 内默认值求值
+    auto param_defs_captured = std::make_shared<std::vector<ParamDef>>(params);
+
     // The async wrapper: creates outer_promise, executes body, fulfills/rejects
-    fn->set_native_fn([this, body, params, closure_env, name, fn_self_raw, rest_param](
+    fn->set_native_fn([this, body, param_defs_captured, closure_env, name, fn_self_raw,
+                       rest_param](
             Value this_val_arg, std::vector<Value> call_args, bool) mutable -> EvalResult {
         // Create outer promise
         auto outer_promise = RcPtr<JSPromise>::make();
@@ -6723,11 +6794,37 @@ Value Interpreter::make_async_function_value(std::optional<std::string> name,
             fn_env->initialize(name.value(), Value::object(ObjectPtr(RcPtr<JSFunction>(fn_self_raw))));
         }
 
-        // Bind parameters
-        for (size_t i = 0; i < params.size(); ++i) {
-            Value arg_val = (i < call_args.size()) ? call_args[i] : Value::undefined();
-            fn_env->define(params[i], VarKind::Var);
-            fn_env->initialize(params[i], std::move(arg_val));
+        // Bind parameters（支持默认值）
+        {
+            RcPtr<Environment> old_env = current_env_;
+            RcPtr<Environment> old_var_env = var_env_;
+            current_env_ = fn_env;
+            var_env_ = fn_env;
+            const auto& defs = *param_defs_captured;
+            for (size_t i = 0; i < defs.size(); ++i) {
+                Value arg_val = (i < call_args.size()) ? call_args[i] : Value::undefined();
+                if (arg_val.is_undefined() && defs[i].default_init != nullptr) {
+                    auto default_r = eval_expr(*defs[i].default_init);
+                    if (!default_r.is_ok()) {
+                        current_env_ = old_env;
+                        var_env_ = old_var_env;
+                        if (pending_throw_.has_value()) {
+                            outer_promise->Reject(std::move(*pending_throw_), job_queue_);
+                            pending_throw_ = std::nullopt;
+                        } else {
+                            outer_promise->Reject(
+                                make_error_value(NativeErrorType::kTypeError,
+                                                 default_r.error().message()), job_queue_);
+                        }
+                        return EvalResult::ok(outer_val);
+                    }
+                    arg_val = default_r.value();
+                }
+                fn_env->define(defs[i].name, VarKind::Var);
+                fn_env->initialize(defs[i].name, std::move(arg_val));
+            }
+            current_env_ = old_env;
+            var_env_ = old_var_env;
         }
 
         // Bind rest parameter
@@ -6735,7 +6832,7 @@ Value Interpreter::make_async_function_value(std::optional<std::string> name,
             auto rest_arr = RcPtr<JSObject>::make(ObjectKind::kArray);
             gc_heap_.Register(rest_arr.get());
             rest_arr->set_proto(array_prototype_);
-            size_t rest_start = params.size();
+            size_t rest_start = param_defs_captured->size();
             for (size_t i = rest_start; i < call_args.size(); ++i) {
                 rest_arr->elements_[static_cast<uint32_t>(i - rest_start)] = call_args[i];
             }

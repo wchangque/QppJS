@@ -186,7 +186,7 @@ std::string dump_expr(const ExprNode& node, int indent) {
                            result += ind(indent + 1) + "params: (";
                            for (size_t i = 0; i < fe.params.size(); ++i) {
                                if (i > 0) result += ", ";
-                               result += fe.params[i];
+                               result += fe.params[i].name;
                            }
                            result += ")\n";
                            result += ind(indent + 1) + "body:\n";
@@ -243,7 +243,7 @@ std::string dump_expr(const ExprNode& node, int indent) {
                            result += ind(indent + 1) + "params: (";
                            for (size_t i = 0; i < afe.params.size(); ++i) {
                                if (i > 0) result += ", ";
-                               result += afe.params[i];
+                               result += afe.params[i].name;
                            }
                            result += ")\n";
                            result += ind(indent + 1) + "body:\n";
@@ -282,7 +282,7 @@ std::string dump_expr(const ExprNode& node, int indent) {
                            result += ind(indent + 1) + "params: (";
                            for (size_t i = 0; i < afe.params.size(); ++i) {
                                if (i > 0) result += ", ";
-                               result += afe.params[i];
+                               result += afe.params[i].name;
                            }
                            result += ")\n";
                            result += ind(indent + 1) + "body:\n";
@@ -369,7 +369,7 @@ std::string dump_stmt(const StmtNode& node, int indent) {
                            result += ind(indent + 1) + "params: (";
                            for (size_t i = 0; i < fd.params.size(); ++i) {
                                if (i > 0) result += ", ";
-                               result += fd.params[i];
+                               result += fd.params[i].name;
                            }
                            result += ")\n";
                            result += ind(indent + 1) + "body:\n";
@@ -382,7 +382,7 @@ std::string dump_stmt(const StmtNode& node, int indent) {
                            result += ind(indent + 1) + "params: (";
                            for (size_t i = 0; i < afd.params.size(); ++i) {
                                if (i > 0) result += ", ";
-                               result += afd.params[i];
+                               result += afd.params[i].name;
                            }
                            result += ")\n";
                            result += ind(indent + 1) + "body:\n";

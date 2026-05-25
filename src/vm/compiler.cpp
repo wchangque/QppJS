@@ -301,14 +301,26 @@ void Compiler::hoist_vars_scan_expr(const ExprNode& expr) {
 
 std::shared_ptr<BytecodeFunction> Compiler::compile_function(
     std::optional<std::string> name,
-    const std::vector<std::string>& params,
+    const std::vector<ParamDef>& params,
     const std::vector<StmtNode>& body,
     bool is_program,
     std::optional<std::string> rest_param) {
 
+    // 提取参数名列表，计算 length_count
+    std::vector<std::string> param_names;
+    param_names.reserve(params.size());
+    for (const auto& pd : params) param_names.push_back(pd.name);
+
+    uint16_t length_count = static_cast<uint16_t>(params.size());
+    for (uint16_t i = 0; i < static_cast<uint16_t>(params.size()); ++i) {
+        if (params[i].default_init != nullptr) { length_count = i; break; }
+    }
+
     auto fn = std::make_shared<BytecodeFunction>();
     fn->name = std::move(name);
-    fn->params = params;
+    fn->params = param_names;
+    fn->param_defs = std::make_shared<std::vector<ParamDef>>(params);
+    fn->length_count = length_count;
     fn->rest_param = std::move(rest_param);
 
     // Save and switch context
@@ -334,7 +346,28 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
     }
     if (!found_return_temp) fn->var_decls.push_back(return_temp_idx);
 
-    // Emit DefVar for all hoisted vars at function entry
+    // Emit default param prologue（仅对有默认值的参数）
+    // 序列：kGetVar name; kLoadUndefined; kStrictEq; kJumpIfFalse skip; [default_expr]; kSetVar name; kPop; label_skip:
+    // 必须在 kDefVar（body var 提升）之前执行，确保 body var 在默认值求值时不可见（规范要求）
+    if (!is_program) {
+        for (const auto& pd : params) {
+            if (pd.default_init == nullptr) continue;
+            uint16_t name_idx = add_name(pd.name);
+            emit(Opcode::kGetVar);
+            emit_u16(name_idx);
+            emit(Opcode::kLoadUndefined);
+            emit(Opcode::kStrictEq);
+            size_t skip_patch = emit_jump(Opcode::kJumpIfFalse);  // if not undefined, skip
+            // param is undefined: compile default_init
+            compile_expr(*pd.default_init);
+            emit(Opcode::kSetVar);
+            emit_u16(name_idx);
+            emit(Opcode::kPop);
+            patch_jump(skip_patch);  // label_skip
+        }
+    }
+
+    // Emit DefVar for all hoisted vars after prologue（prologue 之后才提升 body 中的 var 声明）
     for (uint16_t idx : fn->var_decls) {
         emit(Opcode::kDefVar);
         emit_u16(idx);

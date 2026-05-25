@@ -3795,19 +3795,18 @@ EvalResult VM::push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<V
         auto arg_obj = RcPtr<JSObject>::make();
         gc_heap_.Register(arg_obj.get());
         arg_obj->set_proto(object_prototype_);
+        // arguments 是 kOrdinary 对象，用 set_property 存储数字索引属性
+        // 这样 arguments[0] / arguments["0"] 才能通过 get_property("0") 正确读到
         for (size_t i = 0; i < args.size(); ++i) {
-            arg_obj->elements_[static_cast<uint32_t>(i)] = args[i];
+            arg_obj->set_property(std::to_string(i), args[i]);
         }
-        arg_obj->array_length_ = static_cast<uint32_t>(args.size());
         arg_obj->set_property("length", Value::number(static_cast<double>(args.size())));
         fn_env->define("arguments", VarKind::Var);
         fn_env->initialize("arguments", Value::object(ObjectPtr(arg_obj)));
     }
 
-    // Pre-define var_decls bindings
-    for (uint16_t idx : bc->var_decls) {
-        fn_env->define_initialized(bc->names[idx]);
-    }
+    // Pre-define function declaration name bindings only（var_decls 由 prologue 之后的 kDefVar 字节码处理，
+    // 确保 body var 在默认值求值期间不可见，符合规范要求）
     for (uint16_t idx : bc->function_decls) {
         fn_env->define_function(bc->names[idx]);
     }
@@ -5317,7 +5316,8 @@ EvalResult VM::run(size_t exit_depth) {
             fn->set_name(fn_bc->name);
             fn->set_params(fn_bc->params);
             fn->set_rest_param(fn_bc->rest_param);
-            fn->set_property("length", Value::number(static_cast<double>(fn_bc->params.size())));
+            fn->set_property("length", Value::number(static_cast<double>(fn_bc->length_count)));
+            if (fn_bc->param_defs) fn->set_param_defs(fn_bc->param_defs);
             fn->set_bytecode(fn_bc);
             fn->set_closure_env(env);
             fn->set_is_named_expr(fn_bc->is_named_expr);

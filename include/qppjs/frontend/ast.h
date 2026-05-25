@@ -116,10 +116,16 @@ struct MemberAssignmentExpression {
     SourceRange range;
 };
 
+// 函数参数定义：可含默认值
+struct ParamDef {
+    std::string name;
+    std::shared_ptr<ExprNode> default_init;  // nullptr = 无默认值
+};
+
 // 函数表达式 function [name](params) { body }
 struct FunctionExpression {
     std::optional<std::string> name;
-    std::vector<std::string> params;
+    std::vector<ParamDef> params;
     std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body;
     SourceRange range;
@@ -158,7 +164,7 @@ struct ImportCallExpression {
 // 箭头函数表达式 [params] => body
 // 表达式体已在 Parser 中合成为含单条 ReturnStatement 的块体
 struct ArrowFunctionExpression {
-    std::vector<std::string> params;
+    std::vector<ParamDef> params;
     std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body_stmts;
     SourceRange range;
@@ -203,7 +209,7 @@ struct ConditionalExpression {
 // async 函数表达式 async function [name](params) { body }
 struct AsyncFunctionExpression {
     std::optional<std::string> name;
-    std::vector<std::string> params;
+    std::vector<ParamDef> params;
     std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body;
     SourceRange range;
@@ -283,7 +289,7 @@ struct ReturnStatement {
 // 函数声明语句 function name(params) { body }
 struct FunctionDeclaration {
     std::string name;
-    std::vector<std::string> params;
+    std::vector<ParamDef> params;
     std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body;
     SourceRange range;
@@ -292,7 +298,7 @@ struct FunctionDeclaration {
 // async 函数声明语句 async function name(params) { body }
 struct AsyncFunctionDeclaration {
     std::string name;
-    std::vector<std::string> params;
+    std::vector<ParamDef> params;
     std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body;
     SourceRange range;
