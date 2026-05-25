@@ -62,6 +62,13 @@ private:
     StmtResult eval_for_of_stmt(const ForOfStatement& stmt,
                                 std::optional<std::string> label = std::nullopt);
     StmtResult exec_catch(const CatchClause& handler, Value thrown_val);
+    StmtResult eval_destructuring_decl(const DestructuringDeclaration& decl);
+
+    // Bind a destructuring pattern to a value.
+    // kind: var kind for define; is_assign: true = write to existing bindings, not define new
+    // Returns StmtResult (ok or throw)
+    StmtResult bind_pattern(const PatternNode& pattern, Value rhs,
+                            VarKind kind, bool is_assign);
 
     // Expression evaluation
     EvalResult eval_expr(const ExprNode& expr);

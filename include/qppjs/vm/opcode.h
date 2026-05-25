@@ -123,7 +123,9 @@ namespace qppjs {
     X(ArrayAppend, 0)                  \
     X(SpreadAppend, 0)                 \
     X(ApplyArgs, 1)                    \
-    X(Swap, 0)
+    X(Swap, 0)                         \
+    /* destructuring */                \
+    X(CopyDataProperties, 1)
 
 enum class Opcode : uint8_t {
 #define X(name, _operand_bytes) k##name,

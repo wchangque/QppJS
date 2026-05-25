@@ -386,6 +386,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const ArrowFunctionExpression& n) { return n.range; },
                               [](const ConditionalExpression& n) { return n.range; },
                               [](const SpreadElement& n) { return n.range; },
+                              [](const DestructuringAssignmentExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -412,6 +413,7 @@ static SourceRange stmt_range(const StmtNode& s) {
                               [](const ImportDeclaration& n) { return n.range; },
                               [](const ExportNamedDeclaration& n) { return n.range; },
                               [](const ExportDefaultDeclaration& n) { return n.range; },
+                              [](const DestructuringDeclaration& n) { return n.range; },
                       },
                       s.v);
 }
@@ -902,12 +904,33 @@ struct Parser {
                     ExprNode{ArrayExpression{std::move(elements), span(start, end)}});
             }
             case TokenKind::LBrace: {
-                // 对象字面量 { key: value, ... }
+                // 对象字面量 { key: value, key, ...spread }
                 uint32_t start = tok.range.offset;
                 std::vector<ObjectProperty> props;
                 while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
-                    std::string key;
                     uint32_t key_start = cur.range.offset;
+
+                    // spread: ...expr
+                    if (cur.kind == TokenKind::DotDotDot) {
+                        advance();  // 消费 ...
+                        auto arg = parse_expr(1);
+                        if (!arg.ok()) return arg;
+                        // SpreadElement in object: use empty key to signal spread,
+                        // wrap in SpreadElement expression
+                        uint32_t prop_end = range_end(expr_range(arg.value()));
+                        ObjectProperty prop;
+                        prop.key = "";  // sentinel for spread
+                        prop.value = std::make_unique<ExprNode>(ExprNode{SpreadElement{
+                            std::make_unique<ExprNode>(std::move(arg.value())),
+                            span(key_start, prop_end)}});
+                        prop.range = span(key_start, prop_end);
+                        props.push_back(std::move(prop));
+                        if (cur.kind == TokenKind::Comma) advance();
+                        continue;
+                    }
+
+                    std::string key;
+                    Token key_tok = cur;
                     if (cur.kind == TokenKind::Ident) {
                         key = std::string(token_text(cur));
                         advance();
@@ -918,24 +941,49 @@ struct Parser {
                         double num_val = parse_number_text(token_text(cur));
                         key = number_to_property_key(num_val);
                         advance();
+                    } else if (is_keyword(cur.kind)) {
+                        // 关键字也可以作为属性键
+                        key = std::string(token_text(cur));
+                        advance();
                     } else {
                         return ParseResult<ExprNode>::Err(
                                 make_parse_error(source, cur, "expected property key"));
                     }
-                    if (cur.kind != TokenKind::Colon) {
-                        return ParseResult<ExprNode>::Err(
-                                make_parse_error(source, cur, "expected ':' after property key"));
+
+                    if (cur.kind == TokenKind::Colon) {
+                        advance();  // 消费 :
+                        auto val = parse_expr(1);
+                        if (!val.ok()) return val;
+                        uint32_t prop_end = range_end(expr_range(val.value()));
+                        ObjectProperty prop;
+                        prop.key = key;
+                        prop.value = std::make_unique<ExprNode>(std::move(val.value()));
+                        prop.range = span(key_start, prop_end);
+                        props.push_back(std::move(prop));
+                    } else if (cur.kind == TokenKind::Eq) {
+                        // shorthand with default: { a = expr } (cover grammar for destructuring)
+                        advance();  // 消费 =
+                        auto def_val = parse_expr(1);
+                        if (!def_val.ok()) return def_val;
+                        uint32_t prop_end = range_end(expr_range(def_val.value()));
+                        // Represent as AssignmentExpression with target = key
+                        ObjectProperty prop;
+                        prop.key = key;
+                        prop.value = std::make_unique<ExprNode>(ExprNode{AssignmentExpression{
+                            AssignOp::Assign,
+                            key,
+                            std::make_unique<ExprNode>(std::move(def_val.value())),
+                            span(key_start, prop_end)}});
+                        prop.range = span(key_start, prop_end);
+                        props.push_back(std::move(prop));
+                    } else {
+                        // shorthand: { a } = { a: a }
+                        ObjectProperty prop;
+                        prop.key = key;
+                        prop.value = std::make_unique<ExprNode>(ExprNode{Identifier{key, key_tok.range}});
+                        prop.range = span(key_start, range_end(key_tok.range));
+                        props.push_back(std::move(prop));
                     }
-                    advance();  // 消费 :
-                    // parse_expr(1) 在 Comma（lbp=0）处停止
-                    auto val = parse_expr(1);
-                    if (!val.ok()) return val;
-                    uint32_t prop_end = range_end(expr_range(val.value()));
-                    ObjectProperty prop;
-                    prop.key = key;
-                    prop.value = std::make_unique<ExprNode>(std::move(val.value()));
-                    prop.range = span(key_start, prop_end);
-                    props.push_back(std::move(prop));
                     if (cur.kind == TokenKind::Comma) {
                         advance();  // 消费 ,
                     } else {
@@ -1156,9 +1204,24 @@ struct Parser {
                     span(obj_start, end)}});
         }
 
-        // 赋值：右结合，检查左侧是 Identifier 或 MemberExpression
+        // 赋值：右结合，检查左侧是 Identifier 或 MemberExpression 或解构模式
         if (kind == TokenKind::Eq || kind == TokenKind::PlusEq || kind == TokenKind::MinusEq ||
             kind == TokenKind::StarEq || kind == TokenKind::SlashEq || kind == TokenKind::PercentEq) {
+            // 解构赋值模式：左侧为 ArrayExpression 或 ObjectExpression，且 op 为 =
+            if (kind == TokenKind::Eq &&
+                (std::holds_alternative<ArrayExpression>(left.v) ||
+                 std::holds_alternative<ObjectExpression>(left.v))) {
+                uint32_t left_start = expr_range(left).offset;  // 先计算，convert 可能 move 内部成员
+                auto pat_r = convert_expr_to_pattern(left);
+                if (!pat_r.ok()) return ParseResult<ExprNode>::Err(pat_r.error());
+                auto right = parse_expr(bp - 1);
+                if (!right.ok()) return right;
+                auto range = span(left_start, range_end(expr_range(right.value())));
+                return ParseResult<ExprNode>::Ok(ExprNode{DestructuringAssignmentExpression{
+                    std::make_unique<PatternNode>(std::move(pat_r.value())),
+                    std::make_unique<ExprNode>(std::move(right.value())),
+                    range}});
+            }
             if (std::holds_alternative<Identifier>(left.v)) {
                 std::string target = std::get<Identifier>(left.v).name;
                 uint32_t left_start = std::get<Identifier>(left.v).range.offset;
@@ -1444,6 +1507,303 @@ struct Parser {
             span(range_start, fn_end)}});
     }
 
+    // ---- 解构模式解析辅助 ----
+
+    // 解析绑定模式（用于 let/const/var 声明）
+    // 当前 token 应为 [ 或 {
+    ParseResult<PatternNode> parse_binding_pattern() {
+        if (cur.kind == TokenKind::LBracket) {
+            return parse_array_binding_pattern();
+        }
+        if (cur.kind == TokenKind::LBrace) {
+            return parse_object_binding_pattern();
+        }
+        if (cur.kind == TokenKind::Ident) {
+            Token id = cur;
+            std::string name{token_text(cur)};
+            advance();
+            return ParseResult<PatternNode>::Ok(
+                PatternNode{IdentifierPattern{std::move(name), id.range}});
+        }
+        return ParseResult<PatternNode>::Err(
+            make_parse_error(source, cur, "expected binding pattern"));
+    }
+
+    ParseResult<PatternNode> parse_array_binding_pattern() {
+        Token lb = cur;
+        advance();  // 消费 [
+        std::vector<std::optional<ArrayPatternElement>> elements;
+        std::unique_ptr<PatternNode> rest_pat;
+
+        while (cur.kind != TokenKind::RBracket && cur.kind != TokenKind::Eof) {
+            if (cur.kind == TokenKind::Comma) {
+                // elision hole
+                elements.push_back(std::nullopt);
+                advance();
+                continue;
+            }
+            if (cur.kind == TokenKind::DotDotDot) {
+                advance();  // 消费 ...
+                auto rest_r = parse_binding_pattern();
+                if (!rest_r.ok()) return ParseResult<PatternNode>::Err(rest_r.error());
+                rest_pat = std::make_unique<PatternNode>(std::move(rest_r.value()));
+                break;
+            }
+            // 普通元素
+            Token elem_start = cur;
+            auto pat_r = parse_binding_pattern();
+            if (!pat_r.ok()) return ParseResult<PatternNode>::Err(pat_r.error());
+            std::optional<std::unique_ptr<ExprNode>> default_val;
+            if (cur.kind == TokenKind::Eq) {
+                advance();  // 消费 =
+                auto dv = parse_expr(1);
+                if (!dv.ok()) return ParseResult<PatternNode>::Err(dv.error());
+                default_val = std::make_unique<ExprNode>(std::move(dv.value()));
+            }
+            elements.push_back(ArrayPatternElement{
+                std::make_unique<PatternNode>(std::move(pat_r.value())),
+                std::move(default_val),
+                elem_start.range});
+            if (cur.kind == TokenKind::Comma) {
+                advance();
+            } else {
+                break;
+            }
+        }
+
+        if (cur.kind == TokenKind::RBracket) {
+            Token rb = cur;
+            advance();
+            SourceRange range = span(lb.range.offset, range_end(rb.range));
+            return ParseResult<PatternNode>::Ok(
+                PatternNode{ArrayPattern{std::move(elements), std::move(rest_pat), range}});
+        }
+        return ParseResult<PatternNode>::Err(
+            make_parse_error(source, cur, "expected ']' after array pattern"));
+    }
+
+    ParseResult<PatternNode> parse_object_binding_pattern() {
+        Token lb = cur;
+        advance();  // 消费 {
+        std::vector<ObjectPatternProperty> properties;
+        std::unique_ptr<PatternNode> rest_pat;
+
+        while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
+            if (cur.kind == TokenKind::DotDotDot) {
+                advance();  // 消费 ...
+                // rest 必须是 IdentifierPattern
+                if (cur.kind != TokenKind::Ident) {
+                    return ParseResult<PatternNode>::Err(
+                        make_parse_error(source, cur, "rest element must be an identifier"));
+                }
+                Token rest_id = cur;
+                std::string rest_name{token_text(cur)};
+                advance();
+                rest_pat = std::make_unique<PatternNode>(
+                    PatternNode{IdentifierPattern{std::move(rest_name), rest_id.range}});
+                break;
+            }
+
+            // 解析 key
+            std::string key;
+            Token key_tok = cur;
+            bool computed = false;
+            if (cur.kind == TokenKind::Ident) {
+                key = std::string{token_text(cur)};
+                advance();
+            } else if (cur.kind == TokenKind::String) {
+                key = decode_string(token_text(cur));
+                advance();
+            } else if (cur.kind == TokenKind::Number) {
+                key = number_to_property_key(parse_number_text(token_text(cur)));
+                advance();
+            } else if (is_keyword(cur.kind)) {
+                // 允许关键字作为属性键（如 {for: x}）
+                key = std::string{token_text(cur)};
+                advance();
+            } else {
+                return ParseResult<PatternNode>::Err(
+                    make_parse_error(source, cur, "expected property key in object pattern"));
+            }
+
+            std::unique_ptr<PatternNode> value_pat;
+            std::optional<std::unique_ptr<ExprNode>> default_val;
+
+            if (cur.kind == TokenKind::Colon) {
+                // key: pattern[= default]
+                advance();  // 消费 :
+                auto vp_r = parse_binding_pattern();
+                if (!vp_r.ok()) return ParseResult<PatternNode>::Err(vp_r.error());
+                value_pat = std::make_unique<PatternNode>(std::move(vp_r.value()));
+                if (cur.kind == TokenKind::Eq) {
+                    advance();
+                    auto dv = parse_expr(1);
+                    if (!dv.ok()) return ParseResult<PatternNode>::Err(dv.error());
+                    default_val = std::make_unique<ExprNode>(std::move(dv.value()));
+                }
+            } else {
+                // shorthand: {key} 或 {key = default}
+                value_pat = std::make_unique<PatternNode>(
+                    PatternNode{IdentifierPattern{key, key_tok.range}});
+                if (cur.kind == TokenKind::Eq) {
+                    advance();
+                    auto dv = parse_expr(1);
+                    if (!dv.ok()) return ParseResult<PatternNode>::Err(dv.error());
+                    default_val = std::make_unique<ExprNode>(std::move(dv.value()));
+                }
+            }
+
+            properties.push_back(ObjectPatternProperty{
+                std::move(key), computed,
+                std::move(value_pat),
+                std::move(default_val),
+                key_tok.range});
+
+            if (cur.kind == TokenKind::Comma) {
+                advance();
+            } else {
+                break;
+            }
+        }
+
+        if (cur.kind == TokenKind::RBrace) {
+            Token rb = cur;
+            advance();
+            SourceRange range = span(lb.range.offset, range_end(rb.range));
+            return ParseResult<PatternNode>::Ok(
+                PatternNode{ObjectPattern{std::move(properties), std::move(rest_pat), range}});
+        }
+        return ParseResult<PatternNode>::Err(
+            make_parse_error(source, cur, "expected '}' after object pattern"));
+    }
+
+    // 将 ArrayExpression 转换为 ArrayPattern（赋值模式）
+    // arr 是可修改的引用，以便 move 内部 unique_ptr 成员
+    static ParseResult<PatternNode> convert_array_to_pattern(ArrayExpression& arr) {
+        std::vector<std::optional<ArrayPatternElement>> elements;
+        std::unique_ptr<PatternNode> rest_pat;
+        for (size_t i = 0; i < arr.elements.size(); ++i) {
+            auto& elem_opt = arr.elements[i];
+            if (!elem_opt.has_value()) {
+                elements.push_back(std::nullopt);
+                continue;
+            }
+            ExprNode& elem = **elem_opt;
+            if (std::holds_alternative<SpreadElement>(elem.v)) {
+                // rest 元素
+                auto& sp = std::get<SpreadElement>(elem.v);
+                auto rest_r = convert_expr_to_pattern(*sp.argument);
+                if (!rest_r.ok()) return rest_r;
+                rest_pat = std::make_unique<PatternNode>(std::move(rest_r.value()));
+                break;
+            }
+            // 可能是 AssignmentExpression（默认值）
+            if (std::holds_alternative<AssignmentExpression>(elem.v)) {
+                auto& ae = std::get<AssignmentExpression>(elem.v);
+                if (ae.op != AssignOp::Assign) {
+                    return ParseResult<PatternNode>::Err(
+                        Error{ErrorKind::Syntax, "invalid destructuring assignment"});
+                }
+                SourceRange elem_range = ae.range;
+                auto sub_pat = PatternNode{IdentifierPattern{ae.target, ae.range}};
+                auto default_val = std::move(ae.value);
+                elements.push_back(ArrayPatternElement{
+                    std::make_unique<PatternNode>(std::move(sub_pat)),
+                    std::optional<std::unique_ptr<ExprNode>>{std::move(default_val)},
+                    elem_range});
+                continue;
+            }
+            SourceRange elem_range = expr_range(elem);
+            auto sub_pat_r = convert_expr_to_pattern(elem);
+            if (!sub_pat_r.ok()) return sub_pat_r;
+            elements.push_back(ArrayPatternElement{
+                std::make_unique<PatternNode>(std::move(sub_pat_r.value())),
+                std::nullopt,
+                elem_range});
+        }
+        return ParseResult<PatternNode>::Ok(
+            PatternNode{ArrayPattern{std::move(elements), std::move(rest_pat), arr.range}});
+    }
+
+    // 将 ObjectExpression 转换为 ObjectPattern（赋值模式）
+    // obj 是可修改的引用，以便 move 内部 unique_ptr 成员
+    static ParseResult<PatternNode> convert_object_to_pattern(ObjectExpression& obj) {
+        std::vector<ObjectPatternProperty> properties;
+        std::unique_ptr<PatternNode> rest_pat;
+        for (size_t i = 0; i < obj.properties.size(); ++i) {
+            auto& prop = obj.properties[i];
+
+            // spread: ...rest  (key == "" sentinel, value is SpreadElement)
+            if (prop.key.empty() && std::holds_alternative<SpreadElement>(prop.value->v)) {
+                auto& sp = std::get<SpreadElement>(prop.value->v);
+                auto rest_r = convert_expr_to_pattern(*sp.argument);
+                if (!rest_r.ok()) return rest_r;
+                rest_pat = std::make_unique<PatternNode>(std::move(rest_r.value()));
+                continue;
+            }
+
+            // value 可能是 Identifier（shorthand）或 AssignmentExpression（带默认值）
+            std::unique_ptr<PatternNode> val_pat;
+            std::optional<std::unique_ptr<ExprNode>> default_val;
+            if (std::holds_alternative<AssignmentExpression>(prop.value->v)) {
+                auto& ae = std::get<AssignmentExpression>(prop.value->v);
+                if (ae.op != AssignOp::Assign) {
+                    return ParseResult<PatternNode>::Err(
+                        Error{ErrorKind::Syntax, "invalid destructuring assignment"});
+                }
+                val_pat = std::make_unique<PatternNode>(
+                    PatternNode{IdentifierPattern{ae.target, ae.range}});
+                default_val = std::move(ae.value);
+            } else {
+                auto vpr = convert_expr_to_pattern(*prop.value);
+                if (!vpr.ok()) return vpr;
+                val_pat = std::make_unique<PatternNode>(std::move(vpr.value()));
+            }
+            properties.push_back(ObjectPatternProperty{
+                prop.key, false,
+                std::move(val_pat),
+                std::move(default_val),
+                prop.range});
+        }
+        return ParseResult<PatternNode>::Ok(
+            PatternNode{ObjectPattern{std::move(properties), std::move(rest_pat), obj.range}});
+    }
+
+    // 将表达式节点转换为绑定模式节点（用于赋值模式 cover grammar）
+    // expr 是可修改的引用，以便 move 内部 unique_ptr 成员
+    static ParseResult<PatternNode> convert_expr_to_pattern(ExprNode& expr) {
+        if (std::holds_alternative<Identifier>(expr.v)) {
+            const auto& id = std::get<Identifier>(expr.v);
+            return ParseResult<PatternNode>::Ok(
+                PatternNode{IdentifierPattern{id.name, id.range}});
+        }
+        if (std::holds_alternative<ArrayExpression>(expr.v)) {
+            return convert_array_to_pattern(std::get<ArrayExpression>(expr.v));
+        }
+        if (std::holds_alternative<ObjectExpression>(expr.v)) {
+            return convert_object_to_pattern(std::get<ObjectExpression>(expr.v));
+        }
+        return ParseResult<PatternNode>::Err(
+            Error{ErrorKind::Syntax, "invalid assignment target"});
+    }
+
+    // 检查 token kind 是否为关键字（用于对象属性键）
+    static bool is_keyword(TokenKind k) {
+        switch (k) {
+            case TokenKind::KwVar: case TokenKind::KwLet: case TokenKind::KwConst:
+            case TokenKind::KwIf: case TokenKind::KwElse: case TokenKind::KwWhile:
+            case TokenKind::KwFor: case TokenKind::KwReturn: case TokenKind::KwFunction:
+            case TokenKind::KwNew: case TokenKind::KwDelete: case TokenKind::KwTypeof:
+            case TokenKind::KwVoid: case TokenKind::KwTrue: case TokenKind::KwFalse:
+            case TokenKind::KwNull: case TokenKind::KwThis: case TokenKind::KwThrow:
+            case TokenKind::KwTry: case TokenKind::KwCatch: case TokenKind::KwFinally:
+            case TokenKind::KwBreak: case TokenKind::KwContinue:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     // ---- 语句解析 ----
 
     ParseResult<StmtNode> parse_var_decl() {
@@ -1464,6 +1824,42 @@ struct Parser {
             default:
                 kind = VarKind::Var;
                 break;
+        }
+
+        // 解构声明：let/const/var { 或 [
+        if (cur.kind == TokenKind::LBrace || cur.kind == TokenKind::LBracket) {
+            auto pat_r = parse_binding_pattern();
+            if (!pat_r.ok()) return ParseResult<StmtNode>::Err(pat_r.error());
+
+            // const/let 必须有初始化器
+            if (kind == VarKind::Const || kind == VarKind::Let) {
+                if (cur.kind != TokenKind::Eq) {
+                    return ParseResult<StmtNode>::Err(
+                        make_parse_error(source, cur, "destructuring declaration must have an initializer"));
+                }
+            }
+
+            std::unique_ptr<ExprNode> init_ptr;
+            if (cur.kind == TokenKind::Eq) {
+                advance();  // 消费 =
+                auto expr = parse_expr(0);
+                if (!expr.ok()) return ParseResult<StmtNode>::Err(expr.error());
+                init_ptr = std::make_unique<ExprNode>(std::move(expr.value()));
+            }
+
+            auto semi = consume_semicolon();
+            if (!semi.ok()) return ParseResult<StmtNode>::Err(semi.error());
+
+            uint32_t decl_end = range_end(semi.value().range);
+            if (decl_end == semi.value().range.offset && init_ptr) {
+                decl_end = range_end(expr_range(*init_ptr));
+            }
+            SourceRange range = span(kw.range.offset, decl_end);
+            return ParseResult<StmtNode>::Ok(StmtNode{DestructuringDeclaration{
+                kind,
+                std::make_unique<PatternNode>(std::move(pat_r.value())),
+                std::move(init_ptr),
+                range}});
         }
 
         // 期望标识符
@@ -1795,6 +2191,35 @@ struct Parser {
                                                                  : VarKind::Const;
             Token kw_tok = cur;
             advance();  // 消费 var/let/const
+            // 解构模式：for (const/let/var [pattern] of ...) 或 for (const/let/var {pattern} of ...)
+            if (cur.kind == TokenKind::LBracket || cur.kind == TokenKind::LBrace) {
+                auto pat_r = parse_binding_pattern();
+                if (!pat_r.ok()) return ParseResult<StmtNode>::Err(pat_r.error());
+                if (!is_of_token()) {
+                    return ParseResult<StmtNode>::Err(
+                        make_parse_error(source, cur, "expected 'of' after destructuring pattern in for"));
+                }
+                advance();  // 消费 `of`
+                auto right = parse_expr(0);
+                if (!right.ok()) return ParseResult<StmtNode>::Err(right.error());
+                auto rp = expect(TokenKind::RParen);
+                if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
+                bool saved_top = is_top_level_;
+                is_top_level_ = false;
+                auto body = parse_stmt();
+                is_top_level_ = saved_top;
+                if (!body.ok()) return body;
+                uint32_t end = range_end(stmt_range(body.value()));
+                ForOfStatement fos;
+                fos.has_decl = true;
+                fos.var_kind = var_kind;
+                fos.binding = "";
+                fos.pattern_binding = std::make_unique<PatternNode>(std::move(pat_r.value()));
+                fos.right = std::make_unique<ExprNode>(std::move(right.value()));
+                fos.body = std::make_unique<StmtNode>(std::move(body.value()));
+                fos.range = span(kw.range.offset, end);
+                return ParseResult<StmtNode>::Ok(StmtNode{std::move(fos)});
+            }
             // Must be followed by an identifier (binding name)
             if (cur.kind == TokenKind::Ident) {
                 std::string binding_name{token_text(cur)};
@@ -1833,7 +2258,7 @@ struct Parser {
                     if (!body.ok()) return body;
                     uint32_t end = range_end(stmt_range(body.value()));
                     return ParseResult<StmtNode>::Ok(StmtNode{ForOfStatement{
-                            true, var_kind, std::move(binding_name),
+                            true, var_kind, std::move(binding_name), nullptr,
                             std::make_unique<ExprNode>(std::move(right.value())),
                             std::make_unique<StmtNode>(std::move(body.value())),
                             span(kw.range.offset, end)}});
@@ -1953,7 +2378,7 @@ struct Parser {
                 if (!body.ok()) return body;
                 uint32_t end = range_end(stmt_range(body.value()));
                 return ParseResult<StmtNode>::Ok(StmtNode{ForOfStatement{
-                        false, VarKind::Var /* unused */, std::move(binding_name),
+                        false, VarKind::Var /* unused */, std::move(binding_name), nullptr,
                         std::make_unique<ExprNode>(std::move(right.value())),
                         std::make_unique<StmtNode>(std::move(body.value())),
                         span(kw.range.offset, end)}});

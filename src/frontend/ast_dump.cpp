@@ -304,6 +304,11 @@ std::string dump_expr(const ExprNode& node, int indent) {
                            result += ind(indent + 1) + "argument:\n";
                            result += dump_expr(*se.argument, indent + 2);
                        },
+                       [&](const DestructuringAssignmentExpression& da) {
+                           result = prefix + "DestructuringAssignmentExpression\n";
+                           result += ind(indent + 1) + "value:\n";
+                           result += dump_expr(*da.value, indent + 2);
+                       },
                },
                node.v);
 
@@ -501,6 +506,11 @@ std::string dump_stmt(const StmtNode& node, int indent) {
                            result = prefix + "ExportDefaultDeclaration\n";
                            result += ind(indent + 1) + "expression:\n";
                            result += dump_expr(*ed.expression, indent + 2);
+                       },
+                       [&](const DestructuringDeclaration& dd) {
+                           std::string kind_str = dd.kind == VarKind::Var ? "var"
+                                                : dd.kind == VarKind::Let ? "let" : "const";
+                           result = prefix + "DestructuringDeclaration " + kind_str + "\n";
                        },
                },
                node.v);

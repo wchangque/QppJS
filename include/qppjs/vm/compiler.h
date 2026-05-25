@@ -59,6 +59,7 @@ private:
     void hoist_vars_scan(const std::vector<StmtNode>& body);
     void hoist_vars_scan_stmt(const StmtNode& stmt);
     void hoist_vars_scan_expr(const ExprNode& expr);
+    void hoist_vars_scan_pattern(const PatternNode& pat);
 
     // Statement compilation
     void compile_stmt(const StmtNode& stmt);
@@ -66,6 +67,10 @@ private:
     void compile_stmt_last(const StmtNode& stmt);
     void compile_expr_stmt(const ExpressionStatement& stmt);
     void compile_var_decl(const VariableDeclaration& decl);
+    void compile_destructuring_decl(const DestructuringDeclaration& decl);
+    // Compile a destructuring pattern binding; assumes rhs is on top of stack.
+    // After execution, rhs is consumed and pattern variables are defined/set.
+    void compile_bind_pattern(const PatternNode& pat, VarKind kind, bool is_assign);
     void compile_block_stmt(const BlockStatement& stmt);
     void compile_if_stmt(const IfStatement& stmt);
     void compile_while_stmt(const WhileStatement& stmt, std::optional<std::string> label = std::nullopt);

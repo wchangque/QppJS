@@ -4,6 +4,44 @@
 
 ## 1. 已完成任务
 
+- [x] **解构赋值 Review 必修问题修复 M1/M2/M3/M4/M5 + P1.2**（2026-05-25）：
+  - **M1**：`src/vm/compiler.cpp` `has_block_scope_decl()` 新增 `DestructuringDeclaration` 分支（let/const 时返回 true）。修复 `{ let {x} = {x:1}; } x;` 应抛 ReferenceError 但实际泄漏变量的 Bug。
+  - **M2**：`src/runtime/interpreter.cpp` `eval_destructuring_decl()` 在调用 `bind_pattern` 前，对 let/const 模式先调用 `collect_pattern_names` 收集所有 IdentifierPattern 名字，然后对每个名字 `current_env_->define(name, kind)`（TDZ 预声明）。确保默认值表达式执行时，后续变量名已在 env 中可见（TDZ 状态）。
+  - **M3**：`src/runtime/interpreter.cpp` `hoist_vars_stmt` ForOfStatement 分支新增 `pattern_binding` 检查：`for (var [x] of ...)` 时调用 `collect_pattern_names(*for_of.pattern_binding, names)` 并对每个名字 `var_target.define_initialized`，与 VM 侧 `hoist_vars_scan_stmt` 的 pattern_binding 分支对齐。
+  - **M4**：`eval_object_expr`（interpreter.cpp）+ `compile_object_expr`（compiler.cpp）在属性值为 `SpreadElement` 时抛 SyntaxError "Object spread not supported"，比原来的 "invalid use of spread element" 更清晰。不影响对象解构赋值（已通过 cover grammar 转换为 DestructuringAssignmentExpression）。
+  - **M5**：`eval_object_expr` + `compile_object_expr` 在属性值为 `AssignmentExpression` 时抛 SyntaxError "Invalid shorthand property initializer"，修复 `({a = 1})` 静默执行副作用赋值的 Bug。
+  - **P1.2**：`src/vm/vm.cpp` `kCopyDataProperties` handler 中 excluded key 收集改用 `k.sv()` 替代 `to_string_val(k)`，避免对确定是字符串的 excluded key 做不必要的类型转换。
+  - **M6**（跳过）：IteratorClose 异常路径不完整——记录为已知限制，本轮不修复。
+  - **新增测试（DS-38～DS-43 × Interp+VM = 12 个）**：DS-38/39 验证 M1 块作用域隔离；DS-40 验证 M3 var pattern hoist；DS-41 验证 M2 let 解构正常绑定；DS-42 验证 M4 对象字面量 spread 报错；DS-43 验证 M5 shorthand+default 报错。
+  - **修改文件**：`src/vm/compiler.cpp`（has_block_scope_decl + compile_object_expr），`src/runtime/interpreter.cpp`（hoist_vars_stmt + eval_destructuring_decl + eval_object_expr），`src/vm/vm.cpp`（kCopyDataProperties），`tests/unit/destructuring_test.cpp`（+12 个测试）
+  - 3694/3694 通过（coverage），0 LSan 泄漏。
+
+- [x] **解构赋值 Testing Agent 边界补测 + var 解构 hoist Bug 修复**（2026-05-25）：
+  - **新增测试（DS-19～DS-37，3 Parser + 19 Interp + 19 VM = 41 个）**：
+    - DS-19：嵌套对象默认值 `let {a:{b=1}={}} = {}` → b=1（Parser+Interp+VM）
+    - DS-20：数组默认值非触发条件（0/false/null 均不触发，仅 undefined 触发）
+    - DS-21：默认值副作用——只在 undefined 时调用一次（call count 验证）
+    - DS-22：对象 rest 明确排除已命名属性（`{a,b,...rest}` rest 无 a/b）
+    - DS-23：对象 rest 不含原型链属性（Object.create 后解构，rest 只含 own 属性）
+    - DS-24：对象 rest 是新对象（`rest !== src`）
+    - DS-25：字符串解构 `let [a,b]='hi'` → a==='h',b==='i'（走 spread_into 字符串快路径）
+    - DS-26：空数组 rest `let [a,...rest]=[1]` → rest===[]
+    - DS-27：赋值表达式结果是 RHS 值 `x=([a,b]=[1,2])` → x[0]===1
+    - DS-28：数组+对象混合嵌套 `[{a},{b}]=[{a:1},{b:2}]`
+    - DS-29：三层嵌套 `{a:{b:{c}}}={a:{b:{c:42}}}` → c===42
+    - DS-30：中间层为 null → TypeError
+    - DS-31：`const {a} = undefined` → TypeError
+    - DS-32：`const [a] = undefined` → TypeError
+    - DS-33：var 解构执行 `var {a,b}={a:10,b:20}; a+b`（回归 Bug 修复验证）
+    - DS-34：for-of 嵌套解构 `{name, scores:[first]}`
+    - DS-35：自定义 Symbol.iterator 用于数组解构
+    - DS-36：迭代器耗尽后多余元素为 undefined
+    - DS-37：`{x:undefined}` 解构 undefined 值触发默认（对象属性显式 undefined）
+    - Parser：rest 非末尾 SyntaxError × 2（数组+对象）；成员表达式赋值目标当前 SyntaxError（已知限制文档化）
+  - **Bug 修复（interpreter.cpp `hoist_vars_stmt`）**：缺少 `DestructuringDeclaration` 分支，导致 `var {a,b}=obj` 中 a/b 未被提升到 var 作用域（执行时 `env->set("a", val)` 找不到绑定 → ReferenceError）。修复：新增 `collect_pattern_names` 静态辅助函数（递归访问 PatternNode variant，将所有 IdentifierPattern 名字收集到 `vector<string>`）；在 `hoist_vars_stmt` 新增 `DestructuringDeclaration` 分支，`var` 种类时调用 `collect_pattern_names` 再对每个名字 `var_target.define_initialized`，与 VM compiler `hoist_vars_scan_pattern` 语义完全对齐。
+  - **修改文件**：`src/runtime/interpreter.cpp`（+`collect_pattern_names` 函数 + `hoist_vars_stmt` DestructuringDeclaration 分支），`tests/unit/destructuring_test.cpp`（+41 个测试）
+  - 3682/3682 通过（coverage），0 LSan 泄漏。
+
 - [x] **函数默认参数值 Review 必修修复 M1/M2/M3/M4**（2026-05-25）：
   - **M1（P1-A）解释器求值顺序**：`call_function` 的 param_defs 循环改为先 `fn_env->define(name, VarKind::Var)` + `fn_env->initialize(name, arg_val)`（实参或 undefined），再按需 `eval_expr(default)` + `fn_env->set(name, default_val)`。确保前序参数在后续默认值求值时已经在 fn_env 中可见（`f(a=1, b=a+1)` 无参调用 b=2 正确）。
   - **M2（P1-B）解释器 arguments/this 早建立**：将 `arguments` 对象创建和 `actual_this` 计算移到 param_defs 绑定循环之前（含临时设置/恢复 `current_this_`），使默认值表达式可引用 `arguments` 和 `this`（`f(a=arguments.length)` 正确）。
@@ -682,3 +720,68 @@
 ### 验证
 - `./scripts/coverage.sh --quiet`：2488/2488 通过
 - `./scripts/run_ut.sh --quiet`：2488/2488 通过，0 LSan 泄漏
+
+---
+
+## 解构赋值（Destructuring Assignment）（2026-05-25）
+
+### 目标
+实现完整的 JS 解构赋值语法，覆盖 Interpreter + VM 两路径，对称实现。
+
+### 主要变更
+
+**AST（ast.h）**
+- 前向声明 `struct PatternNode;`（位于 ExprNode/StmtNode 之前）
+- 新增 `IdentifierPattern` / `ArrayPatternElement` / `ArrayPattern` / `ObjectPatternProperty` / `ObjectPattern` / `PatternNode` 结构体
+- `PatternNode` 完整定义放在以上子结构体之后
+- `DestructuringAssignmentExpression` 移至 `ExprNode` 之前（解决 variant 需要完整类型的编译问题）
+- 新增 `DestructuringDeclaration`（StmtNode variant 成员）
+- `ForOfStatement` 扩展 `pattern_binding` 字段（`unique_ptr<PatternNode>`）
+- `ExprNode::v` variant 追加 `DestructuringAssignmentExpression`
+- `StmtNode::v` variant 追加 `DestructuringDeclaration`
+
+**Parser（parser.cpp）**
+- 对象字面量 `nud(LBrace)` 扩展：shorthand `{a}`→`{a: Identifier{a}}`，shorthand+default `{a=v}`，spread `{...rest}`（key="" sentinel + SpreadElement value），关键字属性键支持
+- `parse_binding_pattern()`：`[` 分支调用 `parse_array_binding_pattern()`，`{` 分支调用 `parse_object_binding_pattern()`
+- `parse_array_binding_pattern()`：解析 `[a, b = 1, , ...rest]`，生成 ArrayPattern
+- `parse_object_binding_pattern()`：解析 `{key, key: pat, key = default, ...rest}`，生成 ObjectPattern
+- cover grammar 转换函数（非 const 引用，move 内部 unique_ptr）：`convert_array_to_pattern` / `convert_object_to_pattern` / `convert_expr_to_pattern`
+- `parse_var_decl()`：检测 `[` 或 `{` 后调用 parse_binding_pattern 产生 DestructuringDeclaration
+- `led(Assign)`：检测左侧为 ArrayExpression/ObjectExpression 时先计算 `left_start`，再 `convert_expr_to_pattern(left)` 产生 DestructuringAssignmentExpression
+- `parse_for_stmt()`：检测 pattern_binding（`for (let/const/var [` 或 `{`）时调用 parse_binding_pattern，产生 ForOfStatement 的 pattern_binding 字段
+
+**Opcode（opcode.h）**
+- 新增 `kCopyDataProperties`（operand: n_excluded u8）
+
+**Compiler（compiler.h + compiler.cpp）**
+- 声明 `hoist_vars_scan_pattern` / `compile_destructuring_decl` / `compile_bind_pattern`
+- `hoist_vars_scan_expr`：追加 DestructuringAssignmentExpression 分支
+- `hoist_vars_scan_stmt`：追加 DestructuringDeclaration 分支；ForOfStatement 的 var 类型 pattern_binding 路径调用 hoist_vars_scan_pattern
+- `hoist_vars_scan_pattern`：递归收集 IdentifierPattern 名称到 var_decls
+- `compile_stmt`：追加 DestructuringDeclaration 分支
+- `compile_expr`：追加 DestructuringAssignmentExpression 分支（compile_expr(rhs) + kDup + compile_bind_pattern(is_assign=true)）
+- `compile_bind_pattern`：IdentifierPattern（SetVar/DefLet/DefConst + InitVar + Pop）；ObjectPattern（DefLet temp_var + GetVar + GetProp + [kJumpIfFalse default] + 递归 + CopyDataProperties rest）；ArrayPattern（ForOfStart + EnterTry + ForOfNext + [default] + 递归 + iter_tmp + NewArray + SpreadAppend rest + LeaveTry + IteratorClose / exception handler）
+- `compile_destructuring_decl`：compile_expr(init) + compile_bind_pattern
+- `compile_for_of_stmt`：has_pattern 分支（kPushScope if need_scope + compile_bind_pattern）
+
+**Interpreter（interpreter.h + interpreter.cpp）**
+- 声明 `eval_destructuring_decl` / `bind_pattern`
+- `eval_stmt`：追加 DestructuringDeclaration 分支
+- `eval_expr`：追加 DestructuringAssignmentExpression 分支（eval_expr(rhs) + bind_pattern(is_assign=true)，返回 rhs）
+- `bind_pattern`：IdentifierPattern（bind_identifier helper：set/define+initialize）；ObjectPattern（null/undefined → TypeError，get_property + default check + 递归，rest via own_enumerable_string_keys 排除命名 key）；ArrayPattern（null/undefined → TypeError，spread_into 收集所有值，按索引绑定+default，rest 数组从剩余值）
+- `eval_destructuring_decl`：eval_expr(init) + bind_pattern
+- `eval_for_of_stmt` run_body lambda：追加 pattern_binding 路径（is_lexical 时创建 per-iteration scope + bind_pattern 调用）
+
+**VM（vm.cpp）**
+- `kCopyDataProperties`：read_u8(n_excluded) → 弹出 n 个 key → 弹出 src_obj → 新建 rest JSObject → 遍历 own_enumerable_string_keys 排除 excluded keys → push 结果
+
+**ast_dump.cpp**
+- `dump_expr`：追加 DestructuringAssignmentExpression 分支
+- `dump_stmt`：追加 DestructuringDeclaration 分支
+
+### 测试（destructuring_test.cpp）
+40 个测试：4 Parser + 18 Interp（DS-01～DS-18）+ 18 VM（DS-01～DS-18）
+
+### 验证
+- `./build/debug/tests/qppjs_unit_tests --gtest_filter="Destructuring*"`：40/40 通过
+- `./scripts/coverage.sh --quiet`：3641/3641 通过，0 LSan 泄漏

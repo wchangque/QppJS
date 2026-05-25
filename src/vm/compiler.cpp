@@ -21,6 +21,8 @@ static bool has_block_scope_decl(const std::vector<StmtNode>& stmts) {
     for (const auto& s : stmts) {
         if (const auto* decl = std::get_if<VariableDeclaration>(&s.v)) {
             if (decl->kind == VarKind::Let || decl->kind == VarKind::Const) return true;
+        } else if (const auto* dd = std::get_if<DestructuringDeclaration>(&s.v)) {
+            if (dd->kind == VarKind::Let || dd->kind == VarKind::Const) return true;
         } else if (std::holds_alternative<FunctionDeclaration>(s.v)) {
             return true;
         }
@@ -179,12 +181,16 @@ void Compiler::hoist_vars_scan_stmt(const StmtNode& stmt) {
     } else if (std::holds_alternative<ForOfStatement>(stmt.v)) {
         const auto& for_of = std::get<ForOfStatement>(stmt.v);
         if (for_of.has_decl && for_of.var_kind == VarKind::Var) {
-            uint16_t idx = add_name(for_of.binding);
-            bool found = false;
-            for (uint16_t v : current_->var_decls) {
-                if (v == idx) { found = true; break; }
+            if (for_of.pattern_binding) {
+                hoist_vars_scan_pattern(*for_of.pattern_binding);
+            } else {
+                uint16_t idx = add_name(for_of.binding);
+                bool found = false;
+                for (uint16_t v : current_->var_decls) {
+                    if (v == idx) { found = true; break; }
+                }
+                if (!found) current_->var_decls.push_back(idx);
             }
-            if (!found) current_->var_decls.push_back(idx);
         }
         hoist_vars_scan_expr(*for_of.right);
         if (for_of.body) hoist_vars_scan_stmt(*for_of.body);
@@ -205,8 +211,40 @@ void Compiler::hoist_vars_scan_stmt(const StmtNode& stmt) {
         if (exp.declaration) {
             hoist_vars_scan_stmt(*exp.declaration);
         }
+    } else if (std::holds_alternative<DestructuringDeclaration>(stmt.v)) {
+        const auto& dd = std::get<DestructuringDeclaration>(stmt.v);
+        if (dd.kind == VarKind::Var) {
+            hoist_vars_scan_pattern(*dd.pattern);
+        }
     }
     // Do NOT recurse into FunctionDeclaration/FunctionExpression bodies
+}
+
+void Compiler::hoist_vars_scan_pattern(const PatternNode& pat) {
+    std::visit(overloaded{
+        [this](const IdentifierPattern& ip) {
+            uint16_t idx = add_name(ip.name);
+            bool found = false;
+            for (uint16_t v : current_->var_decls) {
+                if (v == idx) { found = true; break; }
+            }
+            if (!found) current_->var_decls.push_back(idx);
+        },
+        [this](const ArrayPattern& ap) {
+            for (const auto& elem_opt : ap.elements) {
+                if (elem_opt.has_value()) {
+                    hoist_vars_scan_pattern(*elem_opt->pattern);
+                }
+            }
+            if (ap.rest) hoist_vars_scan_pattern(*ap.rest);
+        },
+        [this](const ObjectPattern& op) {
+            for (const auto& prop : op.properties) {
+                hoist_vars_scan_pattern(*prop.value_pattern);
+            }
+            if (op.rest) hoist_vars_scan_pattern(*op.rest);
+        },
+    }, pat.v);
 }
 
 void Compiler::hoist_vars_scan_expr(const ExprNode& expr) {
@@ -290,6 +328,9 @@ void Compiler::hoist_vars_scan_expr(const ExprNode& expr) {
             },
             [this](const SpreadElement& e) {
                 hoist_vars_scan_expr(*e.argument);
+            },
+            [this](const DestructuringAssignmentExpression& e) {
+                hoist_vars_scan_expr(*e.value);
             },
         },
         expr.v);
@@ -477,6 +518,7 @@ void Compiler::compile_stmt(const StmtNode& stmt) {
             [this](const ForStatement& s) { compile_for_stmt(s); },
             [this](const ForInStatement& s) { compile_for_in_stmt(s); },
             [this](const ForOfStatement& s) { compile_for_of_stmt(s); },
+            [this](const DestructuringDeclaration& s) { compile_destructuring_decl(s); },
             [](const ImportDeclaration&) {
                 // Link 阶段已处理，编译时 no-op
             },
@@ -570,6 +612,162 @@ void Compiler::compile_var_decl(const VariableDeclaration& decl) {
         emit_u16(idx);
         emit(Opcode::kPop);
     }
+}
+
+// ============================================================
+// Destructuring compilation helpers
+// ============================================================
+
+// compile_bind_pattern: 假设 rhs 已在栈顶
+// 消耗 rhs，将 pattern 中每个标识符绑定到对应值
+// kind: 声明种类（Var/Let/Const），is_assign=true 时用 SetVar（写已有变量）
+void Compiler::compile_bind_pattern(const PatternNode& pat, VarKind kind, bool is_assign) {
+    std::visit(overloaded{
+        [&](const IdentifierPattern& ip) {
+            uint16_t idx = add_name(ip.name);
+            if (is_assign || kind == VarKind::Var) {
+                emit(Opcode::kSetVar);
+                emit_u16(idx);
+                emit(Opcode::kPop);
+            } else {
+                emit(kind == VarKind::Let ? Opcode::kDefLet : Opcode::kDefConst);
+                emit_u16(idx);
+                emit(Opcode::kInitVar);
+                emit_u16(idx);
+                emit(Opcode::kPop);
+            }
+        },
+        [&](const ObjectPattern& op) {
+            // 统一使用临时变量存储 rhs（简化 rest/无 rest 两种路径）
+            static int dest_counter = 0;
+            std::string tmp_name = "$__qppjs_obj_dest_" + std::to_string(dest_counter++) + "__";
+            uint16_t tmp_idx = add_name(tmp_name);
+            // DefLet $tmp; InitVar $tmp (pop rhs) → stack: []
+            emit(Opcode::kDefLet);
+            emit_u16(tmp_idx);
+            emit(Opcode::kInitVar);
+            emit_u16(tmp_idx);
+            emit(Opcode::kPop);
+            // 每个属性
+            std::vector<std::string> named_keys;
+            for (const auto& prop : op.properties) {
+                named_keys.push_back(prop.key);
+                emit(Opcode::kGetVar);
+                emit_u16(tmp_idx);
+                uint16_t key_idx = add_name(prop.key);
+                emit(Opcode::kGetProp);
+                emit_u16(key_idx);
+                // 默认值处理：如果 val === undefined，使用 default
+                if (prop.default_value.has_value()) {
+                    emit(Opcode::kDup);
+                    emit(Opcode::kLoadUndefined);
+                    emit(Opcode::kStrictEq);
+                    size_t skip_default = emit_jump(Opcode::kJumpIfFalse);
+                    emit(Opcode::kPop);
+                    compile_expr(**prop.default_value);
+                    patch_jump(skip_default);
+                }
+                compile_bind_pattern(*prop.value_pattern, kind, is_assign);
+            }
+            // rest 处理
+            if (op.rest != nullptr) {
+                emit(Opcode::kGetVar);
+                emit_u16(tmp_idx);
+                for (const auto& k : named_keys) {
+                    uint16_t ki = add_constant(Value::string(k));
+                    emit(Opcode::kLoadString);
+                    emit_u16(ki);
+                }
+                emit(Opcode::kCopyDataProperties);
+                emit_u8(static_cast<uint8_t>(named_keys.size()));
+                compile_bind_pattern(*op.rest, kind, is_assign);
+            }
+        },
+        [&](const ArrayPattern& ap) {
+            // 数组解构：使用 ForOfStart/ForOfNext/IteratorClose
+            // Stack before: [rhs]
+            emit(Opcode::kForOfStart);
+            // Stack: [iter]
+            // Try-catch for iterator close on exception
+            size_t enter_try_pos = emit_jump(Opcode::kEnterTry);
+
+            // 每个普通元素
+            for (const auto& elem_opt : ap.elements) {
+                if (!elem_opt.has_value()) {
+                    // elision hole: consume one value
+                    emit(Opcode::kForOfNext);
+                    // stack: [iter, value, done]
+                    emit(Opcode::kPop);  // pop done
+                    emit(Opcode::kPop);  // pop value (discarded)
+                    continue;
+                }
+                const auto& elem = *elem_opt;
+                emit(Opcode::kForOfNext);
+                // stack: [iter, value, done]
+                emit(Opcode::kPop);  // pop done (simplified: ignore done flag)
+                // stack: [iter, value]
+                // 默认值处理
+                if (elem.default_value.has_value()) {
+                    emit(Opcode::kDup);
+                    emit(Opcode::kLoadUndefined);
+                    emit(Opcode::kStrictEq);
+                    size_t skip_default = emit_jump(Opcode::kJumpIfFalse);
+                    emit(Opcode::kPop);
+                    compile_expr(**elem.default_value);
+                    patch_jump(skip_default);
+                }
+                // bind consumes value, stack: [iter]
+                compile_bind_pattern(*elem.pattern, kind, is_assign);
+            }
+
+            // rest 处理：将剩余元素收集到新数组
+            // 使用临时变量存储 iter，然后用 SpreadAppend 一次性收集剩余元素
+            if (ap.rest != nullptr) {
+                static int iter_counter = 0;
+                std::string iter_tmp = "$__qppjs_arr_iter_" + std::to_string(iter_counter++) + "__";
+                uint16_t iter_tmp_idx = add_name(iter_tmp);
+                // 存储 iter: DefLet $iter_tmp; InitVar $iter_tmp; Pop → stack: []
+                emit(Opcode::kDefLet);
+                emit_u16(iter_tmp_idx);
+                emit(Opcode::kInitVar);
+                emit_u16(iter_tmp_idx);
+                emit(Opcode::kPop);
+                // 创建新数组, dup 它，然后 SpreadAppend iter
+                emit(Opcode::kNewArray);      // [new_arr]
+                emit(Opcode::kDup);           // [new_arr, new_arr_dup]
+                emit(Opcode::kGetVar);        // [new_arr, new_arr_dup, iter]
+                emit_u16(iter_tmp_idx);
+                emit(Opcode::kSpreadAppend);  // [new_arr]
+                // 绑定 rest 模式
+                compile_bind_pattern(*ap.rest, kind, is_assign);
+                // 恢复 iter 到栈上（用于 IteratorClose）
+                emit(Opcode::kGetVar);
+                emit_u16(iter_tmp_idx);
+            }
+
+            // Close iterator (normal path)
+            emit(Opcode::kLeaveTry);
+            emit(Opcode::kIteratorClose);
+            size_t after_close = emit_jump(Opcode::kJump);
+
+            // Exception handler
+            size_t exc_handler = current_offset();
+            patch_jump_to(enter_try_pos, exc_handler);
+            emit(Opcode::kGetException);
+            emit(Opcode::kIteratorCloseAbnormal);
+            emit(Opcode::kThrow);
+            patch_jump(after_close);
+        },
+    }, pat.v);
+}
+
+void Compiler::compile_destructuring_decl(const DestructuringDeclaration& decl) {
+    if (decl.init) {
+        compile_expr(*decl.init);
+    } else {
+        emit(Opcode::kLoadUndefined);
+    }
+    compile_bind_pattern(*decl.pattern, decl.kind, false);
 }
 
 void Compiler::compile_block_stmt(const BlockStatement& stmt) {
@@ -749,6 +947,18 @@ void Compiler::compile_expr(const ExprNode& expr) {
                 emit_u16(idx);
                 emit(Opcode::kThrow);
             },
+            [this](const DestructuringAssignmentExpression& e) {
+                // Compile rhs first
+                compile_expr(*e.value);
+                // Dup so the expression also produces a value (= expression result = rhs)
+                emit(Opcode::kDup);
+                // compile_bind_pattern consumes rhs (the dup'd copy)
+                // Actually: rhs is on stack, we need rhs to remain for expression value.
+                // Strategy: compile rhs, dup it, bind pattern from dup'd copy.
+                // But compile_bind_pattern pops the rhs.
+                // So: stack before bind = [rhs_orig, rhs_dup]; bind consumes rhs_dup; leaves rhs_orig.
+                compile_bind_pattern(*e.pattern, VarKind::Var /* unused for assign */, true);
+            },
         },
         expr.v);
 }
@@ -890,6 +1100,20 @@ void Compiler::compile_assignment(const AssignmentExpression& expr) {
 void Compiler::compile_object_expr(const ObjectExpression& expr) {
     emit(Opcode::kNewObject);
     for (const auto& prop : expr.properties) {
+        if (std::holds_alternative<SpreadElement>(prop.value->v)) {
+            uint16_t msg_idx = add_constant(Value::string("Object spread not supported"));
+            emit(Opcode::kLoadString);
+            emit_u16(msg_idx);
+            emit(Opcode::kThrow);
+            return;
+        }
+        if (std::holds_alternative<AssignmentExpression>(prop.value->v)) {
+            uint16_t msg_idx = add_constant(Value::string("Invalid shorthand property initializer"));
+            emit(Opcode::kLoadString);
+            emit_u16(msg_idx);
+            emit(Opcode::kThrow);
+            return;
+        }
         emit(Opcode::kDup);  // dup obj reference
         compile_expr(*prop.value);
         uint16_t name_idx = add_name(prop.key);
@@ -1575,7 +1799,9 @@ void Compiler::compile_for_in_stmt(const ForInStatement& stmt, std::optional<std
 
 void Compiler::compile_for_of_stmt(const ForOfStatement& stmt, std::optional<std::string> label) {
     bool need_scope = stmt.has_decl && stmt.var_kind != VarKind::Var;
-    uint16_t name_idx = add_name(stmt.binding);
+    // pattern_binding: use destructuring; otherwise simple binding
+    bool has_pattern = stmt.pattern_binding != nullptr;
+    uint16_t name_idx = has_pattern ? 0 : add_name(stmt.binding);
 
     compile_expr(*stmt.right);
     emit(Opcode::kForOfStart);
@@ -1584,7 +1810,13 @@ void Compiler::compile_for_of_stmt(const ForOfStatement& stmt, std::optional<std
 
     size_t label_body_start = current_offset();
 
-    if (need_scope) {
+    if (has_pattern) {
+        // 解构模式绑定：value on top of [iter, value]
+        // stack at body_start: [iter, value]
+        if (need_scope) emit(Opcode::kPushScope);
+        // compile_bind_pattern consumes value, leaves stack: [iter]
+        compile_bind_pattern(*stmt.pattern_binding, stmt.var_kind, !stmt.has_decl);
+    } else if (need_scope) {
         emit(Opcode::kPushScope);
         emit(stmt.var_kind == VarKind::Let ? Opcode::kDefLet : Opcode::kDefConst);
         emit_u16(name_idx);

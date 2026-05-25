@@ -3515,6 +3515,29 @@ std::string Interpreter::symbol_to_string(uint64_t id, const SymbolTable& table)
 
 // ---- Var hoisting ----
 
+// 递归收集 PatternNode 中所有 IdentifierPattern 的名字
+static void collect_pattern_names(const PatternNode& pat, std::vector<std::string>& out) {
+    std::visit(overloaded{
+        [&](const IdentifierPattern& ip) {
+            out.push_back(ip.name);
+        },
+        [&](const ArrayPattern& ap) {
+            for (const auto& elem_opt : ap.elements) {
+                if (elem_opt.has_value()) {
+                    collect_pattern_names(*elem_opt->pattern, out);
+                }
+            }
+            if (ap.rest) collect_pattern_names(*ap.rest, out);
+        },
+        [&](const ObjectPattern& op) {
+            for (const auto& prop : op.properties) {
+                collect_pattern_names(*prop.value_pattern, out);
+            }
+            if (op.rest) collect_pattern_names(*op.rest, out);
+        },
+    }, pat.v);
+}
+
 void Interpreter::hoist_vars_stmt(const StmtNode& stmt, Environment& var_target) {
     if (std::holds_alternative<VariableDeclaration>(stmt.v)) {
         const auto& decl = std::get<VariableDeclaration>(stmt.v);
@@ -3522,6 +3545,15 @@ void Interpreter::hoist_vars_stmt(const StmtNode& stmt, Environment& var_target)
             var_target.define_initialized(decl.name);
         } else {
             current_env_->define(decl.name, decl.kind);
+        }
+    } else if (std::holds_alternative<DestructuringDeclaration>(stmt.v)) {
+        const auto& dd = std::get<DestructuringDeclaration>(stmt.v);
+        if (dd.kind == VarKind::Var) {
+            std::vector<std::string> names;
+            collect_pattern_names(*dd.pattern, names);
+            for (const auto& name : names) {
+                var_target.define_initialized(name);
+            }
         }
     } else if (std::holds_alternative<FunctionDeclaration>(stmt.v)) {
         const auto& fdecl = std::get<FunctionDeclaration>(stmt.v);
@@ -3555,7 +3587,15 @@ void Interpreter::hoist_vars_stmt(const StmtNode& stmt, Environment& var_target)
     } else if (std::holds_alternative<ForOfStatement>(stmt.v)) {
         const auto& for_of = std::get<ForOfStatement>(stmt.v);
         if (for_of.has_decl && for_of.var_kind == VarKind::Var) {
-            var_target.define_initialized(for_of.binding);
+            if (for_of.pattern_binding != nullptr) {
+                std::vector<std::string> names;
+                collect_pattern_names(*for_of.pattern_binding, names);
+                for (const auto& name : names) {
+                    var_target.define_initialized(name);
+                }
+            } else {
+                var_target.define_initialized(for_of.binding);
+            }
         }
         hoist_vars_stmt(*for_of.body, var_target);
     } else if (std::holds_alternative<TryStatement>(stmt.v)) {
@@ -3803,6 +3843,7 @@ StmtResult Interpreter::eval_stmt(const StmtNode& stmt) {
             [this](const ForStatement& s) { return eval_for_stmt(s); },
             [this](const ForInStatement& s) { return eval_for_in_stmt(s); },
             [this](const ForOfStatement& s) { return eval_for_of_stmt(s); },
+            [this](const DestructuringDeclaration& s) { return eval_destructuring_decl(s); },
             [](const ImportDeclaration&) -> StmtResult {
                 // Link 阶段已处理，执行时 no-op
                 return StmtResult::ok(Completion::normal(Value::undefined()));
@@ -3920,6 +3961,174 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
         }
     }
     return StmtResult::ok(Completion::normal(Value::undefined()));
+}
+
+// ============================================================
+// Destructuring: bind_pattern + eval_destructuring_decl
+// ============================================================
+
+// bind a single identifier in the current environment
+static StmtResult bind_identifier(const std::string& name, Value val, VarKind kind, bool is_assign,
+                                   Environment* env, Environment* var_env) {
+    if (is_assign || kind == VarKind::Var) {
+        auto r = env->set(name, val);
+        if (!r.is_ok()) return StmtResult::err(r.error());
+    } else {
+        // let / const: define then initialize
+        if (env->find_local(name) == nullptr) {
+            env->define(name, kind);
+        }
+        auto r = env->initialize(name, val);
+        if (!r.is_ok()) return StmtResult::err(r.error());
+    }
+    return StmtResult::ok(Completion::normal(Value::undefined()));
+}
+
+StmtResult Interpreter::bind_pattern(const PatternNode& pattern, Value rhs,
+                                      VarKind kind, bool is_assign) {
+    return std::visit(overloaded{
+        [&](const IdentifierPattern& ip) -> StmtResult {
+            return bind_identifier(ip.name, rhs, kind, is_assign, current_env_.get(), var_env_.get());
+        },
+        [&](const ObjectPattern& op) -> StmtResult {
+            // null/undefined → TypeError
+            if (rhs.is_null() || rhs.is_undefined()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot destructure property of null/undefined");
+                return StmtResult::ok(Completion::throw_(*pending_throw_));
+            }
+            // Collect named keys for rest computation
+            std::vector<std::string> named_keys;
+            for (const auto& prop : op.properties) {
+                named_keys.push_back(prop.key);
+                // Get value from rhs
+                Value val = Value::undefined();
+                if (rhs.is_object()) {
+                    RcObject* raw = rhs.as_object_raw();
+                    ObjectKind k = raw->object_kind();
+                    if (k == ObjectKind::kOrdinary || k == ObjectKind::kArray ||
+                        k == ObjectKind::kRegExp || k == ObjectKind::kStringObject ||
+                        k == ObjectKind::kBooleanObject) {
+                        auto* obj = static_cast<JSObject*>(raw);
+                        val = obj->get_property(prop.key);
+                    }
+                }
+                // Default value: if val === undefined
+                if (val.is_undefined() && prop.default_value.has_value()) {
+                    auto dv = eval_expr(**prop.default_value);
+                    if (!dv.is_ok()) return StmtResult::err(dv.error());
+                    val = dv.value();
+                }
+                // Recurse
+                auto r = bind_pattern(*prop.value_pattern, std::move(val), kind, is_assign);
+                if (!r.is_ok()) return r;
+                if (r.completion().is_throw()) return r;
+            }
+            // rest
+            if (op.rest != nullptr) {
+                auto rest_obj = RcPtr<JSObject>::make(ObjectKind::kOrdinary);
+                gc_heap_.Register(rest_obj.get());
+                rest_obj->set_proto(object_prototype_);
+                if (rhs.is_object()) {
+                    RcObject* raw = rhs.as_object_raw();
+                    ObjectKind k = raw->object_kind();
+                    if (k == ObjectKind::kOrdinary || k == ObjectKind::kArray ||
+                        k == ObjectKind::kRegExp || k == ObjectKind::kStringObject ||
+                        k == ObjectKind::kBooleanObject) {
+                        auto* obj = static_cast<JSObject*>(raw);
+                        for (const auto& key : obj->own_enumerable_string_keys()) {
+                            bool excluded = false;
+                            for (const auto& nk : named_keys) {
+                                if (nk == key) { excluded = true; break; }
+                            }
+                            if (!excluded) {
+                                rest_obj->set_property(key, obj->get_property(key));
+                            }
+                        }
+                    }
+                }
+                auto r = bind_pattern(*op.rest, Value::object(ObjectPtr(rest_obj)), kind, is_assign);
+                if (!r.is_ok()) return r;
+                if (r.completion().is_throw()) return r;
+            }
+            return StmtResult::ok(Completion::normal(Value::undefined()));
+        },
+        [&](const ArrayPattern& ap) -> StmtResult {
+            // Get iterator from rhs
+            if (rhs.is_null() || rhs.is_undefined()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    rhs.is_null() ? "null is not iterable" : "undefined is not iterable");
+                return StmtResult::ok(Completion::throw_(*pending_throw_));
+            }
+
+            // Collect values from iterator
+            std::vector<Value> values;
+            if (!spread_into(rhs, values)) {
+                Value thrown = pending_throw_.has_value() ? std::move(*pending_throw_)
+                                                          : make_error_value(NativeErrorType::kTypeError,
+                                                                             "not iterable");
+                pending_throw_ = std::nullopt;
+                return StmtResult::ok(Completion::throw_(std::move(thrown)));
+            }
+            size_t val_idx = 0;
+            // Bind regular elements
+            for (const auto& elem_opt : ap.elements) {
+                if (!elem_opt.has_value()) {
+                    // elision: skip
+                    ++val_idx;
+                    continue;
+                }
+                const auto& elem = *elem_opt;
+                Value val = (val_idx < values.size()) ? values[val_idx] : Value::undefined();
+                ++val_idx;
+                // Default value
+                if (val.is_undefined() && elem.default_value.has_value()) {
+                    auto dv = eval_expr(**elem.default_value);
+                    if (!dv.is_ok()) return StmtResult::err(dv.error());
+                    val = dv.value();
+                }
+                auto r = bind_pattern(*elem.pattern, std::move(val), kind, is_assign);
+                if (!r.is_ok()) return r;
+                if (r.completion().is_throw()) return r;
+            }
+            // rest
+            if (ap.rest != nullptr) {
+                auto rest_arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+                gc_heap_.Register(rest_arr.get());
+                rest_arr->set_proto(array_prototype_);
+                for (size_t i = val_idx; i < values.size(); ++i) {
+                    rest_arr->elements_[rest_arr->array_length_++] = values[i];
+                }
+                auto r = bind_pattern(*ap.rest, Value::object(ObjectPtr(rest_arr)), kind, is_assign);
+                if (!r.is_ok()) return r;
+                if (r.completion().is_throw()) return r;
+            }
+            return StmtResult::ok(Completion::normal(Value::undefined()));
+        },
+    }, pattern.v);
+}
+
+StmtResult Interpreter::eval_destructuring_decl(const DestructuringDeclaration& decl) {
+    Value rhs;
+    if (decl.init) {
+        auto r = eval_expr(*decl.init);
+        if (!r.is_ok()) return StmtResult::err(r.error());
+        rhs = r.value();
+    } else {
+        rhs = Value::undefined();
+    }
+    // M2: for let/const, pre-declare all pattern names as TDZ before any binding,
+    // so default value expressions can see sibling names already in scope.
+    if (decl.kind == VarKind::Let || decl.kind == VarKind::Const) {
+        std::vector<std::string> names;
+        collect_pattern_names(*decl.pattern, names);
+        for (const auto& name : names) {
+            if (current_env_->find_local(name) == nullptr) {
+                current_env_->define(name, decl.kind);
+            }
+        }
+    }
+    return bind_pattern(*decl.pattern, std::move(rhs), decl.kind, false);
 }
 
 StmtResult Interpreter::eval_block_stmt(const BlockStatement& stmt) {
@@ -4051,6 +4260,20 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
                 pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
                     "invalid use of spread element");
                 return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            },
+            [this](const DestructuringAssignmentExpression& e) -> EvalResult {
+                auto rhs_r = eval_expr(*e.value);
+                if (!rhs_r.is_ok()) return rhs_r;
+                Value rhs = rhs_r.value();
+                // Destructuring assignment: use is_assign=true
+                auto r = bind_pattern(*e.pattern, rhs, VarKind::Var, true);
+                if (!r.is_ok()) return EvalResult::err(r.error());
+                if (r.completion().is_throw()) {
+                    pending_throw_ = r.completion().value;
+                    return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                }
+                // Expression result is the rhs value
+                return EvalResult::ok(rhs);
             },
         },
         expr.v);
@@ -4904,6 +5127,16 @@ EvalResult Interpreter::eval_object_expr(const ObjectExpression& expr) {
     gc_heap_.Register(obj.get());
     obj->set_proto(object_prototype_);
     for (const auto& prop : expr.properties) {
+        if (std::holds_alternative<SpreadElement>(prop.value->v)) {
+            pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                "Object spread not supported");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        if (std::holds_alternative<AssignmentExpression>(prop.value->v)) {
+            pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                "Invalid shorthand property initializer");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
         auto val = eval_expr(*prop.value);
         if (!val.is_ok()) {
             return val;
@@ -5667,7 +5900,23 @@ StmtResult Interpreter::eval_for_of_stmt(const ForOfStatement& stmt,
     // Helper lambda: execute one iteration body with iter_val as the loop variable.
     // Returns nullopt to continue looping, or a StmtResult to break/return/throw.
     auto run_body = [&](Value iter_val) -> std::optional<StmtResult> {
-        if (stmt.has_decl && stmt.var_kind == VarKind::Var) {
+        if (stmt.pattern_binding) {
+            // Destructuring for-of: create per-iteration scope for lexical bindings
+            if (is_lexical) {
+                auto iter_env = RcPtr<Environment>::make(old_env);
+                gc_heap_.Register(iter_env.get());
+                current_env_ = iter_env;
+            }
+            auto bind_r = bind_pattern(*stmt.pattern_binding, iter_val, stmt.var_kind, !stmt.has_decl);
+            if (!bind_r.is_ok()) {
+                current_env_ = old_env;
+                return bind_r;
+            }
+            if (bind_r.completion().is_throw()) {
+                current_env_ = old_env;
+                return bind_r;
+            }
+        } else if (stmt.has_decl && stmt.var_kind == VarKind::Var) {
             var_env_->set(stmt.binding, iter_val);
         } else if (is_lexical) {
             auto iter_env = RcPtr<Environment>::make(old_env);

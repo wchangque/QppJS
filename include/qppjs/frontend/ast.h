@@ -32,6 +32,7 @@ enum class VarKind { Var, Let, Const };
 
 struct ExprNode;
 struct StmtNode;
+struct PatternNode;
 
 // ---- 表达式节点（递归子节点均用 unique_ptr<ExprNode>）----
 
@@ -229,6 +230,14 @@ struct NewExpression {
     SourceRange range;
 };
 
+// 解构赋值表达式（[a, b] = rhs 或 ({a} = rhs)）
+// 定义在 ExprNode 之前：成员均为 unique_ptr（只需前向声明）
+struct DestructuringAssignmentExpression {
+    std::unique_ptr<PatternNode> pattern;
+    std::unique_ptr<ExprNode> value;
+    SourceRange range;
+};
+
 // ---- ExprNode 完整定义（必须在所有表达式 struct 定义之后）----
 
 struct ExprNode {
@@ -238,7 +247,8 @@ struct ExprNode {
                  FunctionExpression, CallExpression, NewExpression, ArrayExpression,
                  AwaitExpression, UpdateExpression, AsyncFunctionExpression,
                  MetaProperty, ImportCallExpression, RegexLiteral, TemplateLiteral,
-                 ArrowFunctionExpression, ConditionalExpression, SpreadElement>
+                 ArrowFunctionExpression, ConditionalExpression, SpreadElement,
+                 DestructuringAssignmentExpression>
             v;
 
     ExprNode() = default;
@@ -246,6 +256,62 @@ struct ExprNode {
     template <typename T>
         requires(!std::same_as<std::remove_cvref_t<T>, ExprNode>)
     explicit ExprNode(T&& node) : v(std::forward<T>(node)) {}
+};
+
+// ---- 解构模式节点 ----
+
+// 简单标识符模式（叶子节点）
+struct IdentifierPattern {
+    std::string name;
+    SourceRange range;
+};
+
+// 数组模式中单个元素（含可选默认值）
+struct ArrayPatternElement {
+    std::unique_ptr<PatternNode> pattern;
+    std::optional<std::unique_ptr<ExprNode>> default_value;
+    SourceRange range;
+};
+
+// 数组解构模式 [a, b, ...rest]
+struct ArrayPattern {
+    // 每个位置：nullopt = elision hole；有值 = ArrayPatternElement
+    std::vector<std::optional<ArrayPatternElement>> elements;
+    std::unique_ptr<PatternNode> rest;  // nullptr = 无 rest
+    SourceRange range;
+};
+
+// 对象模式中单个属性
+struct ObjectPatternProperty {
+    std::string key;
+    bool computed = false;
+    std::unique_ptr<PatternNode> value_pattern;
+    std::optional<std::unique_ptr<ExprNode>> default_value;
+    SourceRange range;
+};
+
+// 对象解构模式 {a, b: renamed, ...rest}
+struct ObjectPattern {
+    std::vector<ObjectPatternProperty> properties;
+    std::unique_ptr<PatternNode> rest;  // nullptr = 无 rest
+    SourceRange range;
+};
+
+// PatternNode 完整定义（必须在 IdentifierPattern/ArrayPattern/ObjectPattern 之后）
+struct PatternNode {
+    std::variant<IdentifierPattern, ArrayPattern, ObjectPattern> v;
+    PatternNode() = default;
+    template <typename T>
+        requires(!std::same_as<std::remove_cvref_t<T>, PatternNode>)
+    explicit PatternNode(T&& node) : v(std::forward<T>(node)) {}
+};
+
+// 解构声明语句（let/const/var {pattern} = init）
+struct DestructuringDeclaration {
+    VarKind kind;
+    std::unique_ptr<PatternNode> pattern;
+    std::unique_ptr<ExprNode> init;  // var 无初始化器时可为 nullptr
+    SourceRange range;
 };
 
 // ---- 语句节点（ExprNode 已完整；BlockStatement 的 vector<StmtNode> 在 StmtNode 完整前声明，
@@ -360,10 +426,12 @@ struct ForInStatement {
 
 // for (var/let/const binding of right) body
 // or  for (binding of right) body  (has_decl=false)
+// pattern_binding != nullptr 时使用解构绑定（替代 binding 字段）
 struct ForOfStatement {
     bool has_decl;
     VarKind var_kind;          // valid when has_decl=true
-    std::string binding;
+    std::string binding;       // 简单绑定名（pattern_binding 为 nullptr 时使用）
+    std::unique_ptr<PatternNode> pattern_binding;  // 解构模式绑定（非 nullptr 时忽略 binding）
     std::unique_ptr<ExprNode> right;
     std::unique_ptr<StmtNode> body;
     SourceRange range;
@@ -408,7 +476,8 @@ struct StmtNode {
                  ReturnStatement, FunctionDeclaration, AsyncFunctionDeclaration,
                  ThrowStatement, TryStatement, BreakStatement, ContinueStatement,
                  LabeledStatement, ForStatement, ForInStatement, ForOfStatement,
-                 ImportDeclaration, ExportNamedDeclaration, ExportDefaultDeclaration>
+                 ImportDeclaration, ExportNamedDeclaration, ExportDefaultDeclaration,
+                 DestructuringDeclaration>
             v;
 
     StmtNode() = default;

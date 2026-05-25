@@ -6568,6 +6568,50 @@ EvalResult VM::run(size_t exit_depth) {
             break;
         }
 
+        case Opcode::kCopyDataProperties: {
+            // Operand: n_excluded (u8) — number of excluded key strings on stack
+            // Stack layout (bottom to top): [src_obj, excl_key_0, ..., excl_key_(n-1)]
+            // Pops all n+1 values, pushes new object with all own enumerable string
+            // properties of src_obj except those whose key is in the excluded set.
+            uint8_t n_excluded = read_u8(bc, pc);
+
+            // Collect excluded keys (top of stack = last key)
+            std::vector<std::string> excluded;
+            excluded.reserve(n_excluded);
+            for (int i = 0; i < static_cast<int>(n_excluded); ++i) {
+                Value k = std::move(stack.back());
+                stack.pop_back();
+                excluded.push_back(std::string(k.sv()));
+            }
+
+            Value src_val = std::move(stack.back());
+            stack.pop_back();
+
+            auto rest_obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(rest_obj.get());
+            rest_obj->set_proto(object_prototype_);
+
+            if (src_val.is_object() && src_val.as_object_raw()) {
+                RcObject* raw = src_val.as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary ||
+                    raw->object_kind() == ObjectKind::kArray) {
+                    auto* src_obj = static_cast<JSObject*>(raw);
+                    for (const auto& key : src_obj->own_enumerable_string_keys()) {
+                        bool skip = false;
+                        for (const auto& ex : excluded) {
+                            if (ex == key) { skip = true; break; }
+                        }
+                        if (!skip) {
+                            rest_obj->set_property(key, src_obj->get_property(key));
+                        }
+                    }
+                }
+            }
+
+            stack.push_back(Value::object(ObjectPtr(rest_obj)));
+            break;
+        }
+
         default:
             return EvalResult::err(Error(ErrorKind::Runtime, "Internal: unknown opcode"));
         }

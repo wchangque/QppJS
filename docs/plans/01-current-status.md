@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 3601/3601 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 3694/3694 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-05-25 |
-| 下一步 | 继续提升 test262 通过率（解构赋值、in 运算符等） |
+| 下一步 | 继续提升 test262 通过率（in 运算符、comma 多变量声明等） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
@@ -22,6 +22,12 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **解构赋值 Review 必修问题修复 M1/M2/M3/M4/M5 + P1.2**（2026-05-25）：M1：compiler.cpp `has_block_scope_decl()` 新增 `DestructuringDeclaration` 分支（let/const 时返回 true），修复 `{ let {x} = ... }` 不创建 scope 导致 x 泄漏的 Bug；M2：interpreter.cpp `eval_destructuring_decl()` 在 bind_pattern 前对 let/const 模式调用 `collect_pattern_names` + `define(name, kind)` 预声明所有变量为 TDZ，使默认值表达式可以看到后续变量；M3：interpreter.cpp `hoist_vars_stmt` ForOfStatement 分支新增 `pattern_binding` 检查，`for (var [x] of ...)` 的 x 现在正确被 hoist；M4：eval_object_expr（interpreter）+ compile_object_expr（VM）遇到 SpreadElement 属性时抛 SyntaxError "Object spread not supported"；M5：eval_object_expr + compile_object_expr 遇到 AssignmentExpression 属性值时抛 SyntaxError "Invalid shorthand property initializer"；P1.2：vm.cpp `kCopyDataProperties` handler 中 excluded key 比较改用 `k.sv()` 替代 `to_string_val(k)`，避免不必要的类型转换；新增 12 个测试（DS-38～DS-43 × Interp+VM）。3694/3694 通过（coverage），0 LSan 泄漏。
+
+- [x] **解构赋值 Testing Agent 边界补测 + var 解构 hoist Bug 修复**（2026-05-25）：新增 41 个测试（3 Parser + 19 Interp + 19 VM，DS-19～DS-37）。覆盖：嵌套对象默认值（`{a:{b=1}={}}={}` → b=1）；数组默认值非触发条件（0/false/null 不触发）；默认值副作用（仅 undefined 时调用一次）；对象 rest 明确排除已命名属性；对象 rest 不含原型链属性；对象 rest 是新对象；字符串解构（`[a,b]='hi'`）；空数组 rest；赋值表达式返回 RHS；数组+对象混合嵌套；三层嵌套；中间层为 null → TypeError；`= undefined` RHS → TypeError；var 解构执行；for-of 嵌套解构；自定义 Symbol.iterator；迭代器耗尽后元素为 undefined；rest 非末尾 SyntaxError（2 个 Parser 测试）；成员表达式赋值目标当前为 SyntaxError（已知限制文档化）。同步修复 1 处 Bug：interpreter.cpp `hoist_vars_stmt` 缺少 `DestructuringDeclaration` 分支，导致 `var {a,b}=obj` 中 a/b 未被提升（ReferenceError）；修复为新增 `collect_pattern_names` 辅助函数递归收集模式标识符，var 种类时对每个名字调用 `var_target.define_initialized`（与 VM compiler `hoist_vars_scan_pattern` 语义对齐）。3682/3682 通过（coverage），0 LSan 泄漏。
+
+- [x] **解构赋值（Destructuring Assignment）**（2026-05-25）：PatternNode 递归 variant 体系（IdentifierPattern/ArrayPattern/ObjectPattern）；DestructuringDeclaration（StmtNode）+ DestructuringAssignmentExpression（ExprNode）；ForOfStatement 扩展 pattern_binding 字段；Parser：parse_binding_pattern（数组/对象绑定模式），cover grammar 转换（convert_array/object/expr_to_pattern，非 const 引用 move 内部 unique_ptr），对象字面量 nud(LBrace) 扩展 shorthand 属性（{a}=>{a:Identifier{a}}）/ shorthand+default（{a=v}）/ spread（{...rest}），parse_var_decl 检测 [/{ 产生 DestructuringDeclaration，led(Assign) 检测 ArrayExpression/ObjectExpression 左侧产生 DestructuringAssignmentExpression，parse_for_stmt 检测 pattern_binding；Interpreter bind_pattern（ObjectPattern：get_property+default+rest via own_enumerable_string_keys；ArrayPattern：spread_into 收集+按索引绑定+rest 数组；IdentifierPattern：set/define+initialize）+ eval_destructuring_decl + eval_for_of_stmt run_body 扩展 pattern_binding 路径；VM 新增 kCopyDataProperties(1) opcode（n_excluded u8 + 弹出 keys + 弹出 src → 新 rest 对象）；Compiler compile_bind_pattern（对象：DefLet/InitVar 临时变量+GetProp+递归+CopyDataProperties；数组：ForOfStart+EnterTry+ForOfNext+递归+iter_tmp+NewArray+SpreadAppend；标识符：SetVar/DefLet/DefConst）+ compile_destructuring_decl + compile_for_of_stmt 扩展 has_pattern 路径；hoist_vars_scan_pattern 递归收集模式标识符；ast_dump 扩展两个新节点；DestructuringAssignmentExpression 前置定义解决 variant 完整类型要求。新增 40 个测试（4 Parser + 18 Interp + 18 VM，DS-01～DS-18 × Interp+VM）。3641/3641 通过（coverage），0 LSan 泄漏。
 
 - [x] **函数默认参数值 Review 必修修复 M1/M2/M3/M4**（2026-05-25）：M1：解释器 param_defs 循环改为先 define+initialize（实参或 undefined），再 eval default 后用 set() 更新，确保前序参数在后续默认值求值时可见；M2：解释器将 arguments 对象创建和 actual_this 计算移到参数绑定循环之前（含临时设置 current_this_），使默认值表达式可引用 arguments 和 this；M3：compiler.cpp 将 kDefVar 字节码序列从 prologue 之前移到 prologue 之后，vm.cpp push_call_frame 移除对 var_decls 的预定义（保留 function_decls），确保 body var 在默认值求值期间不可见；M4：parser.cpp 将默认值解析从 parse_expr(2) 改为 parse_expr(1)，允许赋值表达式作为默认值。新增 8 个测试（DP-42～DP-45，Interp+VM 对称）。3601/3601 通过（coverage），0 LSan 泄漏。
 
