@@ -385,6 +385,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const TemplateLiteral& n) { return n.range; },
                               [](const ArrowFunctionExpression& n) { return n.range; },
                               [](const ConditionalExpression& n) { return n.range; },
+                              [](const SpreadElement& n) { return n.range; },
                       },
                       e.v);
 }
@@ -583,7 +584,8 @@ struct Parser {
                         fn_name = std::string(token_text(cur));
                         advance();
                     }
-                    auto params_result = parse_function_params();
+                    std::optional<std::string> fn_rest1;
+                    auto params_result = parse_function_params(fn_rest1);
                     if (!params_result.ok()) return ParseResult<ExprNode>::Err(params_result.error());
                     bool saved_in_async = in_async_function_;
                     in_async_function_ = true;
@@ -594,7 +596,7 @@ struct Parser {
                     auto body_ptr = std::make_shared<std::vector<StmtNode>>(
                         std::move(body_result.value().first));
                     return ParseResult<ExprNode>::Ok(ExprNode{AsyncFunctionExpression{
-                        std::move(fn_name), std::move(params_result.value()),
+                        std::move(fn_name), std::move(params_result.value()), std::move(fn_rest1),
                         std::move(body_ptr), span(tok.range.offset, fn_end)}});
                 }
                 // await expr — 在 async 函数体内或模块顶层有效
@@ -671,17 +673,31 @@ struct Parser {
                     auto rp2 = expect(TokenKind::RParen);
                     if (!rp2.ok()) return ParseResult<ExprNode>::Err(rp2.error());
                     if (cur.kind == TokenKind::Arrow && !got_lf) {
-                        // 箭头函数：验证每项都是 Identifier
+                        // 箭头函数：验证每项都是 Identifier 或最后一项是 SpreadElement(Identifier)
                         std::vector<std::string> params;
-                        for (auto& item : items) {
-                            if (!std::holds_alternative<Identifier>(item.v)) {
-                                return ParseResult<ExprNode>::Err(
-                                    make_parse_error(source, cur, "arrow function parameter must be an identifier"));
+                        std::optional<std::string> rest;
+                        for (size_t i = 0; i < items.size(); ++i) {
+                            auto& item = items[i];
+                            if (std::holds_alternative<SpreadElement>(item.v)) {
+                                if (i != items.size() - 1) {
+                                    return ParseResult<ExprNode>::Err(make_parse_error(
+                                        source, cur, "rest element must be last parameter"));
+                                }
+                                const auto& sp = std::get<SpreadElement>(item.v);
+                                if (!std::holds_alternative<Identifier>(sp.argument->v)) {
+                                    return ParseResult<ExprNode>::Err(make_parse_error(
+                                        source, cur, "rest parameter must be an identifier"));
+                                }
+                                rest = std::get<Identifier>(sp.argument->v).name;
+                            } else if (std::holds_alternative<Identifier>(item.v)) {
+                                params.push_back(std::get<Identifier>(item.v).name);
+                            } else {
+                                return ParseResult<ExprNode>::Err(make_parse_error(
+                                    source, cur, "arrow function parameter must be an identifier"));
                             }
-                            params.push_back(std::get<Identifier>(item.v).name);
                         }
                         advance();  // 消费 =>
-                        return parse_arrow_body(std::move(params), paren_start);
+                        return parse_arrow_body(std::move(params), paren_start, std::move(rest));
                     }
                     // 逗号表达式：(a, b) 的值为最后一项
                     return ParseResult<ExprNode>::Ok(std::move(items.back()));
@@ -691,14 +707,25 @@ struct Parser {
                 auto rp = expect(TokenKind::RParen);
                 if (!rp.ok()) return ParseResult<ExprNode>::Err(rp.error());
 
-                // (a) => ...  单参括号箭头函数
+                // (a) => ...  单参括号箭头函数 或 (...rest) => ...
                 if (cur.kind == TokenKind::Arrow && !got_lf) {
+                    if (std::holds_alternative<SpreadElement>(first.value().v)) {
+                        // (...rest) => body
+                        const auto& sp = std::get<SpreadElement>(first.value().v);
+                        if (!std::holds_alternative<Identifier>(sp.argument->v)) {
+                            return ParseResult<ExprNode>::Err(make_parse_error(
+                                source, cur, "rest parameter must be an identifier"));
+                        }
+                        std::string rest_name = std::get<Identifier>(sp.argument->v).name;
+                        advance();  // 消费 =>
+                        return parse_arrow_body({}, paren_start, std::move(rest_name));
+                    }
                     if (!std::holds_alternative<Identifier>(first.value().v)) {
                         return ParseResult<ExprNode>::Err(
                             make_parse_error(source, cur, "arrow function parameter must be an identifier"));
                     }
                     std::string param_name = std::get<Identifier>(first.value().v).name;
-                    advance();  // 消费 =>
+                    advance();  // 消費 =>
                     return parse_arrow_body({std::move(param_name)}, paren_start);
                 }
 
@@ -808,7 +835,8 @@ struct Parser {
                     fn_name = std::string(token_text(cur));
                     advance();
                 }
-                auto params_result = parse_function_params();
+                std::optional<std::string> fn_rest2;
+                auto params_result = parse_function_params(fn_rest2);
                 if (!params_result.ok()) return ParseResult<ExprNode>::Err(params_result.error());
                 // P2-E: non-async function body resets in_async_function_ context
                 // TLA: also reset in_module_ so await inside a plain function is not allowed
@@ -823,7 +851,7 @@ struct Parser {
                 uint32_t fn_end = range_end(body_result.value().second);
                 auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
                 return ParseResult<ExprNode>::Ok(ExprNode{FunctionExpression{
-                        std::move(fn_name), std::move(params_result.value()),
+                        std::move(fn_name), std::move(params_result.value()), std::move(fn_rest2),
                         std::move(body_ptr), span(fn_start, fn_end)}});
             }
             case TokenKind::LBracket: {
@@ -990,6 +1018,14 @@ struct Parser {
                             make_parse_error(source, cur, "unexpected token in template literal"));
                     }
                 }
+            }
+            case TokenKind::DotDotDot: {
+                // SpreadElement: ...expr（用于数组字面量和调用参数）
+                auto arg = parse_expr(2);
+                if (!arg.ok()) return arg;
+                SourceRange r = span(tok.range.offset, range_end(expr_range(arg.value())));
+                return ParseResult<ExprNode>::Ok(ExprNode{SpreadElement{
+                    std::make_unique<ExprNode>(std::move(arg.value())), r}});
             }
             default:
                 return ParseResult<ExprNode>::Err(make_parse_error(
@@ -1275,11 +1311,28 @@ struct Parser {
     // ---- 函数辅助 ----
 
     // 解析参数列表 (a, b, c)，返回参数名向量
-    ParseResult<std::vector<std::string>> parse_function_params() {
+    ParseResult<std::vector<std::string>> parse_function_params(
+            std::optional<std::string>& rest_param_out) {
+        rest_param_out = std::nullopt;
         auto lp = expect(TokenKind::LParen);
         if (!lp.ok()) return ParseResult<std::vector<std::string>>::Err(lp.error());
         std::vector<std::string> params;
         while (cur.kind != TokenKind::RParen && cur.kind != TokenKind::Eof) {
+            if (cur.kind == TokenKind::DotDotDot) {
+                // rest parameter: ...name
+                advance();  // 消费 ...
+                if (cur.kind != TokenKind::Ident) {
+                    return ParseResult<std::vector<std::string>>::Err(
+                        make_parse_error(source, cur, "expected identifier for rest parameter"));
+                }
+                rest_param_out = std::string(token_text(cur));
+                advance();
+                if (cur.kind == TokenKind::Comma) {
+                    return ParseResult<std::vector<std::string>>::Err(
+                        make_parse_error(source, cur, "rest element must be last parameter"));
+                }
+                break;
+            }
             if (cur.kind != TokenKind::Ident) {
                 return ParseResult<std::vector<std::string>>::Err(
                         make_parse_error(source, cur, "expected parameter name"));
@@ -1327,8 +1380,9 @@ struct Parser {
     }
 
     // 解析箭头函数体（已消费 =>）
-    // params: 参数列表；range_start: 整个箭头函数起始偏移
-    ParseResult<ExprNode> parse_arrow_body(std::vector<std::string> params, uint32_t range_start) {
+    // params: 参数列表；range_start: 整个箭头函数起始偏移；rest_param: 可选 rest 参数名
+    ParseResult<ExprNode> parse_arrow_body(std::vector<std::string> params, uint32_t range_start,
+                                           std::optional<std::string> rest_param = std::nullopt) {
         std::vector<StmtNode> stmts;
         SourceRange body_range;
         if (cur.kind == TokenKind::LBrace) {
@@ -1351,6 +1405,7 @@ struct Parser {
         uint32_t fn_end = range_end(body_range);
         return ParseResult<ExprNode>::Ok(ExprNode{ArrowFunctionExpression{
             std::move(params),
+            std::move(rest_param),
             std::make_shared<std::vector<StmtNode>>(std::move(stmts)),
             span(range_start, fn_end)}});
     }
@@ -1532,7 +1587,8 @@ struct Parser {
         }
         std::string fn_name{token_text(cur)};
         advance();
-        auto params_result = parse_function_params();
+        std::optional<std::string> fn_rest3;
+        auto params_result = parse_function_params(fn_rest3);
         if (!params_result.ok()) return ParseResult<StmtNode>::Err(params_result.error());
         // P2-E: non-async function body resets in_async_function_ context
         // TLA: also reset in_module_ so await inside a plain function is not allowed
@@ -1547,7 +1603,7 @@ struct Parser {
         uint32_t fn_end = range_end(body_result.value().second);
         auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
         return ParseResult<StmtNode>::Ok(StmtNode{FunctionDeclaration{
-                std::move(fn_name), std::move(params_result.value()),
+                std::move(fn_name), std::move(params_result.value()), std::move(fn_rest3),
                 std::move(body_ptr), span(kw.range.offset, fn_end)}});
     }
 
@@ -2111,7 +2167,8 @@ struct Parser {
                     fn_name = std::string(token_text(cur));
                     advance();
                 }
-                auto params_result = parse_function_params();
+                std::optional<std::string> fn_rest4;
+                auto params_result = parse_function_params(fn_rest4);
                 if (!params_result.ok()) return ParseResult<StmtNode>::Err(params_result.error());
                 auto body_result = parse_function_body();
                 if (!body_result.ok()) return ParseResult<StmtNode>::Err(body_result.error());
@@ -2119,7 +2176,8 @@ struct Parser {
                 auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
                 std::optional<std::string> saved_fn_name = fn_name;
                 auto fe = FunctionExpression{std::move(fn_name), std::move(params_result.value()),
-                                             std::move(body_ptr), span(fn_tok.range.offset, fn_end)};
+                                             std::move(fn_rest4), std::move(body_ptr),
+                                             span(fn_tok.range.offset, fn_end)};
                 auto expr_node = std::make_unique<ExprNode>(std::move(fe));
                 uint32_t decl_end = fn_end;
                 return ParseResult<StmtNode>::Ok(StmtNode{ExportDefaultDeclaration{
@@ -2136,7 +2194,8 @@ struct Parser {
                         fn_name = std::string(token_text(cur));
                         advance();
                     }
-                    auto params_result = parse_function_params();
+                    std::optional<std::string> fn_rest5;
+                    auto params_result = parse_function_params(fn_rest5);
                     if (!params_result.ok()) return ParseResult<StmtNode>::Err(params_result.error());
                     bool saved_in_async = in_async_function_;
                     in_async_function_ = true;
@@ -2147,7 +2206,8 @@ struct Parser {
                     auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
                     std::optional<std::string> saved_fn_name = fn_name;
                     auto afe = AsyncFunctionExpression{std::move(fn_name), std::move(params_result.value()),
-                                                      std::move(body_ptr), span(async_tok.range.offset, fn_end)};
+                                                      std::move(fn_rest5), std::move(body_ptr),
+                                                      span(async_tok.range.offset, fn_end)};
                     auto expr_node = std::make_unique<ExprNode>(std::move(afe));
                     return ParseResult<StmtNode>::Ok(StmtNode{ExportDefaultDeclaration{
                             std::move(expr_node), std::move(saved_fn_name), span(kw.range.offset, fn_end)}});
@@ -2258,7 +2318,8 @@ struct Parser {
             }
             std::string fn_name{token_text(cur)};
             advance();
-            auto params_result = parse_function_params();
+            std::optional<std::string> fn_rest6;
+            auto params_result = parse_function_params(fn_rest6);
             if (!params_result.ok()) return ParseResult<StmtNode>::Err(params_result.error());
             bool saved_in_async = in_async_function_;
             in_async_function_ = true;
@@ -2268,7 +2329,7 @@ struct Parser {
             uint32_t fn_end = range_end(body_result.value().second);
             auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
             inner_result = ParseResult<StmtNode>::Ok(StmtNode{AsyncFunctionDeclaration{
-                std::move(fn_name), std::move(params_result.value()),
+                std::move(fn_name), std::move(params_result.value()), std::move(fn_rest6),
                 std::move(body_ptr), span(async_tok.range.offset, fn_end)}});
         } else {
             return inner_result;
@@ -2346,7 +2407,8 @@ struct Parser {
                         }
                         std::string fn_name{token_text(cur)};
                         advance();
-                        auto params_result = parse_function_params();
+                        std::optional<std::string> fn_rest7;
+                        auto params_result = parse_function_params(fn_rest7);
                         if (!params_result.ok()) return ParseResult<StmtNode>::Err(params_result.error());
                         bool saved_in_async2 = in_async_function_;
                         in_async_function_ = true;
@@ -2357,7 +2419,7 @@ struct Parser {
                         auto body_ptr = std::make_shared<std::vector<StmtNode>>(
                             std::move(body_result.value().first));
                         return ParseResult<StmtNode>::Ok(StmtNode{AsyncFunctionDeclaration{
-                            std::move(fn_name), std::move(params_result.value()),
+                            std::move(fn_name), std::move(params_result.value()), std::move(fn_rest7),
                             std::move(body_ptr), span(async_tok.range.offset, fn_end)}});
                     }
                     // async 后面不是 function：回退，把 async_tok 当普通标识符处理

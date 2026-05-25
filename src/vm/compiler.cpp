@@ -288,6 +288,9 @@ void Compiler::hoist_vars_scan_expr(const ExprNode& expr) {
                 hoist_vars_scan_expr(*e.consequent);
                 hoist_vars_scan_expr(*e.alternate);
             },
+            [this](const SpreadElement& e) {
+                hoist_vars_scan_expr(*e.argument);
+            },
         },
         expr.v);
 }
@@ -300,11 +303,13 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
     std::optional<std::string> name,
     const std::vector<std::string>& params,
     const std::vector<StmtNode>& body,
-    bool is_program) {
+    bool is_program,
+    std::optional<std::string> rest_param) {
 
     auto fn = std::make_shared<BytecodeFunction>();
     fn->name = std::move(name);
     fn->params = params;
+    fn->rest_param = std::move(rest_param);
 
     // Save and switch context
     BytecodeFunction* saved = current_;
@@ -353,7 +358,8 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
             }
         }
         if (fdecl_ptr) {
-            auto child = compile_function(fdecl_ptr->name, fdecl_ptr->params, *fdecl_ptr->body);
+            auto child = compile_function(fdecl_ptr->name, fdecl_ptr->params, *fdecl_ptr->body,
+                                          false, fdecl_ptr->rest_param);
             uint16_t fn_idx = add_function(std::move(child));
             emit(Opcode::kMakeFunction);
             emit_u16(fn_idx);
@@ -363,7 +369,8 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
             emit(Opcode::kPop);
         }
         if (afdecl_ptr) {
-            auto child = compile_function(afdecl_ptr->name, afdecl_ptr->params, *afdecl_ptr->body);
+            auto child = compile_function(afdecl_ptr->name, afdecl_ptr->params, *afdecl_ptr->body,
+                                          false, afdecl_ptr->rest_param);
             child->is_async = true;
             uint16_t fn_idx = add_function(std::move(child));
             emit(Opcode::kMakeFunction);
@@ -702,6 +709,13 @@ void Compiler::compile_expr(const ExprNode& expr) {
             [this](const TemplateLiteral& e) { compile_template_literal(e); },
             [this](const ArrowFunctionExpression& e) { compile_arrow_function_expr(e); },
             [this](const ConditionalExpression& e) { compile_conditional_expr(e); },
+            [this](const SpreadElement& /*e*/) {
+                // SpreadElement in a non-spread context is a syntax error at runtime.
+                uint16_t idx = add_constant(Value::string("SyntaxError: invalid use of spread element"));
+                emit(Opcode::kLoadString);
+                emit_u16(idx);
+                emit(Opcode::kThrow);
+            },
         },
         expr.v);
 }
@@ -896,7 +910,7 @@ void Compiler::compile_member_assign(const MemberAssignmentExpression& expr) {
 }
 
 void Compiler::compile_function_expr(const FunctionExpression& expr) {
-    auto child = compile_function(expr.name, expr.params, *expr.body);
+    auto child = compile_function(expr.name, expr.params, *expr.body, false, expr.rest_param);
     child->is_named_expr = expr.name.has_value();
     uint16_t fn_idx = add_function(std::move(child));
     emit(Opcode::kMakeFunction);
@@ -904,7 +918,7 @@ void Compiler::compile_function_expr(const FunctionExpression& expr) {
 }
 
 void Compiler::compile_async_function_expr(const AsyncFunctionExpression& expr) {
-    auto child = compile_function(expr.name, expr.params, *expr.body);
+    auto child = compile_function(expr.name, expr.params, *expr.body, false, expr.rest_param);
     child->is_async = true;
     // P2-D: named async function expressions need self-reference binding inside the body
     child->is_named_expr = expr.name.has_value();
@@ -919,7 +933,7 @@ void Compiler::compile_async_function_decl(const AsyncFunctionDeclaration& /*stm
 }
 
 void Compiler::compile_arrow_function_expr(const ArrowFunctionExpression& expr) {
-    auto child = compile_function(std::nullopt, expr.params, *expr.body_stmts);
+    auto child = compile_function(std::nullopt, expr.params, *expr.body_stmts, false, expr.rest_param);
     child->is_arrow = true;
     uint16_t fn_idx = add_function(std::move(child));
     emit(Opcode::kMakeFunction);
@@ -927,6 +941,9 @@ void Compiler::compile_arrow_function_expr(const ArrowFunctionExpression& expr) 
 }
 
 void Compiler::compile_call_expr(const CallExpression& expr) {
+    bool has_spread = std::any_of(expr.arguments.begin(), expr.arguments.end(),
+        [](const auto& a) { return std::holds_alternative<SpreadElement>(a->v); });
+
     // Check if callee is a MemberExpression (method call)
     if (std::holds_alternative<MemberExpression>(expr.callee->v)) {
         const auto& mem = std::get<MemberExpression>(expr.callee->v);
@@ -941,49 +958,134 @@ void Compiler::compile_call_expr(const CallExpression& expr) {
             emit(Opcode::kGetProp);  // pops dup'd obj, pushes method; stack: [obj, method]
             emit_u16(idx);
         }
-        for (const auto& arg : expr.arguments) {
-            compile_expr(*arg);
+        if (!has_spread) {
+            for (const auto& arg : expr.arguments) {
+                compile_expr(*arg);
+            }
+            // Stack: [obj(receiver) | method | arg0 ... argN-1]
+            emit(Opcode::kCallMethod);
+            emit_u8(static_cast<uint8_t>(expr.arguments.size()));
+        } else {
+            // Stack: [obj, method] → swap → [method, obj]
+            emit(Opcode::kSwap);
+            emit(Opcode::kNewArray);  // [method, obj, []]
+            for (const auto& arg : expr.arguments) {
+                emit(Opcode::kDup);
+                if (std::holds_alternative<SpreadElement>(arg->v)) {
+                    compile_expr(*std::get<SpreadElement>(arg->v).argument);
+                    emit(Opcode::kSpreadAppend);
+                } else {
+                    compile_expr(*arg);
+                    emit(Opcode::kArrayAppend);
+                }
+            }
+            // Stack: [method, obj, args_array]
+            emit(Opcode::kApplyArgs);
+            emit_u8(0);  // normal call
         }
-        // Stack: [obj(receiver) | method | arg0 ... argN-1]
-        emit(Opcode::kCallMethod);
-        emit_u8(static_cast<uint8_t>(expr.arguments.size()));
     } else {
         compile_expr(*expr.callee);
-        for (const auto& arg : expr.arguments) {
-            compile_expr(*arg);
+        if (!has_spread) {
+            for (const auto& arg : expr.arguments) {
+                compile_expr(*arg);
+            }
+            emit(Opcode::kCall);
+            emit_u8(static_cast<uint8_t>(expr.arguments.size()));
+        } else {
+            emit(Opcode::kLoadUndefined);  // this = undefined; stack: [func, undefined]
+            emit(Opcode::kNewArray);       // stack: [func, undefined, []]
+            for (const auto& arg : expr.arguments) {
+                emit(Opcode::kDup);
+                if (std::holds_alternative<SpreadElement>(arg->v)) {
+                    compile_expr(*std::get<SpreadElement>(arg->v).argument);
+                    emit(Opcode::kSpreadAppend);
+                } else {
+                    compile_expr(*arg);
+                    emit(Opcode::kArrayAppend);
+                }
+            }
+            // Stack: [func, undefined, args_array]
+            emit(Opcode::kApplyArgs);
+            emit_u8(0);  // normal call
         }
-        emit(Opcode::kCall);
-        emit_u8(static_cast<uint8_t>(expr.arguments.size()));
     }
 }
 
 void Compiler::compile_new_expr(const NewExpression& expr) {
+    bool has_spread = std::any_of(expr.arguments.begin(), expr.arguments.end(),
+        [](const auto& a) { return std::holds_alternative<SpreadElement>(a->v); });
+
     compile_expr(*expr.callee);
-    for (const auto& arg : expr.arguments) {
-        compile_expr(*arg);
+    if (!has_spread) {
+        for (const auto& arg : expr.arguments) {
+            compile_expr(*arg);
+        }
+        emit(Opcode::kNewCall);
+        emit_u8(static_cast<uint8_t>(expr.arguments.size()));
+    } else {
+        emit(Opcode::kLoadUndefined);  // this placeholder; stack: [ctor, undefined]
+        emit(Opcode::kNewArray);       // stack: [ctor, undefined, []]
+        for (const auto& arg : expr.arguments) {
+            emit(Opcode::kDup);
+            if (std::holds_alternative<SpreadElement>(arg->v)) {
+                compile_expr(*std::get<SpreadElement>(arg->v).argument);
+                emit(Opcode::kSpreadAppend);
+            } else {
+                compile_expr(*arg);
+                emit(Opcode::kArrayAppend);
+            }
+        }
+        // Stack: [ctor, undefined, args_array]
+        emit(Opcode::kApplyArgs);
+        emit_u8(1);  // new call
     }
-    emit(Opcode::kNewCall);
-    emit_u8(static_cast<uint8_t>(expr.arguments.size()));
 }
 
 void Compiler::compile_array_expr(const ArrayExpression& expr) {
-    // kSetElem stack order: [obj, val, key] bottom-to-top; pops all three, pushes val.
-    // For holes (elision), emit kArrayHole which only increments array_length_.
+    // Detect if any element is a SpreadElement; if so use append mode for all elements.
+    bool has_spread = false;
+    for (const auto& e : expr.elements) {
+        if (e.has_value() && std::holds_alternative<SpreadElement>((*e)->v)) {
+            has_spread = true;
+            break;
+        }
+    }
+
     emit(Opcode::kNewArray);
-    for (size_t i = 0; i < expr.elements.size(); ++i) {
-        const auto& elem_opt = expr.elements[i];
-        if (!elem_opt.has_value()) {
-            // hole: dup arr, emit kArrayHole (increments length, no element written)
-            emit(Opcode::kDup);
-            emit(Opcode::kArrayHole);
-        } else {
-            emit(Opcode::kDup);               // dup arr
-            compile_expr(**elem_opt);         // push element value
-            uint16_t idx_const = add_constant(Value::number(static_cast<double>(i)));
-            emit(Opcode::kLoadNumber);
-            emit_u16(idx_const);
-            emit(Opcode::kSetElem);           // arr[i] = elem; pops key/val/arr, pushes val
-            emit(Opcode::kPop);               // discard val, leave arr on stack
+
+    if (!has_spread) {
+        // Original path using SetElem with fixed indices.
+        for (size_t i = 0; i < expr.elements.size(); ++i) {
+            const auto& elem_opt = expr.elements[i];
+            if (!elem_opt.has_value()) {
+                emit(Opcode::kDup);
+                emit(Opcode::kArrayHole);
+            } else {
+                emit(Opcode::kDup);
+                compile_expr(**elem_opt);
+                uint16_t idx_const = add_constant(Value::number(static_cast<double>(i)));
+                emit(Opcode::kLoadNumber);
+                emit_u16(idx_const);
+                emit(Opcode::kSetElem);
+                emit(Opcode::kPop);
+            }
+        }
+    } else {
+        // Append path: use ArrayAppend / SpreadAppend for all elements.
+        for (const auto& elem_opt : expr.elements) {
+            if (!elem_opt.has_value()) {
+                emit(Opcode::kDup);
+                emit(Opcode::kArrayHole);
+            } else if (std::holds_alternative<SpreadElement>((*elem_opt)->v)) {
+                const auto& sp = std::get<SpreadElement>((*elem_opt)->v);
+                emit(Opcode::kDup);
+                compile_expr(*sp.argument);
+                emit(Opcode::kSpreadAppend);
+            } else {
+                emit(Opcode::kDup);
+                compile_expr(**elem_opt);
+                emit(Opcode::kArrayAppend);
+            }
         }
     }
     // stack: arr

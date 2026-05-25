@@ -299,6 +299,11 @@ std::string dump_expr(const ExprNode& node, int indent) {
                            result += ind(indent + 1) + "else:\n";
                            result += dump_expr(*ce.alternate, indent + 2);
                        },
+                       [&](const SpreadElement& se) {
+                           result = prefix + "SpreadElement\n";
+                           result += ind(indent + 1) + "argument:\n";
+                           result += dump_expr(*se.argument, indent + 2);
+                       },
                },
                node.v);
 

@@ -22,6 +22,7 @@ struct BytecodeFunction {
     bool is_named_expr = false;                                  // true for named function expressions
     bool is_async = false;                                       // true for async functions
     bool is_arrow = false;                                       // true for arrow functions
+    std::optional<std::string> rest_param;                       // rest parameter name (...args)
     // If the last statement is a simple identifier expression, its name is stored here
     // (used by VM::exec() to re-read the value after DrainAll)
     std::optional<std::string> last_expr_name;

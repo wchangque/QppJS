@@ -1073,13 +1073,12 @@ TEST(LexerTest, OperatorQuestionQuestionSplits) {
 }
 
 TEST(LexerTest, OperatorSpreadSplitsToDotDotDot) {
-    // '...' 展开运算符，当前未定义，应切分为 Dot + Dot + Dot
+    // '...' 展开运算符，tokenize 为单个 DotDotDot token
     auto tokens = collect_tokens("...");
-    ASSERT_EQ(tokens.size(), 4u);
-    EXPECT_EQ(tokens[0].kind, TokenKind::Dot);
-    EXPECT_EQ(tokens[1].kind, TokenKind::Dot);
-    EXPECT_EQ(tokens[2].kind, TokenKind::Dot);
-    EXPECT_EQ(tokens[3].kind, TokenKind::Eof);
+    ASSERT_EQ(tokens.size(), 2u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::DotDotDot);
+    EXPECT_EQ(tokens[0].range.length, 3u);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Eof);
 }
 
 // --- 回归风险：关键字前缀的标识符 ---

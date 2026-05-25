@@ -53,6 +53,7 @@ enum class TokenKind {
     Colon,
     Comma,
     Dot,
+    DotDotDot,  // ...
     Question,
 
     // 操作符

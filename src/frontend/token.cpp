@@ -88,6 +88,8 @@ std::string_view token_kind_name(TokenKind kind) {
             return "Comma";
         case TokenKind::Dot:
             return "Dot";
+        case TokenKind::DotDotDot:
+            return "DotDotDot";
         case TokenKind::Question:
             return "Question";
         case TokenKind::Plus:

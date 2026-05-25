@@ -120,6 +120,7 @@ struct MemberAssignmentExpression {
 struct FunctionExpression {
     std::optional<std::string> name;
     std::vector<std::string> params;
+    std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body;
     SourceRange range;
 };
@@ -128,6 +129,12 @@ struct FunctionExpression {
 struct ArrayExpression {
     // nullopt entries represent elision holes (e.g. [1,,3] has nullopt at index 1)
     std::vector<std::optional<std::unique_ptr<ExprNode>>> elements;
+    SourceRange range;
+};
+
+// 展开元素：...expr（用于数组字面量和调用参数中）
+struct SpreadElement {
+    std::unique_ptr<ExprNode> argument;
     SourceRange range;
 };
 
@@ -152,6 +159,7 @@ struct ImportCallExpression {
 // 表达式体已在 Parser 中合成为含单条 ReturnStatement 的块体
 struct ArrowFunctionExpression {
     std::vector<std::string> params;
+    std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body_stmts;
     SourceRange range;
 };
@@ -196,6 +204,7 @@ struct ConditionalExpression {
 struct AsyncFunctionExpression {
     std::optional<std::string> name;
     std::vector<std::string> params;
+    std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body;
     SourceRange range;
 };
@@ -223,7 +232,7 @@ struct ExprNode {
                  FunctionExpression, CallExpression, NewExpression, ArrayExpression,
                  AwaitExpression, UpdateExpression, AsyncFunctionExpression,
                  MetaProperty, ImportCallExpression, RegexLiteral, TemplateLiteral,
-                 ArrowFunctionExpression, ConditionalExpression>
+                 ArrowFunctionExpression, ConditionalExpression, SpreadElement>
             v;
 
     ExprNode() = default;
@@ -275,6 +284,7 @@ struct ReturnStatement {
 struct FunctionDeclaration {
     std::string name;
     std::vector<std::string> params;
+    std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body;
     SourceRange range;
 };
@@ -283,6 +293,7 @@ struct FunctionDeclaration {
 struct AsyncFunctionDeclaration {
     std::string name;
     std::vector<std::string> params;
+    std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body;
     SourceRange range;
 };

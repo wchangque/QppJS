@@ -72,6 +72,10 @@ public:
     ModuleRecord* defining_module() const { return defining_module_; }
     void set_defining_module(ModuleRecord* mod) { defining_module_ = mod; }
 
+    // rest 参数
+    const std::optional<std::string>& rest_param() const { return rest_param_; }
+    void set_rest_param(std::optional<std::string> v) { rest_param_ = std::move(v); }
+
     // Static properties on the function object itself (e.g., Object.keys, Array.isArray).
     void set_property(const std::string& key, Value value);
     Value get_property(const std::string& key) const;
@@ -101,6 +105,9 @@ private:
 
     // import.meta 词法绑定：函数定义时所在的模块（非拥有指针）
     ModuleRecord* defining_module_ = nullptr;
+
+    // rest 参数名
+    std::optional<std::string> rest_param_;
 };
 
 }  // namespace qppjs

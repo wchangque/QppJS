@@ -502,10 +502,15 @@ Token next_token(LexerState& state) {
         return scan_number(state, start);
     }
 
-    // 点开头：lookahead 判断是否为数字字面量
+    // 点开头：lookahead 判断是否为数字字面量或 ...
     if (c == '.') {
         if (state.pos + 1 < len && is_dec_digit(src[state.pos + 1])) {
             return scan_number(state, start);
+        }
+        // Check for spread/rest operator: ...
+        if (state.pos + 2 < len && src[state.pos + 1] == '.' && src[state.pos + 2] == '.') {
+            state.pos += 3;
+            return {TokenKind::DotDotDot, {start, 3}};
         }
         ++state.pos;
         return {TokenKind::Dot, {start, 1}};

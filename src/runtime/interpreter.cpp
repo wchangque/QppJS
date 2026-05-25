@@ -1554,6 +1554,15 @@ void Interpreter::init_runtime() {
             });
             gc_heap_.Register(next_fn.get());
             iter_obj->set_property("next", Value::object(ObjectPtr(next_fn)));
+            // Iterator is also iterable: [Symbol.iterator]() { return this; }
+            auto self_iter_fn = RcPtr<JSFunction>::make();
+            self_iter_fn->set_name(std::string("[Symbol.iterator]"));
+            self_iter_fn->set_native_fn([](Value this_val, std::vector<Value>, bool) -> EvalResult {
+                return EvalResult::ok(this_val);
+            });
+            gc_heap_.Register(self_iter_fn.get());
+            iter_obj->set_property_by_symbol(symbol_table_.well_known_iterator,
+                                              Value::object(ObjectPtr(self_iter_fn)));
             return EvalResult::ok(Value::object(ObjectPtr(iter_obj)));
         });
         gc_heap_.Register(array_iter_fn.get());
@@ -1569,9 +1578,9 @@ void Interpreter::init_runtime() {
         auto isarray_fn = RcPtr<JSFunction>::make();
         isarray_fn->set_name(std::string("isArray"));
         isarray_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
-            if (args.empty() || !args[0].is_object()) return EvalResult::ok(Value::number(0));
+            if (args.empty() || !args[0].is_object()) return EvalResult::ok(Value::boolean(false));
             RcObject* raw = args[0].as_object_raw();
-            return EvalResult::ok(Value::number(raw && raw->object_kind() == ObjectKind::kArray ? 1 : 0));
+            return EvalResult::ok(Value::boolean(raw && raw->object_kind() == ObjectKind::kArray));
         });
         array_constructor->set_property("isArray", Value::object(ObjectPtr(isarray_fn)));
     }
@@ -2584,6 +2593,15 @@ void Interpreter::init_runtime() {
             });
             gc_heap_.Register(next_fn.get());
             iter_obj->set_property("next", Value::object(ObjectPtr(next_fn)));
+            // Iterator is also iterable: [Symbol.iterator]() { return this; }
+            auto self_iter_fn = RcPtr<JSFunction>::make();
+            self_iter_fn->set_name(std::string("[Symbol.iterator]"));
+            self_iter_fn->set_native_fn([](Value this_val, std::vector<Value>, bool) -> EvalResult {
+                return EvalResult::ok(this_val);
+            });
+            gc_heap_.Register(self_iter_fn.get());
+            iter_obj->set_property_by_symbol(symbol_table_.well_known_iterator,
+                                              Value::object(ObjectPtr(self_iter_fn)));
             return EvalResult::ok(Value::object(ObjectPtr(iter_obj)));
         });
         gc_heap_.Register(string_iter_fn.get());
@@ -3513,7 +3531,8 @@ void Interpreter::hoist_vars_stmt(const StmtNode& stmt, Environment& var_target)
         // mirroring the VM's behavior of emitting kMakeFunction+kSetVar at function entry.
         const auto& afdecl = std::get<AsyncFunctionDeclaration>(stmt.v);
         var_target.define_function(afdecl.name);
-        Value async_fn_val = make_async_function_value(afdecl.name, afdecl.params, afdecl.body, current_env_);
+        Value async_fn_val = make_async_function_value(afdecl.name, afdecl.params, afdecl.body, current_env_,
+                                                        afdecl.rest_param);
         var_target.set(afdecl.name, async_fn_val);
     } else if (std::holds_alternative<ForStatement>(stmt.v)) {
         const auto& for_stmt = std::get<ForStatement>(stmt.v);
@@ -3860,7 +3879,8 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
                     fn_expr->params,
                     fn_expr->body,
                     current_env_,
-                    fn_expr->name.has_value()))
+                    fn_expr->name.has_value(),
+                    fn_expr->rest_param))
                 : eval_expr(decl.init.value());
             if (!init_result.is_ok()) {
                 return StmtResult::err(init_result.error());
@@ -3884,7 +3904,8 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
                     fn_expr->params,
                     fn_expr->body,
                     current_env_,
-                    fn_expr->name.has_value()))
+                    fn_expr->name.has_value(),
+                    fn_expr->rest_param))
                 : eval_expr(decl.init.value());
             if (!init_result.is_ok()) {
                 return StmtResult::err(init_result.error());
@@ -4026,8 +4047,163 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const TemplateLiteral& e) { return eval_template_literal(e); },
             [this](const ArrowFunctionExpression& e) { return eval_arrow_function_expr(e); },
             [this](const ConditionalExpression& e) { return eval_conditional_expr(e); },
+            [this](const SpreadElement& /*e*/) {
+                pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                    "invalid use of spread element");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            },
         },
         expr.v);
+}
+
+bool Interpreter::spread_into(const Value& iterable, std::vector<Value>& out) {
+    // Fast path: array
+    if (iterable.is_object() && iterable.as_object_raw()->object_kind() == ObjectKind::kArray) {
+        JSObject* arr = static_cast<JSObject*>(iterable.as_object_raw());
+        uint32_t len = arr->array_length_;
+        for (uint32_t i = 0; i < len; ++i) {
+            auto it = arr->elements_.find(i);
+            out.push_back(it != arr->elements_.end() ? it->second : Value::undefined());
+        }
+        return true;
+    }
+
+    // Fast path: string — iterate by UTF-8 code points
+    if (iterable.is_string()) {
+        std::string_view sv = iterable.sv();
+        size_t pos = 0;
+        while (pos < sv.size()) {
+            unsigned char c0 = static_cast<unsigned char>(sv[pos]);
+            size_t cp_bytes = (c0 < 0x80) ? 1 : (c0 < 0xE0) ? 2 : (c0 < 0xF0) ? 3 : 4;
+            if (pos + cp_bytes > sv.size()) cp_bytes = sv.size() - pos;
+            out.push_back(Value::string(std::string(sv.data() + pos, cp_bytes)));
+            pos += cp_bytes;
+        }
+        return true;
+    }
+
+    // Fast path: ArrayIterator (native)
+    if (iterable.is_object() && iterable.as_object_raw() &&
+        iterable.as_object_raw()->object_kind() == ObjectKind::kArrayIterator) {
+        auto* arr_it = static_cast<ArrayIterator*>(iterable.as_object_raw());
+        if (!arr_it->done_ && arr_it->array_ref_.is_object() &&
+            arr_it->array_ref_.as_object_raw() &&
+            arr_it->array_ref_.as_object_raw()->object_kind() == ObjectKind::kArray) {
+            auto* arr = static_cast<JSObject*>(arr_it->array_ref_.as_object_raw());
+            for (; arr_it->index_ < arr->array_length_; ++arr_it->index_) {
+                auto it = arr->elements_.find(arr_it->index_);
+                out.push_back(it != arr->elements_.end() ? it->second : Value::undefined());
+            }
+            arr_it->done_ = true;
+        }
+        return true;
+    }
+
+    // Fast path: StringIterator (native)
+    if (iterable.is_object() && iterable.as_object_raw() &&
+        iterable.as_object_raw()->object_kind() == ObjectKind::kStringIterator) {
+        auto* str_it = static_cast<StringIterator*>(iterable.as_object_raw());
+        if (!str_it->done_ && str_it->string_val_.is_string()) {
+            std::string_view sv = str_it->string_val_.sv();
+            size_t pos = str_it->byte_pos_;
+            while (pos < sv.size()) {
+                unsigned char c0 = static_cast<unsigned char>(sv[pos]);
+                size_t cp_bytes = (c0 < 0x80) ? 1 : (c0 < 0xE0) ? 2 : (c0 < 0xF0) ? 3 : 4;
+                if (pos + cp_bytes > sv.size()) cp_bytes = sv.size() - pos;
+                out.push_back(Value::string(std::string(sv.data() + pos, cp_bytes)));
+                pos += cp_bytes;
+            }
+            str_it->byte_pos_ = static_cast<uint32_t>(sv.size());
+            str_it->done_ = true;
+        }
+        return true;
+    }
+
+    // Fast path: ForOfIterator (native)
+    if (iterable.is_object() && iterable.as_object_raw() &&
+        iterable.as_object_raw()->object_kind() == ObjectKind::kForOfIterator) {
+        auto* for_it = static_cast<ForOfIterator*>(iterable.as_object_raw());
+        while (!for_it->done_) {
+            auto next_r = call_function_val(for_it->next_method_, for_it->iterator_, std::span<Value>());
+            if (!next_r.is_ok()) return false;
+            Value result = next_r.value();
+            if (!result.is_object()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "iterator result must be an object");
+                return false;
+            }
+            ObjectKind rk = result.as_object_raw()->object_kind();
+            Value done_val = Value::undefined();
+            Value value = Value::undefined();
+            if (rk == ObjectKind::kOrdinary || rk == ObjectKind::kArray) {
+                auto* result_obj = static_cast<JSObject*>(result.as_object_raw());
+                done_val = result_obj->get_property("done");
+                value = result_obj->get_property("value");
+            }
+            if (to_boolean(done_val)) {
+                for_it->done_ = true;
+                break;
+            }
+            out.push_back(std::move(value));
+        }
+        return true;
+    }
+
+    // Generic path: Symbol.iterator
+    if (!iterable.is_object()) {
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError, "value is not iterable");
+        return false;
+    }
+    ObjectKind k = iterable.as_object_raw()->object_kind();
+    JSObject* obj = nullptr;
+    if (k == ObjectKind::kOrdinary || k == ObjectKind::kRegExp ||
+        k == ObjectKind::kStringObject || k == ObjectKind::kBooleanObject) {
+        obj = static_cast<JSObject*>(iterable.as_object_raw());
+    }
+    if (!obj) {
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError, "value is not iterable");
+        return false;
+    }
+    Value iter_method = obj->get_property_by_symbol(symbol_table_.well_known_iterator);
+    if (iter_method.is_undefined() || iter_method.is_null()) {
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError, "value is not iterable");
+        return false;
+    }
+    auto iter_r = call_function_val(iter_method, iterable, std::span<Value>());
+    if (!iter_r.is_ok()) return false;
+    Value iterator = iter_r.value();
+    if (!iterator.is_object()) {
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError, "iterator must be an object");
+        return false;
+    }
+    Value next_method = Value::undefined();
+    ObjectKind ik = iterator.as_object_raw()->object_kind();
+    if (ik == ObjectKind::kOrdinary || ik == ObjectKind::kArray ||
+        ik == ObjectKind::kRegExp || ik == ObjectKind::kStringObject ||
+        ik == ObjectKind::kBooleanObject) {
+        next_method = static_cast<JSObject*>(iterator.as_object_raw())->get_property("next");
+    }
+    while (true) {
+        auto next_r = call_function_val(next_method, iterator, std::span<Value>());
+        if (!next_r.is_ok()) return false;
+        Value result = next_r.value();
+        if (!result.is_object()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "iterator result must be an object");
+            return false;
+        }
+        Value done_val = Value::undefined();
+        Value value = Value::undefined();
+        ObjectKind rk = result.as_object_raw()->object_kind();
+        if (rk == ObjectKind::kOrdinary || rk == ObjectKind::kArray) {
+            auto* result_obj = static_cast<JSObject*>(result.as_object_raw());
+            done_val = result_obj->get_property("done");
+            value = result_obj->get_property("value");
+        }
+        if (to_boolean(done_val)) break;
+        out.push_back(std::move(value));
+    }
+    return true;
 }
 
 EvalResult Interpreter::eval_array_expr(const ArrayExpression& expr) {
@@ -4036,6 +4212,19 @@ EvalResult Interpreter::eval_array_expr(const ArrayExpression& expr) {
     arr->set_proto(array_prototype_);
     for (const auto& elem_opt : expr.elements) {
         if (elem_opt.has_value()) {
+            if (std::holds_alternative<SpreadElement>((*elem_opt)->v)) {
+                const auto& sp = std::get<SpreadElement>((*elem_opt)->v);
+                auto iterable_res = eval_expr(*sp.argument);
+                if (!iterable_res.is_ok()) return iterable_res;
+                std::vector<Value> spread_vals;
+                if (!spread_into(iterable_res.value(), spread_vals)) {
+                    return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                }
+                for (auto& sv : spread_vals) {
+                    arr->elements_[arr->array_length_++] = std::move(sv);
+                }
+                continue;
+            }
             auto v = eval_expr(**elem_opt);
             if (!v.is_ok()) return v;
             arr->elements_[arr->array_length_] = v.value();
@@ -4960,7 +5149,8 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
 Value Interpreter::make_function_value(std::optional<std::string> name, std::vector<std::string> params,
                                         std::shared_ptr<std::vector<StmtNode>> body,
                                         RcPtr<Environment> closure_env,
-                                        bool is_named_expr) {
+                                        bool is_named_expr,
+                                        std::optional<std::string> rest_param) {
     auto fn = RcPtr<JSFunction>::make();
     fn->set_name(name);
     fn->set_params(std::move(params));
@@ -4968,6 +5158,8 @@ Value Interpreter::make_function_value(std::optional<std::string> name, std::vec
     fn->set_closure_env(std::move(closure_env));
     fn->set_is_named_expr(is_named_expr);
     fn->set_defining_module(current_module_);
+    fn->set_rest_param(std::move(rest_param));
+    fn->set_property("length", Value::number(static_cast<double>(fn->params().size())));
 
     // Eager prototype initialization: F.prototype = { constructor: F }
     Value fn_val = Value::object(ObjectPtr(fn));
@@ -5017,6 +5209,22 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
         fn_env->initialize(params[i], std::move(arg_val));
     }
 
+    // Bind rest parameter
+    if (fn->rest_param().has_value()) {
+        const std::string& rest_name = fn->rest_param().value();
+        auto rest_arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(rest_arr.get());
+        rest_arr->set_proto(array_prototype_);
+        size_t rest_start = params.size();
+        for (size_t i = rest_start; i < args.size(); ++i) {
+            rest_arr->elements_[static_cast<uint32_t>(i - rest_start)] = args[i];
+        }
+        rest_arr->array_length_ = static_cast<uint32_t>(
+            args.size() > rest_start ? args.size() - rest_start : 0);
+        fn_env->define(rest_name, VarKind::Var);
+        fn_env->initialize(rest_name, Value::object(ObjectPtr(rest_arr)));
+    }
+
     // 守卫 2：箭头函数不创建 arguments（词法穿透外层）
     if (!fn->is_arrow()) {
         auto arg_obj = RcPtr<JSObject>::make();
@@ -5061,7 +5269,8 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
 }
 
 StmtResult Interpreter::eval_function_decl(const FunctionDeclaration& stmt) {
-    Value fn_val = make_function_value(stmt.name, stmt.params, stmt.body, current_env_);
+    Value fn_val = make_function_value(stmt.name, stmt.params, stmt.body, current_env_,
+                                       false, stmt.rest_param);
     auto set_result = var_env_->set(stmt.name, fn_val);
     if (!set_result.is_ok()) {
         return StmtResult::err(set_result.error());
@@ -5577,12 +5786,14 @@ StmtResult Interpreter::eval_for_of_stmt(const ForOfStatement& stmt,
 
 EvalResult Interpreter::eval_function_expr(const FunctionExpression& expr) {
     return EvalResult::ok(make_function_value(expr.name, expr.params, expr.body, current_env_,
-                                              expr.name.has_value()));
+                                              expr.name.has_value(), expr.rest_param));
 }
 
 EvalResult Interpreter::eval_arrow_function_expr(const ArrowFunctionExpression& expr) {
     auto fn = RcPtr<JSFunction>::make();
     fn->set_params(expr.params);
+    fn->set_rest_param(expr.rest_param);
+    fn->set_property("length", Value::number(static_cast<double>(expr.params.size())));
     fn->set_body(expr.body_stmts);
     fn->set_closure_env(current_env_);
     fn->set_defining_module(current_module_);
@@ -5717,11 +5928,20 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
     std::vector<Value> args;
     args.reserve(expr.arguments.size());
     for (const auto& arg_expr : expr.arguments) {
-        auto arg_result = eval_expr(*arg_expr);
-        if (!arg_result.is_ok()) {
-            return arg_result;
+        if (std::holds_alternative<SpreadElement>(arg_expr->v)) {
+            const auto& sp = std::get<SpreadElement>(arg_expr->v);
+            auto iterable_res = eval_expr(*sp.argument);
+            if (!iterable_res.is_ok()) return iterable_res;
+            if (!spread_into(iterable_res.value(), args)) {
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+        } else {
+            auto arg_result = eval_expr(*arg_expr);
+            if (!arg_result.is_ok()) {
+                return arg_result;
+            }
+            args.push_back(std::move(arg_result.value()));
         }
-        args.push_back(std::move(arg_result.value()));
     }
 
     auto call_result = call_function(fn, std::move(this_val), std::move(args));
@@ -5793,11 +6013,20 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
     std::vector<Value> args;
     args.reserve(expr.arguments.size());
     for (const auto& arg_expr : expr.arguments) {
-        auto arg_result = eval_expr(*arg_expr);
-        if (!arg_result.is_ok()) {
-            return arg_result;
+        if (std::holds_alternative<SpreadElement>(arg_expr->v)) {
+            const auto& sp = std::get<SpreadElement>(arg_expr->v);
+            auto iterable_res = eval_expr(*sp.argument);
+            if (!iterable_res.is_ok()) return iterable_res;
+            if (!spread_into(iterable_res.value(), args)) {
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+        } else {
+            auto arg_result = eval_expr(*arg_expr);
+            if (!arg_result.is_ok()) {
+                return arg_result;
+            }
+            args.push_back(std::move(arg_result.value()));
         }
-        args.push_back(std::move(arg_result.value()));
     }
 
     Value this_val = Value::object(ObjectPtr(new_obj));
@@ -6139,11 +6368,11 @@ EvalResult Interpreter::exec_module_body(ModuleRecord& mod) {
             if (!exp->source.has_value() && exp->declaration) {
                 if (const auto* fd = std::get_if<FunctionDeclaration>(&exp->declaration->v)) {
                     Value fn_val = make_function_value(
-                        fd->name, fd->params, fd->body, current_env_, false);
+                        fd->name, fd->params, fd->body, current_env_, false, fd->rest_param);
                     current_env_->set(fd->name, fn_val);
                 } else if (const auto* afd = std::get_if<AsyncFunctionDeclaration>(&exp->declaration->v)) {
                     Value fn_val = make_async_function_value(
-                        afd->name, afd->params, afd->body, current_env_);
+                        afd->name, afd->params, afd->body, current_env_, afd->rest_param);
                     current_env_->set(afd->name, fn_val);
                 }
             }
@@ -6151,7 +6380,7 @@ EvalResult Interpreter::exec_module_body(ModuleRecord& mod) {
             // 顶层非导出 async function 声明：P2-C 中 eval_async_function_decl 是 no-op，
             // 需在此处提升赋值（与 hoist_vars_stmt 对普通 exec() 的处理对齐）
             Value fn_val = make_async_function_value(
-                afd->name, afd->params, afd->body, current_env_);
+                afd->name, afd->params, afd->body, current_env_, afd->rest_param);
             current_env_->set(afd->name, fn_val);
         }
     }
@@ -6455,11 +6684,14 @@ EvalResult Interpreter::eval_update_expr(const UpdateExpression& expr) {
 Value Interpreter::make_async_function_value(std::optional<std::string> name,
                                               std::vector<std::string> params,
                                               std::shared_ptr<std::vector<StmtNode>> body,
-                                              RcPtr<Environment> closure_env) {
+                                              RcPtr<Environment> closure_env,
+                                              std::optional<std::string> rest_param) {
     // Create a native JSFunction that wraps the async body execution
     auto fn = RcPtr<JSFunction>::make();
     fn->set_name(name);
     fn->set_params(params);
+    fn->set_rest_param(rest_param);
+    fn->set_property("length", Value::number(static_cast<double>(params.size())));
     fn->set_body(body);
     fn->set_closure_env(closure_env);
     fn->set_defining_module(current_module_);
@@ -6473,7 +6705,7 @@ Value Interpreter::make_async_function_value(std::optional<std::string> name,
     JSFunction* fn_self_raw = fn.get();
 
     // The async wrapper: creates outer_promise, executes body, fulfills/rejects
-    fn->set_native_fn([this, body, params, closure_env, name, fn_self_raw](
+    fn->set_native_fn([this, body, params, closure_env, name, fn_self_raw, rest_param](
             Value this_val_arg, std::vector<Value> call_args, bool) mutable -> EvalResult {
         // Create outer promise
         auto outer_promise = RcPtr<JSPromise>::make();
@@ -6496,6 +6728,21 @@ Value Interpreter::make_async_function_value(std::optional<std::string> name,
             Value arg_val = (i < call_args.size()) ? call_args[i] : Value::undefined();
             fn_env->define(params[i], VarKind::Var);
             fn_env->initialize(params[i], std::move(arg_val));
+        }
+
+        // Bind rest parameter
+        if (rest_param.has_value()) {
+            auto rest_arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+            gc_heap_.Register(rest_arr.get());
+            rest_arr->set_proto(array_prototype_);
+            size_t rest_start = params.size();
+            for (size_t i = rest_start; i < call_args.size(); ++i) {
+                rest_arr->elements_[static_cast<uint32_t>(i - rest_start)] = call_args[i];
+            }
+            rest_arr->array_length_ = static_cast<uint32_t>(
+                call_args.size() > rest_start ? call_args.size() - rest_start : 0);
+            fn_env->define(rest_param.value(), VarKind::Var);
+            fn_env->initialize(rest_param.value(), Value::object(ObjectPtr(rest_arr)));
         }
 
         hoist_vars(*body, *fn_env);
@@ -6651,7 +6898,7 @@ void Interpreter::run_async_body(std::shared_ptr<std::vector<StmtNode>> body, si
 
 EvalResult Interpreter::eval_async_function_expr(const AsyncFunctionExpression& expr) {
     return EvalResult::ok(make_async_function_value(
-        expr.name, expr.params, expr.body, current_env_));
+        expr.name, expr.params, expr.body, current_env_, expr.rest_param));
 }
 
 StmtResult Interpreter::eval_async_function_decl(const AsyncFunctionDeclaration& /*stmt*/) {

@@ -118,7 +118,12 @@ namespace qppjs {
     X(ForOfStart, 0)                   \
     X(ForOfNext, 0)                    \
     X(IteratorClose, 0)                \
-    X(IteratorCloseAbnormal, 0)
+    X(IteratorCloseAbnormal, 0)        \
+    /* spread / rest */                \
+    X(ArrayAppend, 0)                  \
+    X(SpreadAppend, 0)                 \
+    X(ApplyArgs, 1)                    \
+    X(Swap, 0)
 
 enum class Opcode : uint8_t {
 #define X(name, _operand_bytes) k##name,

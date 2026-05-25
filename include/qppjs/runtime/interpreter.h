@@ -114,12 +114,18 @@ private:
     Value make_function_value(std::optional<std::string> name, std::vector<std::string> params,
                               std::shared_ptr<std::vector<StmtNode>> body,
                               RcPtr<Environment> closure_env,
-                              bool is_named_expr = false);
+                              bool is_named_expr = false,
+                              std::optional<std::string> rest_param = std::nullopt);
 
     // Create an async JSFunction value (wraps call in Promise).
     Value make_async_function_value(std::optional<std::string> name, std::vector<std::string> params,
                                     std::shared_ptr<std::vector<StmtNode>> body,
-                                    RcPtr<Environment> closure_env);
+                                    RcPtr<Environment> closure_env,
+                                    std::optional<std::string> rest_param = std::nullopt);
+
+    // Spread all elements of `iterable` into `out`. Returns true on success;
+    // on failure, sets pending_throw_ and returns false.
+    bool spread_into(const Value& iterable, std::vector<Value>& out);
 
     // Execute async body from stmt_index. On suspend, enqueues resume/reject via PerformThen.
     // On completion, fulfills/rejects outer_promise.

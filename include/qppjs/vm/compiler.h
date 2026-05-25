@@ -52,7 +52,8 @@ private:
     std::shared_ptr<BytecodeFunction> compile_function(std::optional<std::string> name,
                                                         const std::vector<std::string>& params,
                                                         const std::vector<StmtNode>& body,
-                                                        bool is_program = false);
+                                                        bool is_program = false,
+                                                        std::optional<std::string> rest_param = std::nullopt);
 
     // Pre-scan body for var declarations and function declarations (non-recursive into nested fns).
     void hoist_vars_scan(const std::vector<StmtNode>& body);
