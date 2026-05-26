@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 3733/3733 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 3819/3819 通过（coverage） |
 | 最近更新 | 2026-05-26 |
-| 下一步 | 继续提升 test262 通过率（comma 多变量声明、typeof、void 等） |
+| 下一步 | 继续提升 test262 通过率（void 运算符、comma 运算符等） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **`typeof` 运算符专属测试 + `typeof this` Interpreter 修复**（2026-05-26）：typeof 运算符原已实现（kTypeof + kTypeofVar 双指令，interpreter + VM 双路径），本轮补充：(1) 新建 `tests/unit/typeof_test.cpp`（60 个测试，TY-01~TY-30 × Interp+VM，覆盖所有值类型映射、不可解析引用豁免、TDZ 行为、包装对象等）；(2) 修复 Interpreter `eval_unary` typeof this 路径错误（添加 `id.name != "this"` 守卫，使 `typeof this` 通过 eval_expr 求值而非错误返回 "undefined"）；(3) 记录 VM TDZ 实现差异（kDefLet 内联导致 `typeof x` 在 x 声明前返回 "undefined" 而非 ReferenceError）和 VM new Number() 行为差异。3819/3819 通过（coverage）。
 
 - [x] **`in` 运算符**（2026-05-26）：`BinaryOp::In` 枚举值；`kIn`（0-byte 指令，pop rhs/lhs → push bool）；`JSObject::has_property(key)` + `has_property_by_symbol(symbol_id)` 迭代原型链（while 循环，与 get_property 对称）；Parser Pratt loop lbp=9 for "in"，no_in_ guard 隔离 for-loop head；Interpreter + VM 双路径对称（Symbol is_symbol() 先行，TypeError if RHS 非对象）；39 个测试（IN-01~IN-20 × Interp+VM）。3733/3733 通过（coverage），0 LSan 泄漏。
 

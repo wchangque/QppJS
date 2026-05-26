@@ -4571,18 +4571,17 @@ EvalResult Interpreter::eval_unary(const UnaryExpression& expr) {
     if (expr.op == UnaryOp::Typeof) {
         if (std::holds_alternative<Identifier>(expr.operand->v)) {
             const auto& id = std::get<Identifier>(expr.operand->v);
-            // "undefined" identifier
-            if (id.name == "undefined") {
-                return EvalResult::ok(Value::string("undefined"));
-            }
-            Binding* b = current_env_->lookup(id.name);
-            if (b == nullptr) {
-                return EvalResult::ok(Value::string("undefined"));
-            }
-            if (!b->initialized) {
-                pending_throw_ = make_error_value(NativeErrorType::kReferenceError,
-                    "Cannot access '" + id.name + "' before initialization");
-                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            // "this" is stored in current_this_, not in env — fall through to eval_expr
+            if (id.name != "this") {
+                Binding* b = current_env_->lookup(id.name);
+                if (b == nullptr) {
+                    return EvalResult::ok(Value::string("undefined"));
+                }
+                if (!b->initialized) {
+                    pending_throw_ = make_error_value(NativeErrorType::kReferenceError,
+                        "Cannot access '" + id.name + "' before initialization");
+                    return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                }
             }
         }
         // Otherwise fall through to normal evaluation

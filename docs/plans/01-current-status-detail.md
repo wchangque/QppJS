@@ -4,6 +4,23 @@
 
 ## 1. 已完成任务
 
+- [x] **`typeof` 运算符专属测试 + `typeof this` Interpreter 修复**（2026-05-26）：
+  - **背景**：typeof 原已实现（`kTypeof`(0) + `kTypeofVar`(2) 双指令；compiler.cpp 编译期分路；vm.cpp + interpreter.cpp 双路径）。本轮仅补测试和修复已知 Bug。
+  - **Bug M1 修复**：`src/runtime/interpreter.cpp` `eval_unary` typeof 路径（约第 4572 行）对所有 Identifier（含 "this"）执行 `current_env_->lookup`，`lookup("this")` 返回 nullptr → 返回 "undefined"。修复为将 `if (id.name == "undefined") return "undefined"` 冗余分支删除，改为 `if (id.name != "this")` 守卫，使 `typeof this` 落入下方的 `eval_expr` 路径，正确求值 `current_this_`。VM 路径不受影响（compiler.cpp 第 984 行已排除 "this"）。
+  - **测试**：新建 `tests/unit/typeof_test.cpp`（60 个测试，TY-01~TY-30 × Interp+VM）：
+    - TY-01~07：基础值类型映射（undefined/null/boolean/number/NaN/Infinity/string/symbol）
+    - TY-08~10：对象与数组 → "object"
+    - TY-11~13：普通函数、箭头函数、内置函数 → "function"
+    - TY-14：未声明变量不抛 ReferenceError（kTypeofVar 豁免）
+    - TY-15：逗号表达式路径（非 kTypeofVar，全局变量豁免）
+    - TY-16：TDZ 行为（Interp 正确抛 ReferenceError；VM kDefLet 内联导致 lookup 返回 null → "undefined"，记录差异）
+    - TY-17~19：var 变量、函数参数、对象属性
+    - TY-20~22：包装对象（Interp new Number/String/Boolean → "object"；VM new Number → "number" 记录差异）
+    - TY-23~30：赋值、嵌套 typeof、函数返回值、let/const 变量、if 条件、类型守卫、表达式操作数等
+  - **已知 VM 差异**：(1) TY-16 VM：kDefLet 内联 → typeof TDZ 变量返回 "undefined"（非 ReferenceError）；(2) TY-20 VM：kNewCall native constructor 不创建 this-obj → new Number() 返回 primitive → typeof 为 "number"。
+  - **修改文件**：`src/runtime/interpreter.cpp`（typeof this 守卫），`tests/unit/typeof_test.cpp`（新建），`tests/CMakeLists.txt`（新增注册）。
+  - 3819/3819 通过（coverage）。
+
 - [x] **`in` 运算符（in operator）**（2026-05-26）：
   - **AST**：`include/qppjs/frontend/ast.h` `BinaryOp` 枚举新增 `In`；`src/frontend/ast_dump.cpp` 添加 `case BinaryOp::In: return "In"` 分支。
   - **Opcode**：`include/qppjs/vm/opcode.h` 新增 `X(In, 0)`（0-byte 操作数，pop rhs，pop lhs → push bool）。
