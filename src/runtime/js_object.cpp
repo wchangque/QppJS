@@ -22,6 +22,8 @@ void JSObject::TraceRefs(GcHeap& heap) {
     if (symbol_props_) {
         for (const auto& entry : *symbol_props_) {
             if (entry.value.is_object()) heap.MarkPending(entry.value.as_object_raw());
+            if (entry.getter.is_object()) heap.MarkPending(entry.getter.as_object_raw());
+            if (entry.setter.is_object()) heap.MarkPending(entry.setter.as_object_raw());
         }
     }
     if (wrapped_value_.is_object()) heap.MarkPending(wrapped_value_.as_object_raw());
@@ -410,6 +412,9 @@ void JSObject::clear_function_properties(std::unordered_set<const JSObject*>& vi
     // Clear function references held in symbol properties (e.g. Symbol.iterator closures).
     if (symbol_props_) {
         for (auto& entry : *symbol_props_) {
+            // Clear accessor getter/setter (mirrors string-key property handling above)
+            if (entry.getter.is_object()) entry.getter = Value::undefined();
+            if (entry.setter.is_object()) entry.setter = Value::undefined();
             if (!entry.value.is_object()) continue;
             RcObject* raw = entry.value.as_object_raw();
             if (raw == nullptr) continue;
@@ -564,7 +569,7 @@ void JSObject::set_property_by_symbol(uint64_t symbol_id, Value val) {
         (*symbol_props_)[it->second].value = std::move(val);
     } else {
         size_t idx = symbol_props_->size();
-        symbol_props_->push_back({symbol_id, std::move(val)});
+        symbol_props_->push_back({symbol_id, std::move(val), Value::undefined(), Value::undefined(), false});
         (*symbol_index_)[symbol_id] = idx;
     }
 }
@@ -572,6 +577,62 @@ void JSObject::set_property_by_symbol(uint64_t symbol_id, Value val) {
 bool JSObject::has_own_symbol(uint64_t symbol_id) const {
     if (!symbol_index_) return false;
     return symbol_index_->count(symbol_id) > 0;
+}
+
+const JSObject::SymbolPropertyEntry* JSObject::find_symbol_entry(uint64_t symbol_id) const {
+    const JSObject* cur = this;
+    while (cur != nullptr) {
+        if (cur->symbol_index_ && cur->symbol_props_) {
+            auto it = cur->symbol_index_->find(symbol_id);
+            if (it != cur->symbol_index_->end()) {
+                return &(*cur->symbol_props_)[it->second];
+            }
+        }
+        cur = cur->proto_.get();
+    }
+    return nullptr;
+}
+
+EvalResult JSObject::define_property_by_symbol(uint64_t symbol_id, const PropDesc& desc) {
+    if (!symbol_props_) {
+        symbol_props_ = std::make_unique<std::vector<SymbolPropertyEntry>>();
+        symbol_index_ = std::make_unique<std::unordered_map<uint64_t, size_t>>();
+    }
+    auto it = symbol_index_->find(symbol_id);
+    bool is_new = (it == symbol_index_->end());
+    bool desc_has_accessor = desc.getter.has_value() || desc.setter.has_value();
+
+    if (is_new) {
+        if (!extensible_) {
+            return EvalResult::err(Error{ErrorKind::Runtime,
+                "TypeError: Cannot define Symbol property, object is not extensible"});
+        }
+        SymbolPropertyEntry entry;
+        entry.symbol_id = symbol_id;
+        if (desc_has_accessor) {
+            entry.is_accessor = true;
+            entry.getter = desc.getter.value_or(Value::undefined());
+            entry.setter = desc.setter.value_or(Value::undefined());
+        } else {
+            entry.value = desc.value.value_or(Value::undefined());
+        }
+        size_t idx = symbol_props_->size();
+        symbol_props_->push_back(std::move(entry));
+        (*symbol_index_)[symbol_id] = idx;
+        return EvalResult::ok(Value::undefined());
+    }
+
+    // Existing entry: merge accessor descriptors (getter/setter can be set independently)
+    SymbolPropertyEntry& existing = (*symbol_props_)[it->second];
+    if (desc_has_accessor) {
+        existing.is_accessor = true;
+        if (desc.getter.has_value()) existing.getter = desc.getter.value();
+        if (desc.setter.has_value()) existing.setter = desc.setter.value();
+    } else if (desc.value.has_value()) {
+        existing.is_accessor = false;
+        existing.value = desc.value.value();
+    }
+    return EvalResult::ok(Value::undefined());
 }
 
 bool JSObject::has_property(const std::string& key) const {

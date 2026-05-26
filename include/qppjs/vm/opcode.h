@@ -136,7 +136,11 @@ namespace qppjs {
     X(CopyDataProperties, 1)           \
     /* accessor property definition */ \
     X(DefineGetter, 2)                 \
-    X(DefineSetter, 2)
+    X(DefineSetter, 2)                 \
+    /* computed property (stack: obj key val/fn) */ \
+    X(SetComputedProp, 0)              \
+    X(DefineComputedGetter, 0)         \
+    X(DefineComputedSetter, 0)
 
 enum class Opcode : uint8_t {
 #define X(name, _operand_bytes) k##name,

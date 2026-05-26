@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 3949/3949 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 4053/4053 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-05-26 |
-| 下一步 | 计算属性键 `{[expr]: val}` [T262-P2] → `??` [T262-P3] → `?.` [T262-P4] |
+| 下一步 | `??` nullish coalescing [T262-P3] → `?.` optional chaining [T262-P4] |
 | test262 | language/expressions 32.4%（method shorthand 后预计约 +5pp） |
 
 ## 已知遗留问题
@@ -22,6 +22,12 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **计算属性键 T262-P2 Review 必修修复 M1/M2/P1**（2026-05-26）：M1：`find_symbol_entry` 新方法（js_object.h/cpp，遍历原型链返回 SymbolPropertyEntry*）；interpreter.cpp 三处 Symbol accessor 调用点修复（bind_pattern/eval_computed_member/eval_member_assign 均通过 find_symbol_entry 检查 is_accessor，getter/setter 走 call_function_val）；vm.cpp kGetElem Symbol 路径添加 accessor getter 调用（含 call_function_val + cur_frame 重取模式），kSetElem Symbol 路径添加 accessor setter 调用；附带修复 js_object.cpp clear_function_properties 中 symbol_props_ 段未清除 entry.getter/setter 导致 accessor 闭包泄漏的预存在 Bug（与字符串属性路径对称）；M2：compiler.cpp compile_bind_pattern 计算键路径（has_rest 时先保存 key 到 $__qppjs_ckey_N__ 临时变量，rest 阶段追加 kGetVar 并传给 kCopyDataProperties）；vm.cpp kCopyDataProperties handler 从 k.sv() 改为 to_string_val(k)（支持非 string 运行时键值），Symbol 键跳过（永不出现在 own_enumerable_string_keys）；P1：vm.cpp kDefineComputedGetter/kDefineComputedSetter 各新增局部 str_key = to_string_val(key)，两次 to_string_val 调用减为一次；新增 6 个测试（CP-49/CP-50/CP-51 × Interp+VM）。4053/4053 通过（coverage），0 LSan 泄漏。
+
+- [x] **计算属性键边界补测 [T262-P2 Testing]**（2026-05-26）：新增 36 个测试（CP-31～CP-48 × Interp+VM）。覆盖：解构默认值三场景（键存在/缺失/null）；嵌套解构 `{[key]:{b,c}}`；内层含默认值的嵌套解构；同名计算键后写覆盖（computed+computed/static+computed/computed+static）；falsy 计算键（false/"false"、0/"0"、""→""）；`Object.getOwnPropertyDescriptor` 验证数据属性（value/writable/enumerable/configurable）和访问器属性（get/set 存在，value/writable 为 undefined）；计算方法 this 绑定正确（o.method() → this===o）；计算方法通过 this 修改属性（连续调用计数）；多 Symbol 键互相独立；`Object.getOwnPropertySymbols` 未实现记录（typeof → "undefined"）。同时发现回归风险：Symbol 计算 accessor（`get [sym]()`/`set [sym]()`）getter/setter 不被调用（`get_property_by_symbol`/`set_property_by_symbol` 忽略 is_accessor 标志），已在分析中记录为待修复 Bug。4047/4047 通过，0 LSan 泄漏。
+
+- [x] **计算属性键 `{[expr]: val}` [T262-P2]**（2026-05-26）：`ObjectProperty` 新增 `key_expr`/`computed` 字段；`ObjectPatternProperty` 新增 `key_expr` 字段；Parser `nud(LBrace)` 四路径均扩展 `[expr]` 计算键分支；`convert_object_to_pattern` + `parse_object_binding_pattern` 计算键同步支持；`define_property_by_symbol` 新方法（accessor 合并语义）；`SymbolPropertyEntry` 扩展 getter/setter/is_accessor 字段；3 个新 VM opcode（`kSetComputedProp`/`kDefineComputedGetter`/`kDefineComputedSetter`）；Interpreter `eval_object_expr` + `bind_pattern` 计算键路径；Compiler `compile_object_expr` + `compile_bind_pattern` 计算键路径；VM 3 个 opcode handler；60 个新测试（CP-01～CP-30 × Interp+VM）。4011/4011 通过（coverage），0 LSan 泄漏。
 
 - [x] **方法简写 Method Shorthand [T262-P1]**（2026-05-26）：`MethodKind` 枚举（kData/kMethod/kGetter/kSetter/kAsyncMethod/kGenerator）；Parser `nud(LBrace)` 扩展：`*foo(){}`（kGenerator）、`get/set foo(){}`（含消歧）、`async foo(){}`（含消歧）、普通方法 `foo(){}`（kMethod）；Interpreter/Compiler/VM 三路径对称实现；`kDefineGetter`/`kDefineSetter` 新指令；is_method 守卫（new 不可构造）；`.name` 写入仅限 is_method 路径；async 方法 wrapper 跳过 proto 创建；32 个新测试（MS-01～MS-32）。3949/3949 通过，0 LSan 泄漏。
 
@@ -163,7 +169,7 @@
 ## 未开始（test262 通过率提升候选，按优先级）
 
 - ~~**[T262-P1] 方法简写 `{foo() {}}`**：已完成（2026-05-26，3949/3949 通过，0 LSan 泄漏）~~
-- **[T262-P2] 计算属性键 `{[expr]: val}`**：Parser 对象/类体 `[` 开头属性键不支持，报 `expected property key`。修复后还可解锁依赖 `propertyHelper.js` 的约 477 个 class/dstr 测试（约 810 个合计）。
+- ~~**[T262-P2] 计算属性键 `{[expr]: val}`**：已完成（2026-05-26，4053/4053 通过，0 LSan 泄漏）~~
 - **[T262-P3] `??` nullish coalescing**：Lexer 把 `??` 拆成两个 `?`，第二个 `?` 在表达式中报错。需 Lexer 新增 `QuestionQuestion` token，Parser 新增 `lbp=3` 的 `??` 中缀运算符。预计影响 ~600 个测试（含 propertyHelper.js 的三元链）。
 - **[T262-P4] `?.` optional chaining**：`?.` 被词法切成 `?` + `.`，Parser 消费 `?` 后遇 `.` 报 `unexpected token`。需 Lexer 新增 `QuestionDot` token，Parser 新增 `?.` 成员访问/调用语义。预计影响 ~180 个测试。
 

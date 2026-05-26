@@ -88,10 +88,23 @@ public:
     PropertyEntry* get_own_entry(const std::string& key);
     const PropertyEntry* get_own_entry(const std::string& key) const;
 
+    // Symbol-keyed property entry (public for accessor handling at call sites).
+    struct SymbolPropertyEntry {
+        uint64_t symbol_id;
+        Value value;
+        Value getter;       // valid when is_accessor=true
+        Value setter;       // valid when is_accessor=true
+        bool is_accessor = false;
+    };
+
     // Symbol-keyed property access (lazy-initialized storage).
     Value get_property_by_symbol(uint64_t symbol_id) const;
     void set_property_by_symbol(uint64_t symbol_id, Value val);
     bool has_own_symbol(uint64_t symbol_id) const;
+    // [[DefineOwnProperty]] for Symbol keys. Supports data and accessor descriptors.
+    EvalResult define_property_by_symbol(uint64_t symbol_id, const PropDesc& desc);
+    // Traverse prototype chain and return the SymbolPropertyEntry for symbol_id, or nullptr.
+    const SymbolPropertyEntry* find_symbol_entry(uint64_t symbol_id) const;
 
     // Only used by kArray objects — sparse storage + explicit length
     std::unordered_map<uint32_t, Value> elements_;
@@ -100,10 +113,6 @@ public:
 private:
     void clear_function_properties(std::unordered_set<const JSObject*>& visited);
 
-    struct SymbolPropertyEntry {
-        uint64_t symbol_id;
-        Value value;
-    };
     // Lazily initialized symbol-keyed property storage.
     std::unique_ptr<std::vector<SymbolPropertyEntry>> symbol_props_;
     std::unique_ptr<std::unordered_map<uint64_t, size_t>> symbol_index_;

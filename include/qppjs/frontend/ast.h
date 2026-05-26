@@ -105,10 +105,12 @@ struct AssignmentExpression {
 
 // 对象字面量的单个属性（不是 ExprNode，只是辅助结构）
 struct ObjectProperty {
-    std::string key;
-    MethodKind method_kind = MethodKind::kData;
+    std::string key;                            // 静态键；computed=true 时为空
+    std::unique_ptr<ExprNode> key_expr;         // computed=true 时非空，存放键表达式
     std::unique_ptr<ExprNode> value;
     SourceRange range;
+    MethodKind method_kind = MethodKind::kData;
+    bool computed = false;                      // true = [expr] 计算键
 };
 
 // 对象字面量 { key: value, ... }
@@ -300,7 +302,8 @@ struct ArrayPattern {
 
 // 对象模式中单个属性
 struct ObjectPatternProperty {
-    std::string key;
+    std::string key;                            // 静态键；computed=true 时为空
+    std::unique_ptr<ExprNode> key_expr;         // computed=true 时非空，存放键表达式
     bool computed = false;
     std::unique_ptr<PatternNode> value_pattern;
     std::optional<std::unique_ptr<ExprNode>> default_value;

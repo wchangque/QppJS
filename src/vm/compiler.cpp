@@ -272,6 +272,7 @@ void Compiler::hoist_vars_scan_expr(const ExprNode& expr) {
             },
             [this](const ObjectExpression& e) {
                 for (const auto& prop : e.properties) {
+                    if (prop.computed && prop.key_expr) hoist_vars_scan_expr(*prop.key_expr);
                     hoist_vars_scan_expr(*prop.value);
                 }
             },
@@ -651,13 +652,44 @@ void Compiler::compile_bind_pattern(const PatternNode& pat, VarKind kind, bool i
             emit(Opcode::kPop);
             // 每个属性
             std::vector<std::string> named_keys;
+            // For rest exclusion: computed key temps (only allocated when op.rest != nullptr)
+            bool has_rest = (op.rest != nullptr);
+            std::vector<uint16_t> computed_key_tmp_indices;
+            static int ckey_counter = 0;
             for (const auto& prop : op.properties) {
-                named_keys.push_back(prop.key);
-                emit(Opcode::kGetVar);
-                emit_u16(tmp_idx);
-                uint16_t key_idx = add_name(prop.key);
-                emit(Opcode::kGetProp);
-                emit_u16(key_idx);
+                if (prop.computed && prop.key_expr != nullptr) {
+                    if (has_rest) {
+                        // Save computed key to temp so it can be reused for CopyDataProperties exclusion
+                        std::string ckey_tmp = "$__qppjs_ckey_" + std::to_string(ckey_counter++) + "__";
+                        uint16_t ckey_idx = add_name(ckey_tmp);
+                        emit(Opcode::kDefLet);
+                        emit_u16(ckey_idx);
+                        compile_expr(*prop.key_expr);
+                        emit(Opcode::kInitVar);
+                        emit_u16(ckey_idx);
+                        emit(Opcode::kPop);
+                        computed_key_tmp_indices.push_back(ckey_idx);
+                        // Load obj and saved key, then GetElem
+                        emit(Opcode::kGetVar);
+                        emit_u16(tmp_idx);
+                        emit(Opcode::kGetVar);
+                        emit_u16(ckey_idx);
+                        emit(Opcode::kGetElem);
+                    } else {
+                        // No rest: no need to save key separately
+                        emit(Opcode::kGetVar);
+                        emit_u16(tmp_idx);
+                        compile_expr(*prop.key_expr);
+                        emit(Opcode::kGetElem);
+                    }
+                } else {
+                    named_keys.push_back(prop.key);
+                    emit(Opcode::kGetVar);
+                    emit_u16(tmp_idx);
+                    uint16_t key_idx = add_name(prop.key);
+                    emit(Opcode::kGetProp);
+                    emit_u16(key_idx);
+                }
                 // 默认值处理：如果 val === undefined，使用 default
                 if (prop.default_value.has_value()) {
                     emit(Opcode::kDup);
@@ -679,8 +711,14 @@ void Compiler::compile_bind_pattern(const PatternNode& pat, VarKind kind, bool i
                     emit(Opcode::kLoadString);
                     emit_u16(ki);
                 }
+                // Push computed key values for dynamic exclusion
+                for (uint16_t ckey_idx : computed_key_tmp_indices) {
+                    emit(Opcode::kGetVar);
+                    emit_u16(ckey_idx);
+                }
+                uint8_t total_excluded = static_cast<uint8_t>(named_keys.size() + computed_key_tmp_indices.size());
                 emit(Opcode::kCopyDataProperties);
-                emit_u8(static_cast<uint8_t>(named_keys.size()));
+                emit_u8(total_excluded);
                 compile_bind_pattern(*op.rest, kind, is_assign);
             }
         },
@@ -1132,6 +1170,67 @@ void Compiler::compile_object_expr(const ObjectExpression& expr) {
             emit(Opcode::kThrow);
             return;
         }
+
+        // 计算键属性：栈布局 [... obj] → kDup → [... obj obj] → compile key → [... obj obj key]
+        //   → compile val/fn  → [... obj obj key val/fn] → kSetComputedProp/kDefineComputed* → [... obj val/fn]
+        //   → kPop → [... obj]
+        if (prop.computed && prop.key_expr != nullptr) {
+            if (prop.method_kind == MethodKind::kData) {
+                emit(Opcode::kDup);
+                compile_expr(*prop.key_expr);
+                compile_expr(*prop.value);
+                emit(Opcode::kSetComputedProp);
+                emit(Opcode::kPop);
+            } else if (prop.method_kind == MethodKind::kMethod ||
+                       prop.method_kind == MethodKind::kGenerator) {
+                const auto& fe = std::get<FunctionExpression>(prop.value->v);
+                auto child = compile_function(fe.name, fe.params, *fe.body, false, fe.rest_param);
+                child->is_method = true;
+                uint16_t fn_idx = add_function(std::move(child));
+                emit(Opcode::kDup);
+                compile_expr(*prop.key_expr);
+                emit(Opcode::kMakeFunction);
+                emit_u16(fn_idx);
+                emit(Opcode::kSetComputedProp);
+                emit(Opcode::kPop);
+            } else if (prop.method_kind == MethodKind::kAsyncMethod) {
+                const auto& afe = std::get<AsyncFunctionExpression>(prop.value->v);
+                auto child = compile_function(afe.name, afe.params, *afe.body, false, afe.rest_param);
+                child->is_async = true;
+                child->is_method = true;
+                uint16_t fn_idx = add_function(std::move(child));
+                emit(Opcode::kDup);
+                compile_expr(*prop.key_expr);
+                emit(Opcode::kMakeFunction);
+                emit_u16(fn_idx);
+                emit(Opcode::kSetComputedProp);
+                emit(Opcode::kPop);
+            } else if (prop.method_kind == MethodKind::kGetter) {
+                const auto& fe = std::get<FunctionExpression>(prop.value->v);
+                auto child = compile_function(fe.name, fe.params, *fe.body, false, fe.rest_param);
+                child->is_method = true;
+                uint16_t fn_idx = add_function(std::move(child));
+                emit(Opcode::kDup);
+                compile_expr(*prop.key_expr);
+                emit(Opcode::kMakeFunction);
+                emit_u16(fn_idx);
+                emit(Opcode::kDefineComputedGetter);
+                emit(Opcode::kPop);
+            } else if (prop.method_kind == MethodKind::kSetter) {
+                const auto& fe = std::get<FunctionExpression>(prop.value->v);
+                auto child = compile_function(fe.name, fe.params, *fe.body, false, fe.rest_param);
+                child->is_method = true;
+                uint16_t fn_idx = add_function(std::move(child));
+                emit(Opcode::kDup);
+                compile_expr(*prop.key_expr);
+                emit(Opcode::kMakeFunction);
+                emit_u16(fn_idx);
+                emit(Opcode::kDefineComputedSetter);
+                emit(Opcode::kPop);
+            }
+            continue;
+        }
+
         if (prop.method_kind == MethodKind::kData) {
             // 普通数据属性
             emit(Opcode::kDup);

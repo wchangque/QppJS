@@ -194,7 +194,13 @@ std::string dump_expr(const ExprNode& node, int indent) {
                                    case MethodKind::kAsyncMethod: kind_str = "async_method"; break;
                                    case MethodKind::kGenerator:   kind_str = "generator"; break;
                                }
-                               result += ind(indent + 1) + "prop[" + kind_str + "] \"" + prop.key + "\":\n";
+                               std::string key_str;
+                               if (prop.computed && prop.key_expr) {
+                                   key_str = "[computed]";
+                               } else {
+                                   key_str = "\"" + prop.key + "\"";
+                               }
+                               result += ind(indent + 1) + "prop[" + kind_str + "] " + key_str + ":\n";
                                result += dump_expr(*prop.value, indent + 2);
                            }
                        },

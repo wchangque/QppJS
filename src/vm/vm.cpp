@@ -5292,6 +5292,115 @@ EvalResult VM::run(size_t exit_depth) {
             break;
         }
 
+        case Opcode::kSetComputedProp: {
+            // Stack: sp[-3]=obj, sp[-2]=key, sp[-1]=val
+            Value val = std::move(stack.back()); stack.pop_back();
+            Value key = std::move(stack.back()); stack.pop_back();
+            Value obj_copy = std::move(stack.back()); stack.pop_back();
+            if (obj_copy.is_object()) {
+                RcObject* raw = obj_copy.as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary ||
+                    raw->object_kind() == ObjectKind::kArray) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    if (key.is_symbol()) {
+                        uint64_t sym_id = key.as_symbol_id();
+                        if (val.is_object() && val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                            auto* fn = static_cast<JSFunction*>(val.as_object_raw());
+                            if (fn->is_method()) {
+                                const std::string* desc = symbol_table_.GetDescription(sym_id);
+                                std::string name = "[" + (desc ? *desc : "") + "]";
+                                fn->set_property("name", Value::string(name));
+                            }
+                        }
+                        obj->set_property_by_symbol(sym_id, val);
+                    } else {
+                        std::string str_key = to_string_val(key);
+                        if (val.is_object() && val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                            auto* fn = static_cast<JSFunction*>(val.as_object_raw());
+                            if (fn->is_method()) fn->set_property("name", Value::string(str_key));
+                        }
+                        obj->set_property(str_key, val);
+                    }
+                }
+            }
+            stack.push_back(std::move(val));
+            break;
+        }
+
+        case Opcode::kDefineComputedGetter: {
+            // Stack: sp[-3]=obj, sp[-2]=key, sp[-1]=fn
+            Value fn_val = std::move(stack.back()); stack.pop_back();
+            Value key = std::move(stack.back()); stack.pop_back();
+            Value obj_copy = std::move(stack.back()); stack.pop_back();
+            if (obj_copy.is_object()) {
+                RcObject* raw = obj_copy.as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary ||
+                    raw->object_kind() == ObjectKind::kArray) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    // Cache to_string_val once for non-symbol keys (used for name and define_property)
+                    std::string str_key = key.is_symbol() ? std::string{} : to_string_val(key);
+                    if (fn_val.is_object() && fn_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                        auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
+                        fn->set_is_method(true);
+                        if (key.is_symbol()) {
+                            const std::string* desc = symbol_table_.GetDescription(key.as_symbol_id());
+                            fn->set_property("name", Value::string("get [" + (desc ? *desc : "") + "]"));
+                        } else {
+                            fn->set_property("name", Value::string("get " + str_key));
+                        }
+                    }
+                    PropDesc desc;
+                    desc.getter = fn_val;
+                    desc.enumerable = true;
+                    desc.configurable = true;
+                    if (key.is_symbol()) {
+                        obj->define_property_by_symbol(key.as_symbol_id(), desc);
+                    } else {
+                        obj->define_property(str_key, desc);
+                    }
+                }
+            }
+            stack.push_back(std::move(fn_val));
+            break;
+        }
+
+        case Opcode::kDefineComputedSetter: {
+            // Stack: sp[-3]=obj, sp[-2]=key, sp[-1]=fn
+            Value fn_val = std::move(stack.back()); stack.pop_back();
+            Value key = std::move(stack.back()); stack.pop_back();
+            Value obj_copy = std::move(stack.back()); stack.pop_back();
+            if (obj_copy.is_object()) {
+                RcObject* raw = obj_copy.as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary ||
+                    raw->object_kind() == ObjectKind::kArray) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    // Cache to_string_val once for non-symbol keys (used for name and define_property)
+                    std::string str_key = key.is_symbol() ? std::string{} : to_string_val(key);
+                    if (fn_val.is_object() && fn_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                        auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
+                        fn->set_is_method(true);
+                        if (key.is_symbol()) {
+                            const std::string* desc = symbol_table_.GetDescription(key.as_symbol_id());
+                            fn->set_property("name", Value::string("set [" + (desc ? *desc : "") + "]"));
+                        } else {
+                            fn->set_property("name", Value::string("set " + str_key));
+                        }
+                    }
+                    PropDesc desc;
+                    desc.setter = fn_val;
+                    desc.enumerable = true;
+                    desc.configurable = true;
+                    if (key.is_symbol()) {
+                        obj->define_property_by_symbol(key.as_symbol_id(), desc);
+                    } else {
+                        obj->define_property(str_key, desc);
+                    }
+                }
+            }
+            stack.push_back(std::move(fn_val));
+            break;
+        }
+
         case Opcode::kGetElem: {
             Value key_val = std::move(stack.back());
             stack.pop_back();
@@ -5312,7 +5421,31 @@ EvalResult VM::run(size_t exit_depth) {
                     if (raw_sym->object_kind() == ObjectKind::kOrdinary ||
                         raw_sym->object_kind() == ObjectKind::kArray) {
                         auto* js_obj_sym = static_cast<JSObject*>(raw_sym);
-                        stack.push_back(js_obj_sym->get_property_by_symbol(sym_id));
+                        const JSObject::SymbolPropertyEntry* sym_entry = js_obj_sym->find_symbol_entry(sym_id);
+                        if (sym_entry != nullptr && sym_entry->is_accessor) {
+                            if (sym_entry->getter.is_undefined() || sym_entry->getter.is_null()) {
+                                call_stack_.back().stack.push_back(Value::undefined());
+                            } else {
+                                Value getter_copy = sym_entry->getter;
+                                auto getter_res = call_function_val(getter_copy, obj_val, {});
+                                CallFrame& cur_frame = call_stack_.back();
+                                if (!getter_res.is_ok()) {
+                                    const std::string& emsg = getter_res.error().message();
+                                    if (emsg == "__qppjs_pending_throw__" && native_pending_throw_.has_value()) {
+                                        cur_frame.pending_throw = std::move(*native_pending_throw_);
+                                        native_pending_throw_ = std::nullopt;
+                                    } else {
+                                        cur_frame.pending_throw = make_error_value(NativeErrorType::kTypeError, emsg);
+                                    }
+                                    continue;
+                                }
+                                cur_frame.stack.push_back(getter_res.value());
+                            }
+                        } else if (sym_entry != nullptr) {
+                            stack.push_back(sym_entry->value);
+                        } else {
+                            stack.push_back(Value::undefined());
+                        }
                     } else {
                         stack.push_back(Value::undefined());
                     }
@@ -5402,14 +5535,38 @@ EvalResult VM::run(size_t exit_depth) {
             stack.pop_back();
             Value obj_val = std::move(stack.back());
             stack.pop_back();
-            // Symbol key: store symbol-keyed property on object
+            // Symbol key: store symbol-keyed property on object (or call setter if accessor)
             if (key_val.is_symbol()) {
                 if (obj_val.is_object()) {
                     RcObject* raw_sym = obj_val.as_object_raw();
                     if (raw_sym->object_kind() == ObjectKind::kOrdinary ||
                         raw_sym->object_kind() == ObjectKind::kArray) {
                         auto* js_obj_sym = static_cast<JSObject*>(raw_sym);
-                        js_obj_sym->set_property_by_symbol(key_val.as_symbol_id(), val);
+                        uint64_t sym_id = key_val.as_symbol_id();
+                        const JSObject::SymbolPropertyEntry* sym_entry = js_obj_sym->find_symbol_entry(sym_id);
+                        if (sym_entry != nullptr && sym_entry->is_accessor) {
+                            if (!sym_entry->setter.is_undefined() && !sym_entry->setter.is_null()) {
+                                Value setter_copy = sym_entry->setter;
+                                std::vector<Value> setter_arg_vec = {val};
+                                auto sres = call_function_val(setter_copy, obj_val, setter_arg_vec);
+                                CallFrame& cur_frame = call_stack_.back();
+                                if (!sres.is_ok()) {
+                                    const std::string& emsg = sres.error().message();
+                                    if (emsg == "__qppjs_pending_throw__" && native_pending_throw_.has_value()) {
+                                        cur_frame.pending_throw = std::move(*native_pending_throw_);
+                                        native_pending_throw_ = std::nullopt;
+                                    } else {
+                                        cur_frame.pending_throw = make_error_value(NativeErrorType::kTypeError, emsg);
+                                    }
+                                    continue;
+                                }
+                                cur_frame.stack.push_back(std::move(val));
+                            } else {
+                                stack.push_back(std::move(val));
+                            }
+                            break;
+                        }
+                        js_obj_sym->set_property_by_symbol(sym_id, val);
                     }
                 }
                 stack.push_back(std::move(val));
@@ -6835,13 +6992,14 @@ EvalResult VM::run(size_t exit_depth) {
             // properties of src_obj except those whose key is in the excluded set.
             uint8_t n_excluded = read_u8(bc, pc);
 
-            // Collect excluded keys (top of stack = last key)
+            // Collect excluded keys (top of stack = last key).
+            // Symbol keys are skipped — they never appear in own_enumerable_string_keys.
             std::vector<std::string> excluded;
             excluded.reserve(n_excluded);
             for (int i = 0; i < static_cast<int>(n_excluded); ++i) {
                 Value k = std::move(stack.back());
                 stack.pop_back();
-                excluded.push_back(std::string(k.sv()));
+                if (!k.is_symbol()) excluded.push_back(to_string_val(k));
             }
 
             Value src_val = std::move(stack.back());

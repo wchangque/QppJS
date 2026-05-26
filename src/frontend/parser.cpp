@@ -967,11 +967,21 @@ struct Parser {
                         continue;
                     }
 
-                    // --- Generator method: *foo() {} ---
+                    // --- Generator method: *foo() {} or *[expr]() {} ---
                     if (cur.kind == TokenKind::Star) {
                         advance();  // 消费 *
                         std::string gkey;
-                        if (cur.kind == TokenKind::Ident) {
+                        std::unique_ptr<ExprNode> gkey_expr;
+                        bool gcomputed = false;
+                        if (cur.kind == TokenKind::LBracket) {
+                            advance();  // 消费 [
+                            auto ke = parse_expr(1);
+                            if (!ke.ok()) return ParseResult<ExprNode>::Err(ke.error());
+                            auto rb = expect(TokenKind::RBracket);
+                            if (!rb.ok()) return ParseResult<ExprNode>::Err(rb.error());
+                            gkey_expr = std::make_unique<ExprNode>(std::move(ke.value()));
+                            gcomputed = true;
+                        } else if (cur.kind == TokenKind::Ident) {
                             gkey = std::string(token_text(cur)); advance();
                         } else if (cur.kind == TokenKind::String) {
                             gkey = decode_string(token_text(cur)); advance();
@@ -996,9 +1006,12 @@ struct Parser {
                             std::move(body_g.value().first));
                         ObjectProperty prop;
                         prop.key = gkey;
+                        prop.computed = gcomputed;
+                        if (gcomputed) prop.key_expr = std::move(gkey_expr);
                         prop.method_kind = MethodKind::kGenerator;
                         prop.value = std::make_unique<ExprNode>(ExprNode{FunctionExpression{
-                            std::optional<std::string>{gkey}, std::move(params_g.value()),
+                            gcomputed ? std::optional<std::string>{} : std::optional<std::string>{gkey},
+                            std::move(params_g.value()),
                             std::move(fn_rest_g), std::move(body_ptr), span(key_start, prop_end)}});
                         prop.range = span(key_start, prop_end);
                         props.push_back(std::move(prop));
@@ -1008,6 +1021,8 @@ struct Parser {
 
                     // --- get/set disambiguation ---
                     bool already_handled = false;
+                    bool is_computed = false;
+                    std::unique_ptr<ExprNode> key_expr_ptr;
                     std::string key;
                     Token key_tok = cur;
 
@@ -1021,7 +1036,17 @@ struct Parser {
                             cur.kind != TokenKind::Eq) {
                             // 真正的 getter/setter: 接下来解析属性名
                             std::string accessor_key;
-                            if (cur.kind == TokenKind::Ident) {
+                            std::unique_ptr<ExprNode> accessor_key_expr;
+                            bool ac_computed = false;
+                            if (cur.kind == TokenKind::LBracket) {
+                                advance();  // 消费 [
+                                auto ke = parse_expr(1);
+                                if (!ke.ok()) return ParseResult<ExprNode>::Err(ke.error());
+                                auto rb = expect(TokenKind::RBracket);
+                                if (!rb.ok()) return ParseResult<ExprNode>::Err(rb.error());
+                                accessor_key_expr = std::make_unique<ExprNode>(std::move(ke.value()));
+                                ac_computed = true;
+                            } else if (cur.kind == TokenKind::Ident) {
                                 accessor_key = std::string(token_text(cur)); advance();
                             } else if (cur.kind == TokenKind::String) {
                                 accessor_key = decode_string(token_text(cur)); advance();
@@ -1048,9 +1073,12 @@ struct Parser {
                             MethodKind mk = (mod == "get") ? MethodKind::kGetter : MethodKind::kSetter;
                             ObjectProperty prop;
                             prop.key = accessor_key;
+                            prop.computed = ac_computed;
+                            if (ac_computed) prop.key_expr = std::move(accessor_key_expr);
                             prop.method_kind = mk;
                             prop.value = std::make_unique<ExprNode>(ExprNode{FunctionExpression{
-                                std::optional<std::string>{accessor_key}, std::move(params_ac.value()),
+                                ac_computed ? std::optional<std::string>{} : std::optional<std::string>{accessor_key},
+                                std::move(params_ac.value()),
                                 std::move(fn_rest_ac), std::move(body_ptr), span(key_start, prop_end)}});
                             prop.range = span(key_start, prop_end);
                             props.push_back(std::move(prop));
@@ -1072,7 +1100,17 @@ struct Parser {
                             bool is_gen = (cur.kind == TokenKind::Star);
                             if (is_gen) advance();  // 消费 *
                             std::string akey;
-                            if (cur.kind == TokenKind::Ident) {
+                            std::unique_ptr<ExprNode> akey_expr;
+                            bool am_computed = false;
+                            if (cur.kind == TokenKind::LBracket) {
+                                advance();  // 消费 [
+                                auto ke = parse_expr(1);
+                                if (!ke.ok()) return ParseResult<ExprNode>::Err(ke.error());
+                                auto rb = expect(TokenKind::RBracket);
+                                if (!rb.ok()) return ParseResult<ExprNode>::Err(rb.error());
+                                akey_expr = std::make_unique<ExprNode>(std::move(ke.value()));
+                                am_computed = true;
+                            } else if (cur.kind == TokenKind::Ident) {
                                 akey = std::string(token_text(cur)); advance();
                             } else if (cur.kind == TokenKind::String) {
                                 akey = decode_string(token_text(cur)); advance();
@@ -1099,9 +1137,12 @@ struct Parser {
                             MethodKind mk = is_gen ? MethodKind::kGenerator : MethodKind::kAsyncMethod;
                             ObjectProperty prop;
                             prop.key = akey;
+                            prop.computed = am_computed;
+                            if (am_computed) prop.key_expr = std::move(akey_expr);
                             prop.method_kind = mk;
                             prop.value = std::make_unique<ExprNode>(ExprNode{AsyncFunctionExpression{
-                                std::optional<std::string>{akey}, std::move(params_am.value()),
+                                am_computed ? std::optional<std::string>{} : std::optional<std::string>{akey},
+                                std::move(params_am.value()),
                                 std::move(fn_rest_am), std::move(body_ptr), span(key_start, prop_end)}});
                             prop.range = span(key_start, prop_end);
                             props.push_back(std::move(prop));
@@ -1112,8 +1153,16 @@ struct Parser {
                         key = "async";
                         key_tok = async_tok;
                     } else {
-                        // 普通键解析（Ident / String / Number / 关键字）
-                        if (cur.kind == TokenKind::Ident) {
+                        // 普通键解析（Ident / String / Number / 关键字 / 计算键 [expr]）
+                        if (cur.kind == TokenKind::LBracket) {
+                            advance();  // 消费 [
+                            auto ke = parse_expr(1);
+                            if (!ke.ok()) return ParseResult<ExprNode>::Err(ke.error());
+                            auto rb = expect(TokenKind::RBracket);
+                            if (!rb.ok()) return ParseResult<ExprNode>::Err(rb.error());
+                            key_expr_ptr = std::make_unique<ExprNode>(std::move(ke.value()));
+                            is_computed = true;
+                        } else if (cur.kind == TokenKind::Ident) {
                             key = std::string(token_text(cur));
                             advance();
                         } else if (cur.kind == TokenKind::String) {
@@ -1140,11 +1189,13 @@ struct Parser {
                             uint32_t prop_end = range_end(expr_range(val.value()));
                             ObjectProperty prop;
                             prop.key = key;
+                            prop.computed = is_computed;
+                            if (is_computed) prop.key_expr = std::move(key_expr_ptr);
                             prop.value = std::make_unique<ExprNode>(std::move(val.value()));
                             prop.range = span(key_start, prop_end);
                             props.push_back(std::move(prop));
                         } else if (cur.kind == TokenKind::LParen) {
-                            // method shorthand: foo() {}
+                            // method shorthand: foo() {} or [expr]() {}
                             std::optional<std::string> fn_rest_m;
                             auto params_m = parse_function_params(fn_rest_m);
                             if (!params_m.ok()) return ParseResult<ExprNode>::Err(params_m.error());
@@ -1158,13 +1209,16 @@ struct Parser {
                                 std::move(body_m.value().first));
                             ObjectProperty prop;
                             prop.key = key;
+                            prop.computed = is_computed;
+                            if (is_computed) prop.key_expr = std::move(key_expr_ptr);
                             prop.method_kind = MethodKind::kMethod;
                             prop.value = std::make_unique<ExprNode>(ExprNode{FunctionExpression{
-                                std::optional<std::string>{key}, std::move(params_m.value()),
+                                is_computed ? std::optional<std::string>{} : std::optional<std::string>{key},
+                                std::move(params_m.value()),
                                 std::move(fn_rest_m), std::move(body_ptr), span(key_start, prop_end)}});
                             prop.range = span(key_start, prop_end);
                             props.push_back(std::move(prop));
-                        } else if (cur.kind == TokenKind::Eq) {
+                        } else if (!is_computed && cur.kind == TokenKind::Eq) {
                             // shorthand with default: { a = expr } (cover grammar for destructuring)
                             advance();  // 消费 =
                             auto def_val = parse_expr(1);
@@ -1179,13 +1233,17 @@ struct Parser {
                                 span(key_start, prop_end)}});
                             prop.range = span(key_start, prop_end);
                             props.push_back(std::move(prop));
-                        } else {
+                        } else if (!is_computed) {
                             // shorthand: { a } = { a: a }
                             ObjectProperty prop;
                             prop.key = key;
                             prop.value = std::make_unique<ExprNode>(ExprNode{Identifier{key, key_tok.range}});
                             prop.range = span(key_start, range_end(key_tok.range));
                             props.push_back(std::move(prop));
+                        } else {
+                            // computed key must be followed by : or (
+                            return ParseResult<ExprNode>::Err(
+                                make_parse_error(source, cur, "expected ':' or '(' after computed key"));
                         }
                         if (cur.kind == TokenKind::Comma) {
                             advance();  // 消费 ,
@@ -1858,11 +1916,20 @@ struct Parser {
                 break;
             }
 
-            // 解析 key
+            // 解析 key（支持 Ident / String / Number / 关键字 / 计算键 [expr]）
             std::string key;
             Token key_tok = cur;
             bool computed = false;
-            if (cur.kind == TokenKind::Ident) {
+            std::unique_ptr<ExprNode> key_expr_bp;
+            if (cur.kind == TokenKind::LBracket) {
+                advance();  // 消费 [
+                auto ke = parse_expr(1);
+                if (!ke.ok()) return ParseResult<PatternNode>::Err(ke.error());
+                auto rb = expect(TokenKind::RBracket);
+                if (!rb.ok()) return ParseResult<PatternNode>::Err(rb.error());
+                key_expr_bp = std::make_unique<ExprNode>(std::move(ke.value()));
+                computed = true;
+            } else if (cur.kind == TokenKind::Ident) {
                 key = std::string{token_text(cur)};
                 advance();
             } else if (cur.kind == TokenKind::String) {
@@ -1884,7 +1951,7 @@ struct Parser {
             std::optional<std::unique_ptr<ExprNode>> default_val;
 
             if (cur.kind == TokenKind::Colon) {
-                // key: pattern[= default]
+                // key: pattern[= default]  (必须有冒号，computed 键必须有冒号)
                 advance();  // 消费 :
                 auto vp_r = parse_binding_pattern();
                 if (!vp_r.ok()) return ParseResult<PatternNode>::Err(vp_r.error());
@@ -1895,7 +1962,7 @@ struct Parser {
                     if (!dv.ok()) return ParseResult<PatternNode>::Err(dv.error());
                     default_val = std::make_unique<ExprNode>(std::move(dv.value()));
                 }
-            } else {
+            } else if (!computed) {
                 // shorthand: {key} 或 {key = default}
                 value_pat = std::make_unique<PatternNode>(
                     PatternNode{IdentifierPattern{key, key_tok.range}});
@@ -1905,13 +1972,19 @@ struct Parser {
                     if (!dv.ok()) return ParseResult<PatternNode>::Err(dv.error());
                     default_val = std::make_unique<ExprNode>(std::move(dv.value()));
                 }
+            } else {
+                return ParseResult<PatternNode>::Err(
+                    make_parse_error(source, cur, "expected ':' after computed key in object pattern"));
             }
 
-            properties.push_back(ObjectPatternProperty{
-                std::move(key), computed,
-                std::move(value_pat),
-                std::move(default_val),
-                key_tok.range});
+            ObjectPatternProperty opp;
+            opp.key = std::move(key);
+            opp.computed = computed;
+            if (computed) opp.key_expr = std::move(key_expr_bp);
+            opp.value_pattern = std::move(value_pat);
+            opp.default_value = std::move(default_val);
+            opp.range = key_tok.range;
+            properties.push_back(std::move(opp));
 
             if (cur.kind == TokenKind::Comma) {
                 advance();
@@ -1987,8 +2060,9 @@ struct Parser {
         for (size_t i = 0; i < obj.properties.size(); ++i) {
             auto& prop = obj.properties[i];
 
-            // spread: ...rest  (key == "" sentinel, value is SpreadElement)
-            if (prop.key.empty() && std::holds_alternative<SpreadElement>(prop.value->v)) {
+            // spread: ...rest  (key == "" sentinel, value is SpreadElement, not computed)
+            if (!prop.computed && prop.key.empty() &&
+                std::holds_alternative<SpreadElement>(prop.value->v)) {
                 auto& sp = std::get<SpreadElement>(prop.value->v);
                 auto rest_r = convert_expr_to_pattern(*sp.argument);
                 if (!rest_r.ok()) return rest_r;
@@ -2013,11 +2087,14 @@ struct Parser {
                 if (!vpr.ok()) return vpr;
                 val_pat = std::make_unique<PatternNode>(std::move(vpr.value()));
             }
-            properties.push_back(ObjectPatternProperty{
-                prop.key, false,
-                std::move(val_pat),
-                std::move(default_val),
-                prop.range});
+            ObjectPatternProperty opp;
+            opp.key = prop.key;
+            opp.computed = prop.computed;
+            if (prop.computed) opp.key_expr = std::move(prop.key_expr);
+            opp.value_pattern = std::move(val_pat);
+            opp.default_value = std::move(default_val);
+            opp.range = prop.range;
+            properties.push_back(std::move(opp));
         }
         return ParseResult<PatternNode>::Ok(
             PatternNode{ObjectPattern{std::move(properties), std::move(rest_pat), obj.range}});

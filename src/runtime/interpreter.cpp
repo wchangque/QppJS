@@ -4076,7 +4076,25 @@ StmtResult Interpreter::bind_pattern(const PatternNode& pattern, Value rhs,
             // Collect named keys for rest computation
             std::vector<std::string> named_keys;
             for (const auto& prop : op.properties) {
-                named_keys.push_back(prop.key);
+                // 计算键：求值 key_expr 获得实际键
+                std::string resolved_key;
+                bool key_is_symbol = false;
+                uint64_t sym_id = 0;
+                if (prop.computed && prop.key_expr != nullptr) {
+                    auto key_r = eval_expr(*prop.key_expr);
+                    if (!key_r.is_ok()) return StmtResult::err(key_r.error());
+                    Value key_val = key_r.value();
+                    if (key_val.is_symbol()) {
+                        key_is_symbol = true;
+                        sym_id = key_val.as_symbol_id();
+                    } else {
+                        resolved_key = to_string_val(key_val);
+                    }
+                } else {
+                    resolved_key = prop.key;
+                }
+                if (!key_is_symbol) named_keys.push_back(resolved_key);
+
                 // Get value from rhs
                 Value val = Value::undefined();
                 if (rhs.is_object()) {
@@ -4086,7 +4104,23 @@ StmtResult Interpreter::bind_pattern(const PatternNode& pattern, Value rhs,
                         k == ObjectKind::kRegExp || k == ObjectKind::kStringObject ||
                         k == ObjectKind::kBooleanObject) {
                         auto* obj = static_cast<JSObject*>(raw);
-                        val = obj->get_property(prop.key);
+                        if (key_is_symbol) {
+                            const JSObject::SymbolPropertyEntry* sym_entry = obj->find_symbol_entry(sym_id);
+                            if (sym_entry != nullptr) {
+                                if (sym_entry->is_accessor) {
+                                    if (!sym_entry->getter.is_undefined() && !sym_entry->getter.is_null()) {
+                                        Value getter_copy = sym_entry->getter;
+                                        auto gres = call_function_val(getter_copy, rhs, {});
+                                        if (!gres.is_ok()) return StmtResult::err(gres.error());
+                                        val = gres.value();
+                                    }
+                                } else {
+                                    val = sym_entry->value;
+                                }
+                            }
+                        } else {
+                            val = obj->get_property(resolved_key);
+                        }
                     }
                 }
                 // Default value: if val === undefined
@@ -5354,6 +5388,84 @@ EvalResult Interpreter::eval_object_expr(const ObjectExpression& expr) {
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
 
+        // 计算键：先求值 key_expr，ToPropertyKey，再处理属性
+        if (prop.computed && prop.key_expr != nullptr) {
+            auto key_r = eval_expr(*prop.key_expr);
+            if (!key_r.is_ok()) return key_r;
+            Value key_val = key_r.value();
+
+            // Symbol 键透传，其他转 string
+            bool key_is_symbol = key_val.is_symbol();
+            uint64_t sym_id = 0;
+            std::string str_key;
+            if (key_is_symbol) {
+                sym_id = key_val.as_symbol_id();
+            } else {
+                str_key = to_string_val(key_val);
+            }
+
+            if (prop.method_kind == MethodKind::kData) {
+                auto val = eval_expr(*prop.value);
+                if (!val.is_ok()) return val;
+                if (key_is_symbol) obj->set_property_by_symbol(sym_id, val.value());
+                else obj->set_property(str_key, val.value());
+            } else if (prop.method_kind == MethodKind::kMethod ||
+                       prop.method_kind == MethodKind::kGenerator ||
+                       prop.method_kind == MethodKind::kAsyncMethod) {
+                auto fn_res = eval_expr(*prop.value);
+                if (!fn_res.is_ok()) return fn_res;
+                Value fn_val = fn_res.value();
+                if (fn_val.is_object() && fn_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                    auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
+                    fn->set_is_method(true);
+                    if (key_is_symbol) {
+                        const std::string* desc = symbol_table_.GetDescription(sym_id);
+                        std::string name = "[" + (desc ? *desc : "") + "]";
+                        fn->set_property("name", Value::string(name));
+                    } else {
+                        fn->set_property("name", Value::string(str_key));
+                    }
+                }
+                if (key_is_symbol) obj->set_property_by_symbol(sym_id, fn_val);
+                else obj->set_property(str_key, fn_val);
+            } else if (prop.method_kind == MethodKind::kGetter) {
+                auto fn_res = eval_expr(*prop.value);
+                if (!fn_res.is_ok()) return fn_res;
+                Value fn_val = fn_res.value();
+                if (fn_val.is_object() && fn_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                    auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
+                    fn->set_is_method(true);
+                    fn->set_property("name", Value::string("get " + str_key));
+                }
+                PropDesc desc;
+                desc.getter = fn_val;
+                desc.enumerable = true;
+                desc.configurable = true;
+                EvalResult res = key_is_symbol
+                    ? obj->define_property_by_symbol(sym_id, desc)
+                    : obj->define_property(str_key, desc);
+                if (!res.is_ok()) return res;
+            } else if (prop.method_kind == MethodKind::kSetter) {
+                auto fn_res = eval_expr(*prop.value);
+                if (!fn_res.is_ok()) return fn_res;
+                Value fn_val = fn_res.value();
+                if (fn_val.is_object() && fn_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                    auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
+                    fn->set_is_method(true);
+                    fn->set_property("name", Value::string("set " + str_key));
+                }
+                PropDesc desc;
+                desc.setter = fn_val;
+                desc.enumerable = true;
+                desc.configurable = true;
+                EvalResult res = key_is_symbol
+                    ? obj->define_property_by_symbol(sym_id, desc)
+                    : obj->define_property(str_key, desc);
+                if (!res.is_ok()) return res;
+            }
+            continue;
+        }
+
         if (prop.method_kind == MethodKind::kData) {
             auto val = eval_expr(*prop.value);
             if (!val.is_ok()) return val;
@@ -5473,7 +5585,17 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
         if (raw_for_sym->object_kind() == ObjectKind::kOrdinary ||
             raw_for_sym->object_kind() == ObjectKind::kArray) {
             auto* js_obj_sym = static_cast<JSObject*>(raw_for_sym);
-            return EvalResult::ok(js_obj_sym->get_property_by_symbol(key_result.value().as_symbol_id()));
+            uint64_t sym_id = key_result.value().as_symbol_id();
+            const JSObject::SymbolPropertyEntry* sym_entry = js_obj_sym->find_symbol_entry(sym_id);
+            if (sym_entry != nullptr && sym_entry->is_accessor) {
+                if (sym_entry->getter.is_undefined() || sym_entry->getter.is_null()) {
+                    return EvalResult::ok(Value::undefined());
+                }
+                Value getter_copy = sym_entry->getter;
+                return call_function_val(getter_copy, obj_val, {});
+            }
+            if (sym_entry != nullptr) return EvalResult::ok(sym_entry->value);
+            return EvalResult::ok(Value::undefined());
         }
         return EvalResult::ok(Value::undefined());
     }
@@ -5585,7 +5707,18 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
         if (raw_sym->object_kind() == ObjectKind::kOrdinary ||
             raw_sym->object_kind() == ObjectKind::kArray) {
             auto* js_obj_sym = static_cast<JSObject*>(raw_sym);
-            js_obj_sym->set_property_by_symbol(key_result.value().as_symbol_id(), val_result2.value());
+            uint64_t sym_id = key_result.value().as_symbol_id();
+            const JSObject::SymbolPropertyEntry* sym_entry = js_obj_sym->find_symbol_entry(sym_id);
+            if (sym_entry != nullptr && sym_entry->is_accessor) {
+                if (!sym_entry->setter.is_undefined() && !sym_entry->setter.is_null()) {
+                    Value setter_copy = sym_entry->setter;
+                    std::vector<Value> setter_args = {val_result2.value()};
+                    auto sres = call_function_val(setter_copy, obj_val, setter_args);
+                    if (!sres.is_ok()) return sres;
+                }
+                return EvalResult::ok(val_result2.value());
+            }
+            js_obj_sym->set_property_by_symbol(sym_id, val_result2.value());
         }
         return EvalResult::ok(val_result2.value());
     }
