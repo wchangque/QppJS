@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 3819/3819 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 3919/3919 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-05-26 |
-| 下一步 | 继续提升 test262 通过率（void 运算符、comma 运算符等） |
+| 下一步 | 继续提升 test262 通过率（逗号运算符、void 等） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
@@ -22,6 +22,9 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **位运算符 Review 必修修复 M1/M2/M3**（2026-05-26）：M1：`Object.prototype.hasOwnProperty` 对 kFunction 对象改为 `static_cast<JSFunction*>(raw)->has_property(key)`（Interpreter+VM 双侧）；M2：`Object.prototype.isPrototypeOf` 对 kFunction `args[0]` 改为 `[this]` 捕获，检查 `function_prototype_` / `object_prototype_`（双侧）；M3：`Number.MIN_VALUE` 从 `numeric_limits<double>::min()` 改为 `denorm_min()`（双侧）。3919/3919 通过（coverage），0 LSan 泄漏。
+- [x] **位运算符 `&` `|` `^` `~` `<<` `>>` `>>>` 及复合赋值**（2026-05-26）：新增 9 个 token（LShift/RShift/URShift/AmpEq/PipeEq/CaretEq/LShiftEq/RShiftEq/URShiftEq）；`UnaryOp::BitNot`、`BinaryOp::{BitAnd,BitOr,BitXor,Shl,Sar,Shr}`、`AssignOp::{BitAndAssign,BitOrAssign,BitXorAssign,ShlAssign,SarAssign,ShrAssign}`；6 个新 opcode（kBitAnd/kBitOr/kBitXor/kShl/kSar/kShr）；`include/qppjs/runtime/number_utils.h`（内联 ToInt32/ToUint32，含小整数快路径）；lbp 전역 조정（BitOR=7,BitXOR=8,BitAND=9,Shift=14，已有比较/算术 lbp +3）；修复 kBitNot 使用 `to_int32_bits` 替代 `static_cast`；Interpreter+VM 双路径对称实现；更新 4 个 lexer_test 已知遗留测试；新增 `tests/unit/bitwise_test.cpp`（BW-01～BW-30 × Interp+VM = 60 个测试）；附带修复：Number 静态属性（MAX_VALUE/MIN_VALUE 等）、Object.prototype 方法（valueOf/toString/hasOwnProperty/isPrototypeOf）、JSFunction in 运算符 kFunction RHS 安全处理、for-in Object.prototype 非枚举性。3879→3919/3919 通过（coverage），0 LSan 泄漏。
 
 - [x] **`typeof` 运算符专属测试 + `typeof this` Interpreter 修复**（2026-05-26）：typeof 运算符原已实现（kTypeof + kTypeofVar 双指令，interpreter + VM 双路径），本轮补充：(1) 新建 `tests/unit/typeof_test.cpp`（60 个测试，TY-01~TY-30 × Interp+VM，覆盖所有值类型映射、不可解析引用豁免、TDZ 行为、包装对象等）；(2) 修复 Interpreter `eval_unary` typeof this 路径错误（添加 `id.name != "this"` 守卫，使 `typeof this` 通过 eval_expr 求值而非错误返回 "undefined"）；(3) 记录 VM TDZ 实现差异（kDefLet 内联导致 `typeof x` 在 x 声明前返回 "undefined" 而非 ReferenceError）和 VM new Number() 行为差异。3819/3819 通过（coverage）。
 

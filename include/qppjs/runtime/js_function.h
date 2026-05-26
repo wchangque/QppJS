@@ -83,6 +83,7 @@ public:
     // Static properties on the function object itself (e.g., Object.keys, Array.isArray).
     void set_property(const std::string& key, Value value);
     Value get_property(const std::string& key) const;
+    bool has_property(const std::string& key) const;
     void clear_own_properties();
 
 private:

@@ -508,6 +508,23 @@ struct Parser {
     // ---- 表达式解析（Pratt Parser）----
 
     // 返回操作符的左绑定力（0 表示非中缀操作符）
+    // 优先级（低→高）：
+    //   2: 赋值（=, +=, ... &=, |=, ^=, <<=, >>=, >>>=）
+    //   3: =>（箭头）
+    //   4: ?:（三元）、||
+    //   6: &&
+    //   7: | (BitOR)
+    //   8: ^ (BitXOR)
+    //   9: & (BitAND)
+    //  11: == != === !==
+    //  12: in（contextual）
+    //  13: instanceof < > <= >=
+    //  14: << >> >>>
+    //  15: + -
+    //  17: * / %
+    //  19: 函数调用 (
+    //  20: 后缀 ++ --
+    //  21: 成员访问 . [
     static int lbp(TokenKind kind) {
         switch (kind) {
             case TokenKind::Arrow:
@@ -518,6 +535,12 @@ struct Parser {
             case TokenKind::StarEq:
             case TokenKind::SlashEq:
             case TokenKind::PercentEq:
+            case TokenKind::AmpEq:
+            case TokenKind::PipeEq:
+            case TokenKind::CaretEq:
+            case TokenKind::LShiftEq:
+            case TokenKind::RShiftEq:
+            case TokenKind::URShiftEq:
                 return 2;
             case TokenKind::Question:
                 return 4;
@@ -525,32 +548,42 @@ struct Parser {
                 return 4;
             case TokenKind::AmpAmp:
                 return 6;
+            case TokenKind::Pipe:
+                return 7;
+            case TokenKind::Caret:
+                return 8;
+            case TokenKind::Amp:
+                return 9;
             case TokenKind::EqEq:
             case TokenKind::BangEq:
             case TokenKind::EqEqEq:
             case TokenKind::BangEqEq:
-                return 8;
+                return 11;
             case TokenKind::KwInstanceof:
             case TokenKind::Lt:
             case TokenKind::Gt:
             case TokenKind::LtEq:
             case TokenKind::GtEq:
-                return 10;
+                return 13;
+            case TokenKind::LShift:
+            case TokenKind::RShift:
+            case TokenKind::URShift:
+                return 14;
             case TokenKind::Plus:
             case TokenKind::Minus:
-                return 12;
-            case TokenKind::PlusPlus:
-            case TokenKind::MinusMinus:
-                return 17;
+                return 15;
             case TokenKind::Star:
             case TokenKind::Slash:
             case TokenKind::Percent:
-                return 14;
+                return 17;
             case TokenKind::LParen:
-                return 16;
+                return 19;
+            case TokenKind::PlusPlus:
+            case TokenKind::MinusMinus:
+                return 20;
             case TokenKind::Dot:
             case TokenKind::LBracket:
-                return 18;
+                return 21;
             default:
                 return 0;
         }
@@ -606,7 +639,7 @@ struct Parser {
                     // 只有当后续不是分号/}时才解析为 await 表达式
                     if (cur.kind != TokenKind::Semicolon && cur.kind != TokenKind::RBrace &&
                         cur.kind != TokenKind::Eof) {
-                        auto arg = parse_expr(14);  // 高优先级，不消费逗号/赋值
+                        auto arg = parse_expr(18);  // 高优先级，不消费算术运算符
                         if (!arg.ok()) return arg;
                         uint32_t end = range_end(expr_range(arg.value()));
                         return ParseResult<ExprNode>::Ok(ExprNode{AwaitExpression{
@@ -757,42 +790,49 @@ struct Parser {
             }
             // 一元前缀
             case TokenKind::Minus: {
-                auto operand = parse_expr(15);
+                auto operand = parse_expr(18);
                 if (!operand.ok()) return operand;
                 auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
                 return ParseResult<ExprNode>::Ok(ExprNode{
                         UnaryExpression{UnaryOp::Minus, std::make_unique<ExprNode>(std::move(operand.value())), r}});
             }
             case TokenKind::Plus: {
-                auto operand = parse_expr(15);
+                auto operand = parse_expr(18);
                 if (!operand.ok()) return operand;
                 auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
                 return ParseResult<ExprNode>::Ok(ExprNode{
                         UnaryExpression{UnaryOp::Plus, std::make_unique<ExprNode>(std::move(operand.value())), r}});
             }
             case TokenKind::Bang: {
-                auto operand = parse_expr(15);
+                auto operand = parse_expr(18);
                 if (!operand.ok()) return operand;
                 auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
                 return ParseResult<ExprNode>::Ok(ExprNode{
                         UnaryExpression{UnaryOp::Bang, std::make_unique<ExprNode>(std::move(operand.value())), r}});
             }
+            case TokenKind::Tilde: {
+                auto operand = parse_expr(18);
+                if (!operand.ok()) return operand;
+                auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
+                return ParseResult<ExprNode>::Ok(ExprNode{
+                        UnaryExpression{UnaryOp::BitNot, std::make_unique<ExprNode>(std::move(operand.value())), r}});
+            }
             case TokenKind::KwTypeof: {
-                auto operand = parse_expr(15);
+                auto operand = parse_expr(18);
                 if (!operand.ok()) return operand;
                 auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
                 return ParseResult<ExprNode>::Ok(ExprNode{
                         UnaryExpression{UnaryOp::Typeof, std::make_unique<ExprNode>(std::move(operand.value())), r}});
             }
             case TokenKind::KwVoid: {
-                auto operand = parse_expr(15);
+                auto operand = parse_expr(18);
                 if (!operand.ok()) return operand;
                 auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
                 return ParseResult<ExprNode>::Ok(ExprNode{
                         UnaryExpression{UnaryOp::Void, std::make_unique<ExprNode>(std::move(operand.value())), r}});
             }
             case TokenKind::KwDelete: {
-                auto operand = parse_expr(15);
+                auto operand = parse_expr(18);
                 if (!operand.ok()) return operand;
                 auto r = span(tok.range.offset, range_end(expr_range(operand.value())));
                 return ParseResult<ExprNode>::Ok(ExprNode{
@@ -802,7 +842,7 @@ struct Parser {
             case TokenKind::PlusPlus:
             case TokenKind::MinusMinus: {
                 UpdateOp uop = (tok.kind == TokenKind::PlusPlus) ? UpdateOp::Inc : UpdateOp::Dec;
-                auto operand = parse_expr(15);
+                auto operand = parse_expr(18);
                 if (!operand.ok()) return operand;
                 // operand must be a valid assignment target (Identifier or MemberExpression)
                 if (!std::holds_alternative<Identifier>(operand.value().v) &&
@@ -820,7 +860,7 @@ struct Parser {
                 uint32_t new_start = tok.range.offset;
                 // Parse callee at higher precedence (member access allowed, but not call)
                 // Use lbp(Dot)=18 as min_bp to allow member access but stop before call
-                auto callee = parse_expr(17);  // stop before LParen (lbp=16) but allow Dot/LBracket (lbp=18)
+                auto callee = parse_expr(20);  // stop before LParen (lbp=19) and ++/--(lbp=20), allow Dot/LBracket (lbp=21)
                 if (!callee.ok()) return callee;
                 std::vector<std::unique_ptr<ExprNode>> args;
                 if (cur.kind == TokenKind::LParen) {
@@ -1206,7 +1246,9 @@ struct Parser {
 
         // 赋值：右结合，检查左侧是 Identifier 或 MemberExpression 或解构模式
         if (kind == TokenKind::Eq || kind == TokenKind::PlusEq || kind == TokenKind::MinusEq ||
-            kind == TokenKind::StarEq || kind == TokenKind::SlashEq || kind == TokenKind::PercentEq) {
+            kind == TokenKind::StarEq || kind == TokenKind::SlashEq || kind == TokenKind::PercentEq ||
+            kind == TokenKind::AmpEq || kind == TokenKind::PipeEq || kind == TokenKind::CaretEq ||
+            kind == TokenKind::LShiftEq || kind == TokenKind::RShiftEq || kind == TokenKind::URShiftEq) {
             // 解构赋值模式：左侧为 ArrayExpression 或 ObjectExpression，且 op 为 =
             if (kind == TokenKind::Eq &&
                 (std::holds_alternative<ArrayExpression>(left.v) ||
@@ -1246,6 +1288,24 @@ struct Parser {
                         break;
                     case TokenKind::PercentEq:
                         aop = AssignOp::ModAssign;
+                        break;
+                    case TokenKind::AmpEq:
+                        aop = AssignOp::BitAndAssign;
+                        break;
+                    case TokenKind::PipeEq:
+                        aop = AssignOp::BitOrAssign;
+                        break;
+                    case TokenKind::CaretEq:
+                        aop = AssignOp::BitXorAssign;
+                        break;
+                    case TokenKind::LShiftEq:
+                        aop = AssignOp::ShlAssign;
+                        break;
+                    case TokenKind::RShiftEq:
+                        aop = AssignOp::SarAssign;
+                        break;
+                    case TokenKind::URShiftEq:
+                        aop = AssignOp::ShrAssign;
                         break;
                     default:
                         aop = AssignOp::Assign;
@@ -1309,7 +1369,7 @@ struct Parser {
 
         // 'in' 运算符（contextual keyword，TokenKind::Ident，text=="in"）
         if (kind == TokenKind::Ident && token_text(op_tok) == "in") {
-            auto right = parse_expr(9);
+            auto right = parse_expr(12);
             if (!right.ok()) return right;
             auto bin_r = span(expr_range(left).offset, range_end(expr_range(right.value())));
             return ParseResult<ExprNode>::Ok(
@@ -1365,6 +1425,24 @@ struct Parser {
             case TokenKind::KwInstanceof:
                 bop = BinaryOp::Instanceof;
                 break;
+            case TokenKind::Amp:
+                bop = BinaryOp::BitAnd;
+                break;
+            case TokenKind::Pipe:
+                bop = BinaryOp::BitOr;
+                break;
+            case TokenKind::Caret:
+                bop = BinaryOp::BitXor;
+                break;
+            case TokenKind::LShift:
+                bop = BinaryOp::Shl;
+                break;
+            case TokenKind::RShift:
+                bop = BinaryOp::Sar;
+                break;
+            case TokenKind::URShift:
+                bop = BinaryOp::Shr;
+                break;
             default:
                 return ParseResult<ExprNode>::Err(make_parse_error(source, op_tok, "unknown binary operator"));
         }
@@ -1385,7 +1463,7 @@ struct Parser {
         while (true) {
             int bp = lbp(cur.kind);
             // Contextual 'in' operator: lbp=9, suppressed inside for-init via no_in_
-            if (bp == 0 && !no_in_ && is_in_token()) bp = 9;
+            if (bp == 0 && !no_in_ && is_in_token()) bp = 12;
             if (bp <= min_bp) break;
             Token op_tok = cur;
             // got_lf at this point is "before the operator". Save it for led()
@@ -2900,7 +2978,7 @@ struct Parser {
                     if (!left2.ok()) return ParseResult<StmtNode>::Err(left2.error());
                     while (true) {
                         int bp = lbp(cur.kind);
-                        if (bp == 0 && !no_in_ && is_in_token()) bp = 9;
+                        if (bp == 0 && !no_in_ && is_in_token()) bp = 12;
                         if (bp <= 0) break;
                         Token op_tok3 = cur;
                         advance();
@@ -2942,7 +3020,7 @@ struct Parser {
                 // 继续 Pratt loop
                 while (true) {
                     int bp = lbp(cur.kind);
-                    if (bp == 0 && !no_in_ && is_in_token()) bp = 9;
+                    if (bp == 0 && !no_in_ && is_in_token()) bp = 12;
                     if (bp <= 0) break;
                     Token op_tok2 = cur;
                     advance();

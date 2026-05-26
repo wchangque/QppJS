@@ -1020,40 +1020,35 @@ TEST(LexerTest, StringUnicodeEscapeNonHexIsInvalid) {
 // --- 操作符边界（未定义操作符的实际切分行为）---
 
 TEST(LexerTest, OperatorLtLtSplitsToLtLt) {
-    // '<<' 当前未定义为单一 token，应切分为 Lt + Lt
+    // '<<' 现在是单一 LShift token
     auto tokens = collect_tokens("<<");
-    ASSERT_EQ(tokens.size(), 3u);
-    EXPECT_EQ(tokens[0].kind, TokenKind::Lt);
-    EXPECT_EQ(tokens[1].kind, TokenKind::Lt);
-    EXPECT_EQ(tokens[2].kind, TokenKind::Eof);
+    ASSERT_EQ(tokens.size(), 2u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::LShift);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Eof);
 }
 
 TEST(LexerTest, OperatorGtGtSplitsToGtGt) {
-    // '>>' 当前未定义为单一 token，应切分为 Gt + Gt
+    // '>>' 现在是单一 RShift token
     auto tokens = collect_tokens(">>");
-    ASSERT_EQ(tokens.size(), 3u);
-    EXPECT_EQ(tokens[0].kind, TokenKind::Gt);
-    EXPECT_EQ(tokens[1].kind, TokenKind::Gt);
+    ASSERT_EQ(tokens.size(), 2u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::RShift);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Eof);
 }
 
 TEST(LexerTest, OperatorLtLtEqSplitsToLtLtEq) {
-    // '<<=' 当前实现：'<' 只能匹配 '<' 或 '<='，
-    // 所以 '<<=' 应为 Lt + LtEq
+    // '<<=' 现在是单一 LShiftEq token
     auto tokens = collect_tokens("<<=");
-    ASSERT_EQ(tokens.size(), 3u);
-    EXPECT_EQ(tokens[0].kind, TokenKind::Lt);
-    EXPECT_EQ(tokens[1].kind, TokenKind::LtEq);
-    EXPECT_EQ(tokens[2].kind, TokenKind::Eof);
+    ASSERT_EQ(tokens.size(), 2u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::LShiftEq);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Eof);
 }
 
 TEST(LexerTest, OperatorGtGtEqSplitsToGtGtEq) {
-    // '>>=' 当前实现：'>' 只能匹配 '>' 或 '>='，
-    // 所以 '>>=' 应为 Gt + GtEq
+    // '>>=' 现在是单一 RShiftEq token
     auto tokens = collect_tokens(">>=");
-    ASSERT_EQ(tokens.size(), 3u);
-    EXPECT_EQ(tokens[0].kind, TokenKind::Gt);
-    EXPECT_EQ(tokens[1].kind, TokenKind::GtEq);
-    EXPECT_EQ(tokens[2].kind, TokenKind::Eof);
+    ASSERT_EQ(tokens.size(), 2u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::RShiftEq);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Eof);
 }
 
 TEST(LexerTest, OperatorStarStarSplitsToStarStar) {

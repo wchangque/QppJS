@@ -51,6 +51,13 @@ namespace qppjs {
     X(Pos, 0)                           \
     X(BitNot, 0)                        \
     X(Not, 0)                           \
+    /* Bitwise */                       \
+    X(BitAnd, 0)                        \
+    X(BitOr, 0)                         \
+    X(BitXor, 0)                        \
+    X(Shl, 0)                           \
+    X(Sar, 0)                           \
+    X(Shr, 0)                           \
     /* Comparison */                    \
     X(Lt, 0)                            \
     X(LtEq, 0)                          \

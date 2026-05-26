@@ -40,6 +40,8 @@ const char* unary_op_str(UnaryOp op) {
             return "void";
         case UnaryOp::Delete:
             return "delete";
+        case UnaryOp::BitNot:
+            return "~";
     }
     return "?";
 }
@@ -76,6 +78,18 @@ const char* binary_op_str(BinaryOp op) {
             return "instanceof";
         case BinaryOp::In:
             return "in";
+        case BinaryOp::BitAnd:
+            return "&";
+        case BinaryOp::BitOr:
+            return "|";
+        case BinaryOp::BitXor:
+            return "^";
+        case BinaryOp::Shl:
+            return "<<";
+        case BinaryOp::Sar:
+            return ">>";
+        case BinaryOp::Shr:
+            return ">>>";
     }
     return "?";
 }
@@ -104,6 +118,18 @@ const char* assign_op_str(AssignOp op) {
             return "/=";
         case AssignOp::ModAssign:
             return "%=";
+        case AssignOp::BitAndAssign:
+            return "&=";
+        case AssignOp::BitOrAssign:
+            return "|=";
+        case AssignOp::BitXorAssign:
+            return "^=";
+        case AssignOp::ShlAssign:
+            return "<<=";
+        case AssignOp::SarAssign:
+            return ">>=";
+        case AssignOp::ShrAssign:
+            return ">>>=";
     }
     return "?";
 }

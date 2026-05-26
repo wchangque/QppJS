@@ -4,6 +4,23 @@
 
 ## 1. 已完成任务
 
+- [x] **位运算符 Review 必修修复 M1/M2/M3**（2026-05-26）：
+  - **M1 hasOwnProperty kFunction 修复**：`interpreter.cpp` + `vm.cpp` 的 `Object.prototype.hasOwnProperty` lambda 删除 `raw->object_kind() == ObjectKind::kFunction` 早返回，新增 kFunction 分支 `static_cast<JSFunction*>(raw)->has_property(key)`，使 `Number.hasOwnProperty("MAX_VALUE")` 等正确返回 `true`。
+  - **M2 isPrototypeOf kFunction 修复**：`interpreter.cpp` + `vm.cpp` 的 `Object.prototype.isPrototypeOf` lambda 改为 `[this]` 捕获，`args[0]` 为 kFunction 时检查 `needle == function_prototype_.get()` 或 `needle == object_prototype_.get()`，使 `Object.prototype.isPrototypeOf(Number.isNaN)` 正确返回 `true`。
+  - **M3 Number.MIN_VALUE 修复**：`interpreter.cpp:2833` 和 `vm.cpp:2800` 的 `std::numeric_limits<double>::min()`（= 2.22e-308，最小正规化 double）改为 `denorm_min()`（= 5e-324，JS 规范要求的最小正值）。
+  - **测试**：3919/3919 通过（coverage），0 LSan 泄漏。
+
+- [x] **位运算符 `&` `|` `^` `~` `<<` `>>` `>>>` 及复合赋值**（2026-05-26）：
+  - **词法**：新增 9 个 token（LShift/RShift/URShift/AmpEq/PipeEq/CaretEq/LShiftEq/RShiftEq/URShiftEq）；lexer.cpp `&`/`|`/`^`/`<`/`>` 各 case 扩展最长匹配（`>>=`/`>>>=`/`<<=` 均正确扫描）。
+  - **AST**：`UnaryOp::BitNot`；`BinaryOp::{BitAnd,BitOr,BitXor,Shl,Sar,Shr}`；`AssignOp::{BitAndAssign,BitOrAssign,BitXorAssign,ShlAssign,SarAssign,ShrAssign}`。
+  - **Opcode**：6 个新 opcode（kBitAnd/kBitOr/kBitXor/kShl/kSar/kShr），均 0 字节操作数。
+  - **ToInt32/ToUint32**：新建 `include/qppjs/runtime/number_utils.h`，提供内联 `to_int32_bits(double)` / `to_uint32_bits(double)`（含小整数快路径）；kBitNot 同步修复使用 `to_int32_bits` 替代直接 `static_cast`。
+  - **lbp 全局调整**：插入 BitOR(7)/BitXOR(8)/BitAND(9)/Shift(14) 四个新优先级；已有 EqEq(8→11)、Instanceof/Lt/Gt(10→13)、Plus/Minus(12→15)、Star/Slash/Percent(14→17)、LParen(16→19)、PlusPlus/MinusMinus(17→20)、Dot/LBracket(18→21) 统一上移 +3；一元前缀 `parse_expr(15)→18`，await `parse_expr(14)→18`，new callee `parse_expr(17)→20`；contextual `in` lbp 9→12。
+  - **Interpreter 双路径**：`eval_unary` 添加 BitNot；`eval_binary` 添加 6 个位运算 case；`eval_assignment` 添加 6 个复合赋值 case。所有路径使用 `to_int32_bits`/`to_uint32_bits`，Shr 用 uint32 路径。
+  - **VM/Compiler 双路径**：`compile_unary` 添加 UnaryOp::BitNot→kBitNot；`compile_binary` 添加 6 个 BinaryOp case；`compile_assignment` 添加 6 个 AssignOp case；vm.cpp 添加 6 个 opcode handler，对称实现。
+  - **ast_dump**：`unary_op_str`/`binary_op_str`/`assign_op_str` 补全新枚举值字符串。
+  - **测试**：更新 4 个 lexer_test（原记录 `<<`/`>>` 切分行为的"待实现"测试，更新为正确的单 token 期望）；新建 `tests/unit/bitwise_test.cpp`（BW-01~BW-30 × Interp+VM = 60 个测试，覆盖 BitNot/BitAnd/BitOr/BitXor/Shl/Sar/Shr/全部复合赋值/优先级验证/ToInt32 边界/float 截断）。3879/3879 通过（coverage），3817/3817 通过（run_ut ASAN），0 LSan 泄漏。
+
 - [x] **`typeof` 运算符专属测试 + `typeof this` Interpreter 修复**（2026-05-26）：
   - **背景**：typeof 原已实现（`kTypeof`(0) + `kTypeofVar`(2) 双指令；compiler.cpp 编译期分路；vm.cpp + interpreter.cpp 双路径）。本轮仅补测试和修复已知 Bug。
   - **Bug M1 修复**：`src/runtime/interpreter.cpp` `eval_unary` typeof 路径（约第 4572 行）对所有 Identifier（含 "this"）执行 `current_env_->lookup`，`lookup("this")` 返回 nullptr → 返回 "undefined"。修复为将 `if (id.name == "undefined") return "undefined"` 冗余分支删除，改为 `if (id.name != "this")` 守卫，使 `typeof this` 落入下方的 `eval_expr` 路径，正确求值 `current_this_`。VM 路径不受影响（compiler.cpp 第 984 行已排除 "this"）。

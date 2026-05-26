@@ -21,11 +21,17 @@ overloaded(Ts...) -> overloaded<Ts...>;
 
 // ---- 枚举 ----
 
-enum class UnaryOp { Minus, Plus, Bang, Typeof, Void, Delete };
+enum class UnaryOp { Minus, Plus, Bang, Typeof, Void, Delete, BitNot };
 enum class UpdateOp { Inc, Dec };
-enum class BinaryOp { Add, Sub, Mul, Div, Mod, Lt, Gt, LtEq, GtEq, EqEq, NotEq, EqEqEq, NotEqEq, Instanceof, In };
+enum class BinaryOp {
+    Add, Sub, Mul, Div, Mod, Lt, Gt, LtEq, GtEq, EqEq, NotEq, EqEqEq, NotEqEq, Instanceof, In,
+    BitAnd, BitOr, BitXor, Shl, Sar, Shr
+};
 enum class LogicalOp { And, Or };
-enum class AssignOp { Assign, AddAssign, SubAssign, MulAssign, DivAssign, ModAssign };
+enum class AssignOp {
+    Assign, AddAssign, SubAssign, MulAssign, DivAssign, ModAssign,
+    BitAndAssign, BitOrAssign, BitXorAssign, ShlAssign, SarAssign, ShrAssign
+};
 enum class VarKind { Var, Let, Const };
 
 // ---- 前向声明 ----

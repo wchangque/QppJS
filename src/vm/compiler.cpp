@@ -1022,6 +1022,10 @@ void Compiler::compile_unary(const UnaryExpression& expr) {
             emit(Opcode::kLoadTrue);
         }
         break;
+    case UnaryOp::BitNot:
+        compile_expr(*expr.operand);
+        emit(Opcode::kBitNot);
+        break;
     }
 }
 
@@ -1044,6 +1048,12 @@ void Compiler::compile_binary(const BinaryExpression& expr) {
     case BinaryOp::NotEqEq:   emit(Opcode::kStrictNEq); break;
     case BinaryOp::Instanceof: emit(Opcode::kInstanceof); break;
     case BinaryOp::In:         emit(Opcode::kIn);         break;
+    case BinaryOp::BitAnd:     emit(Opcode::kBitAnd);     break;
+    case BinaryOp::BitOr:      emit(Opcode::kBitOr);      break;
+    case BinaryOp::BitXor:     emit(Opcode::kBitXor);     break;
+    case BinaryOp::Shl:        emit(Opcode::kShl);        break;
+    case BinaryOp::Sar:        emit(Opcode::kSar);        break;
+    case BinaryOp::Shr:        emit(Opcode::kShr);        break;
     }
 }
 
@@ -1085,11 +1095,17 @@ void Compiler::compile_assignment(const AssignmentExpression& expr) {
         emit_u16(idx);
         compile_expr(*expr.value);
         switch (expr.op) {
-        case AssignOp::AddAssign: emit(Opcode::kAdd); break;
-        case AssignOp::SubAssign: emit(Opcode::kSub); break;
-        case AssignOp::MulAssign: emit(Opcode::kMul); break;
-        case AssignOp::DivAssign: emit(Opcode::kDiv); break;
-        case AssignOp::ModAssign: emit(Opcode::kMod); break;
+        case AssignOp::AddAssign:     emit(Opcode::kAdd);    break;
+        case AssignOp::SubAssign:     emit(Opcode::kSub);    break;
+        case AssignOp::MulAssign:     emit(Opcode::kMul);    break;
+        case AssignOp::DivAssign:     emit(Opcode::kDiv);    break;
+        case AssignOp::ModAssign:     emit(Opcode::kMod);    break;
+        case AssignOp::BitAndAssign:  emit(Opcode::kBitAnd); break;
+        case AssignOp::BitOrAssign:   emit(Opcode::kBitOr);  break;
+        case AssignOp::BitXorAssign:  emit(Opcode::kBitXor); break;
+        case AssignOp::ShlAssign:     emit(Opcode::kShl);    break;
+        case AssignOp::SarAssign:     emit(Opcode::kSar);    break;
+        case AssignOp::ShrAssign:     emit(Opcode::kShr);    break;
         default: break;
         }
     }

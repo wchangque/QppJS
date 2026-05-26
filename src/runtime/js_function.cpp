@@ -52,6 +52,10 @@ Value JSFunction::get_property(const std::string& key) const {
     return Value::undefined();
 }
 
+bool JSFunction::has_property(const std::string& key) const {
+    return own_properties_.count(key) > 0;
+}
+
 void JSFunction::clear_own_properties() {
     own_properties_.clear();
 }

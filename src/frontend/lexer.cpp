@@ -552,6 +552,14 @@ Token next_token(LexerState& state) {
             return {TokenKind::Bang, {start, 1}};
 
         case '<':
+            if (peek(1) == '<') {
+                if (peek(2) == '=') {
+                    state.pos += 3;
+                    return {TokenKind::LShiftEq, {start, 3}};
+                }
+                state.pos += 2;
+                return {TokenKind::LShift, {start, 2}};
+            }
             if (peek(1) == '=') {
                 state.pos += 2;
                 return {TokenKind::LtEq, {start, 2}};
@@ -560,6 +568,22 @@ Token next_token(LexerState& state) {
             return {TokenKind::Lt, {start, 1}};
 
         case '>':
+            if (peek(1) == '>') {
+                if (peek(2) == '>') {
+                    if (peek(3) == '=') {
+                        state.pos += 4;
+                        return {TokenKind::URShiftEq, {start, 4}};
+                    }
+                    state.pos += 3;
+                    return {TokenKind::URShift, {start, 3}};
+                }
+                if (peek(2) == '=') {
+                    state.pos += 3;
+                    return {TokenKind::RShiftEq, {start, 3}};
+                }
+                state.pos += 2;
+                return {TokenKind::RShift, {start, 2}};
+            }
             if (peek(1) == '=') {
                 state.pos += 2;
                 return {TokenKind::GtEq, {start, 2}};
@@ -660,6 +684,10 @@ Token next_token(LexerState& state) {
                 state.pos += 2;
                 return {TokenKind::AmpAmp, {start, 2}};
             }
+            if (peek(1) == '=') {
+                state.pos += 2;
+                return {TokenKind::AmpEq, {start, 2}};
+            }
             ++state.pos;
             return {TokenKind::Amp, {start, 1}};
 
@@ -668,10 +696,18 @@ Token next_token(LexerState& state) {
                 state.pos += 2;
                 return {TokenKind::PipePipe, {start, 2}};
             }
+            if (peek(1) == '=') {
+                state.pos += 2;
+                return {TokenKind::PipeEq, {start, 2}};
+            }
             ++state.pos;
             return {TokenKind::Pipe, {start, 1}};
 
         case '^':
+            if (peek(1) == '=') {
+                state.pos += 2;
+                return {TokenKind::CaretEq, {start, 2}};
+            }
             ++state.pos;
             return {TokenKind::Caret, {start, 1}};
         case '~':

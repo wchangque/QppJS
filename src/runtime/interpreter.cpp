@@ -11,6 +11,7 @@
 #include "qppjs/runtime/module_loader.h"
 #include "qppjs/runtime/module_record.h"
 #include "qppjs/runtime/native_errors.h"
+#include "qppjs/runtime/number_utils.h"
 #include "qppjs/runtime/value.h"
 
 #include <optional>
@@ -408,6 +409,71 @@ void Interpreter::init_runtime() {
     call_depth_ = 0;
 
     // object_prototype_.proto_ stays nullptr (end of chain)
+
+    // Object.prototype built-in methods (non-enumerable via define_builtin_property)
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("valueOf"));
+        fn->set_native_fn([](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+            return EvalResult::ok(this_val);
+        });
+        gc_heap_.Register(fn.get());
+        object_prototype_->define_builtin_property("valueOf", Value::object(ObjectPtr(fn)));
+    }
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("toString"));
+        fn->set_native_fn([](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+            if (this_val.is_null()) return EvalResult::ok(Value::string("[object Null]"));
+            if (this_val.is_undefined()) return EvalResult::ok(Value::string("[object Undefined]"));
+            return EvalResult::ok(Value::string("[object Object]"));
+        });
+        gc_heap_.Register(fn.get());
+        object_prototype_->define_builtin_property("toString", Value::object(ObjectPtr(fn)));
+    }
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("hasOwnProperty"));
+        fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            if (!this_val.is_object()) return EvalResult::ok(Value::boolean(false));
+            auto* raw = this_val.as_object_raw();
+            if (!raw) return EvalResult::ok(Value::boolean(false));
+            std::string key = args.empty() ? "undefined" : to_string_val(args[0]);
+            if (raw->object_kind() == ObjectKind::kFunction) {
+                return EvalResult::ok(Value::boolean(static_cast<JSFunction*>(raw)->has_property(key)));
+            }
+            return EvalResult::ok(Value::boolean(static_cast<JSObject*>(raw)->has_own_property(key)));
+        });
+        gc_heap_.Register(fn.get());
+        object_prototype_->define_builtin_property("hasOwnProperty", Value::object(ObjectPtr(fn)));
+    }
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("isPrototypeOf"));
+        fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            if (!this_val.is_object() || args.empty() || !args[0].is_object())
+                return EvalResult::ok(Value::boolean(false));
+            auto* needle = this_val.as_object_raw();
+            auto* raw = args[0].as_object_raw();
+            if (!raw) return EvalResult::ok(Value::boolean(false));
+            if (raw->object_kind() == ObjectKind::kFunction) {
+                // JSFunction prototype chain: function_prototype_ → object_prototype_ → null
+                if (function_prototype_ && needle == function_prototype_.get())
+                    return EvalResult::ok(Value::boolean(true));
+                if (object_prototype_ && needle == object_prototype_.get())
+                    return EvalResult::ok(Value::boolean(true));
+                return EvalResult::ok(Value::boolean(false));
+            }
+            auto* cur = static_cast<JSObject*>(raw)->proto().get();
+            while (cur) {
+                if (cur == needle) return EvalResult::ok(Value::boolean(true));
+                cur = cur->proto().get();
+            }
+            return EvalResult::ok(Value::boolean(false));
+        });
+        gc_heap_.Register(fn.get());
+        object_prototype_->define_builtin_property("isPrototypeOf", Value::object(ObjectPtr(fn)));
+    }
 
     // Build Error.prototype
     auto error_proto = RcPtr<JSObject>::make();
@@ -2762,6 +2828,16 @@ void Interpreter::init_runtime() {
     // Number.parseInt === global parseInt (same object)
     number_constructor_->set_property("parseInt", parse_int_val);
 
+    // Number static value properties
+    number_constructor_->set_property("MAX_VALUE", Value::number(std::numeric_limits<double>::max()));
+    number_constructor_->set_property("MIN_VALUE", Value::number(std::numeric_limits<double>::denorm_min()));
+    number_constructor_->set_property("POSITIVE_INFINITY", Value::number(std::numeric_limits<double>::infinity()));
+    number_constructor_->set_property("NEGATIVE_INFINITY", Value::number(-std::numeric_limits<double>::infinity()));
+    number_constructor_->set_property("NaN", Value::number(std::numeric_limits<double>::quiet_NaN()));
+    number_constructor_->set_property("EPSILON", Value::number(std::numeric_limits<double>::epsilon()));
+    number_constructor_->set_property("MAX_SAFE_INTEGER", Value::number(9007199254740991.0));
+    number_constructor_->set_property("MIN_SAFE_INTEGER", Value::number(-9007199254740991.0));
+
     // Number.prototype
     number_prototype_ = RcPtr<JSObject>::make();
     number_prototype_->set_proto(object_prototype_);
@@ -4682,6 +4758,13 @@ EvalResult Interpreter::eval_unary(const UnaryExpression& expr) {
     }
     case UnaryOp::Bang:
         return EvalResult::ok(Value::boolean(!to_boolean(val)));
+    case UnaryOp::BitNot: {
+        auto num_result = to_number(val);
+        if (!num_result.is_ok()) {
+            return num_result;
+        }
+        return EvalResult::ok(Value::number(static_cast<double>(~to_int32_bits(num_result.value().as_number()))));
+    }
     default:
         break;
     }
@@ -4979,14 +5062,70 @@ EvalResult Interpreter::eval_binary(const BinaryExpression& expr) {
                 "Right-hand side of 'in' must be an object");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
-        auto* obj = static_cast<JSObject*>(raw);
         bool found;
-        if (lv.is_symbol()) {
-            found = obj->has_property_by_symbol(lv.as_symbol_id());
+        if (raw->object_kind() == ObjectKind::kFunction) {
+            auto* fn = static_cast<JSFunction*>(raw);
+            found = !lv.is_symbol() && fn->has_property(to_string_val(lv));
         } else {
-            found = obj->has_property(to_string_val(lv));
+            auto* obj = static_cast<JSObject*>(raw);
+            if (lv.is_symbol()) {
+                found = obj->has_property_by_symbol(lv.as_symbol_id());
+            } else {
+                found = obj->has_property(to_string_val(lv));
+            }
         }
         return EvalResult::ok(Value::boolean(found));
+    }
+    case BinaryOp::BitAnd: {
+        auto ln = to_number(lv);
+        if (!ln.is_ok()) return ln;
+        auto rn = to_number(rv);
+        if (!rn.is_ok()) return rn;
+        int32_t result = to_int32_bits(ln.value().as_number()) & to_int32_bits(rn.value().as_number());
+        return EvalResult::ok(Value::number(static_cast<double>(result)));
+    }
+    case BinaryOp::BitOr: {
+        auto ln = to_number(lv);
+        if (!ln.is_ok()) return ln;
+        auto rn = to_number(rv);
+        if (!rn.is_ok()) return rn;
+        int32_t result = to_int32_bits(ln.value().as_number()) | to_int32_bits(rn.value().as_number());
+        return EvalResult::ok(Value::number(static_cast<double>(result)));
+    }
+    case BinaryOp::BitXor: {
+        auto ln = to_number(lv);
+        if (!ln.is_ok()) return ln;
+        auto rn = to_number(rv);
+        if (!rn.is_ok()) return rn;
+        int32_t result = to_int32_bits(ln.value().as_number()) ^ to_int32_bits(rn.value().as_number());
+        return EvalResult::ok(Value::number(static_cast<double>(result)));
+    }
+    case BinaryOp::Shl: {
+        auto ln = to_number(lv);
+        if (!ln.is_ok()) return ln;
+        auto rn = to_number(rv);
+        if (!rn.is_ok()) return rn;
+        uint32_t shift = to_uint32_bits(rn.value().as_number()) & 0x1F;
+        int32_t result = to_int32_bits(ln.value().as_number()) << shift;
+        return EvalResult::ok(Value::number(static_cast<double>(result)));
+    }
+    case BinaryOp::Sar: {
+        auto ln = to_number(lv);
+        if (!ln.is_ok()) return ln;
+        auto rn = to_number(rv);
+        if (!rn.is_ok()) return rn;
+        uint32_t shift = to_uint32_bits(rn.value().as_number()) & 0x1F;
+        int32_t result = to_int32_bits(ln.value().as_number()) >> shift;
+        return EvalResult::ok(Value::number(static_cast<double>(result)));
+    }
+    case BinaryOp::Shr: {
+        auto ln = to_number(lv);
+        if (!ln.is_ok()) return ln;
+        auto rn = to_number(rv);
+        if (!rn.is_ok()) return rn;
+        uint32_t shift = to_uint32_bits(rn.value().as_number()) & 0x1F;
+        uint32_t result = to_uint32_bits(ln.value().as_number()) >> shift;
+        return EvalResult::ok(Value::number(static_cast<double>(result)));
     }
     }
     return EvalResult::ok(Value::undefined());
@@ -5125,6 +5264,63 @@ EvalResult Interpreter::eval_assignment(const AssignmentExpression& expr) {
             return rn;
         }
         new_val = Value::number(std::fmod(ln.value().as_number(), rn.value().as_number()));
+        break;
+    }
+    case AssignOp::BitAndAssign: {
+        auto ln = to_number(current_result.value());
+        auto rn = to_number(rhs.value());
+        if (!ln.is_ok()) return ln;
+        if (!rn.is_ok()) return rn;
+        int32_t r = to_int32_bits(ln.value().as_number()) & to_int32_bits(rn.value().as_number());
+        new_val = Value::number(static_cast<double>(r));
+        break;
+    }
+    case AssignOp::BitOrAssign: {
+        auto ln = to_number(current_result.value());
+        auto rn = to_number(rhs.value());
+        if (!ln.is_ok()) return ln;
+        if (!rn.is_ok()) return rn;
+        int32_t r = to_int32_bits(ln.value().as_number()) | to_int32_bits(rn.value().as_number());
+        new_val = Value::number(static_cast<double>(r));
+        break;
+    }
+    case AssignOp::BitXorAssign: {
+        auto ln = to_number(current_result.value());
+        auto rn = to_number(rhs.value());
+        if (!ln.is_ok()) return ln;
+        if (!rn.is_ok()) return rn;
+        int32_t r = to_int32_bits(ln.value().as_number()) ^ to_int32_bits(rn.value().as_number());
+        new_val = Value::number(static_cast<double>(r));
+        break;
+    }
+    case AssignOp::ShlAssign: {
+        auto ln = to_number(current_result.value());
+        auto rn = to_number(rhs.value());
+        if (!ln.is_ok()) return ln;
+        if (!rn.is_ok()) return rn;
+        uint32_t shift = to_uint32_bits(rn.value().as_number()) & 0x1F;
+        int32_t r = to_int32_bits(ln.value().as_number()) << shift;
+        new_val = Value::number(static_cast<double>(r));
+        break;
+    }
+    case AssignOp::SarAssign: {
+        auto ln = to_number(current_result.value());
+        auto rn = to_number(rhs.value());
+        if (!ln.is_ok()) return ln;
+        if (!rn.is_ok()) return rn;
+        uint32_t shift = to_uint32_bits(rn.value().as_number()) & 0x1F;
+        int32_t r = to_int32_bits(ln.value().as_number()) >> shift;
+        new_val = Value::number(static_cast<double>(r));
+        break;
+    }
+    case AssignOp::ShrAssign: {
+        auto ln = to_number(current_result.value());
+        auto rn = to_number(rhs.value());
+        if (!ln.is_ok()) return ln;
+        if (!rn.is_ok()) return rn;
+        uint32_t shift = to_uint32_bits(rn.value().as_number()) & 0x1F;
+        uint32_t r = to_uint32_bits(ln.value().as_number()) >> shift;
+        new_val = Value::number(static_cast<double>(r));
         break;
     }
     default:

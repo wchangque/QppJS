@@ -144,6 +144,24 @@ std::string_view token_kind_name(TokenKind kind) {
             return "Caret";
         case TokenKind::Tilde:
             return "Tilde";
+        case TokenKind::LShift:
+            return "LShift";
+        case TokenKind::RShift:
+            return "RShift";
+        case TokenKind::URShift:
+            return "URShift";
+        case TokenKind::AmpEq:
+            return "AmpEq";
+        case TokenKind::PipeEq:
+            return "PipeEq";
+        case TokenKind::CaretEq:
+            return "CaretEq";
+        case TokenKind::LShiftEq:
+            return "LShiftEq";
+        case TokenKind::RShiftEq:
+            return "RShiftEq";
+        case TokenKind::URShiftEq:
+            return "URShiftEq";
         case TokenKind::PlusPlus:
             return "PlusPlus";
         case TokenKind::MinusMinus:
