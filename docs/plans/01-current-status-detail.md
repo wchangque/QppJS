@@ -19,7 +19,7 @@
     - TY-23~30：赋值、嵌套 typeof、函数返回值、let/const 变量、if 条件、类型守卫、表达式操作数等
   - **已知 VM 差异**：(1) TY-16 VM：kDefLet 内联 → typeof TDZ 变量返回 "undefined"（非 ReferenceError）；(2) TY-20 VM：kNewCall native constructor 不创建 this-obj → new Number() 返回 primitive → typeof 为 "number"。
   - **修改文件**：`src/runtime/interpreter.cpp`（typeof this 守卫），`tests/unit/typeof_test.cpp`（新建），`tests/CMakeLists.txt`（新增注册）。
-  - 3819/3819 通过（coverage）。
+  - 3819/3819 通过（coverage），0 LSan 泄漏。
 
 - [x] **`in` 运算符（in operator）**（2026-05-26）：
   - **AST**：`include/qppjs/frontend/ast.h` `BinaryOp` 枚举新增 `In`；`src/frontend/ast_dump.cpp` 添加 `case BinaryOp::In: return "In"` 分支。
