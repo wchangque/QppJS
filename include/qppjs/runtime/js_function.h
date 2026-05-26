@@ -68,6 +68,10 @@ public:
     void set_arrow(bool v) { is_arrow_ = v; }
     void set_lexical_this(Value v) { lexical_this_ = std::move(v); }
 
+    // Method shorthand flag: true for object literal method/getter/setter/async-method
+    bool is_method() const { return is_method_; }
+    void set_is_method(bool v) { is_method_ = v; }
+
     // import.meta 词法绑定：记录函数是在哪个模块中创建的
     ModuleRecord* defining_module() const { return defining_module_; }
     void set_defining_module(ModuleRecord* mod) { defining_module_ = mod; }
@@ -107,6 +111,9 @@ private:
     // Arrow function data
     bool is_arrow_ = false;
     Value lexical_this_;
+
+    // Method shorthand data
+    bool is_method_ = false;
 
     // import.meta 词法绑定：函数定义时所在的模块（非拥有指针）
     ModuleRecord* defining_module_ = nullptr;

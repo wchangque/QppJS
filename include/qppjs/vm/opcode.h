@@ -133,7 +133,10 @@ namespace qppjs {
     X(ApplyArgs, 1)                    \
     X(Swap, 0)                         \
     /* destructuring */                \
-    X(CopyDataProperties, 1)
+    X(CopyDataProperties, 1)           \
+    /* accessor property definition */ \
+    X(DefineGetter, 2)                 \
+    X(DefineSetter, 2)
 
 enum class Opcode : uint8_t {
 #define X(name, _operand_bytes) k##name,

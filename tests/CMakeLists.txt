@@ -49,6 +49,7 @@ add_executable(qppjs_unit_tests
     unit/in_operator_test.cpp
     unit/typeof_test.cpp
     unit/bitwise_test.cpp
+    unit/method_shorthand_test.cpp
     # unit/global_stubs_test.cpp  # FIXME: pre-existing compilation error (is_err not a member of EvalResult)
 )
 

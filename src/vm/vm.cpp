@@ -5224,6 +5224,74 @@ EvalResult VM::run(size_t exit_depth) {
             break;
         }
 
+        case Opcode::kDefineGetter: {
+            uint16_t idx = read_u16(bc, pc);
+            const std::string& name = bc->names[idx];
+            Value fn_val = std::move(stack.back());
+            stack.pop_back();
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            if (obj_val.is_object()) {
+                RcObject* raw = obj_val.as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary ||
+                    raw->object_kind() == ObjectKind::kArray) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    // Write .name on getter function
+                    if (fn_val.is_object() && fn_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                        auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
+                        fn->set_is_method(true);
+                        fn->set_property("name", Value::string("get " + name));
+                    }
+                    PropDesc desc;
+                    desc.getter = fn_val;
+                    desc.enumerable = true;
+                    desc.configurable = true;
+                    auto res = obj->define_property(name, desc);
+                    if (!res.is_ok()) {
+                        frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                            "Cannot define getter " + name);
+                        continue;
+                    }
+                }
+            }
+            stack.push_back(std::move(fn_val));
+            break;
+        }
+
+        case Opcode::kDefineSetter: {
+            uint16_t idx = read_u16(bc, pc);
+            const std::string& name = bc->names[idx];
+            Value fn_val = std::move(stack.back());
+            stack.pop_back();
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            if (obj_val.is_object()) {
+                RcObject* raw = obj_val.as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary ||
+                    raw->object_kind() == ObjectKind::kArray) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    // Write .name on setter function
+                    if (fn_val.is_object() && fn_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                        auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
+                        fn->set_is_method(true);
+                        fn->set_property("name", Value::string("set " + name));
+                    }
+                    PropDesc desc;
+                    desc.setter = fn_val;
+                    desc.enumerable = true;
+                    desc.configurable = true;
+                    auto res = obj->define_property(name, desc);
+                    if (!res.is_ok()) {
+                        frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                            "Cannot define setter " + name);
+                        continue;
+                    }
+                }
+            }
+            stack.push_back(std::move(fn_val));
+            break;
+        }
+
         case Opcode::kGetElem: {
             Value key_val = std::move(stack.back());
             stack.pop_back();
@@ -5398,6 +5466,11 @@ EvalResult VM::run(size_t exit_depth) {
             fn->set_closure_env(env);
             fn->set_is_named_expr(fn_bc->is_named_expr);
             fn->set_defining_module(frame.current_module);
+            // 方法简写：标记 is_method，写入 .name（仅方法路径）
+            fn->set_is_method(fn_bc->is_method);
+            if (fn_bc->is_method && fn_bc->name.has_value()) {
+                fn->set_property("name", Value::string(*fn_bc->name));
+            }
             // 箭头函数：捕获词法 this，不创建 prototype 对象
             if (fn_bc->is_arrow) {
                 fn->set_arrow(true);
@@ -5419,6 +5492,13 @@ EvalResult VM::run(size_t exit_depth) {
                 async_wrapper->set_name(fn_bc->name);
                 // Store inner_fn in own_properties so GC can trace it
                 async_wrapper->set_property("__async_inner__", Value::object(ObjectPtr(inner_fn)));
+                // 方法简写：async_wrapper 也标记 is_method，写入 .name，不创建 proto
+                if (fn_bc->is_method) {
+                    async_wrapper->set_is_method(true);
+                    if (fn_bc->name.has_value()) {
+                        async_wrapper->set_property("name", Value::string(*fn_bc->name));
+                    }
+                }
                 async_wrapper->set_native_fn([this, inner_fn](Value this_val,
                         std::vector<Value> call_args, bool) mutable -> EvalResult {
                     // Create outer promise
@@ -5440,12 +5520,15 @@ EvalResult VM::run(size_t exit_depth) {
                     vm_handle_async_result(body_result, outer_promise);
                     return EvalResult::ok(outer_val);
                 });
-                auto async_proto = RcPtr<JSObject>::make();
-                async_proto->set_proto(object_prototype_);
-                async_proto->set_constructor_property(async_wrapper.get());
-                async_wrapper->set_prototype_obj(async_proto);
+                if (!fn_bc->is_method) {
+                    // 非方法 async 函数才创建 prototype 对象
+                    auto async_proto = RcPtr<JSObject>::make();
+                    async_proto->set_proto(object_prototype_);
+                    async_proto->set_constructor_property(async_wrapper.get());
+                    async_wrapper->set_prototype_obj(async_proto);
+                    gc_heap_.Register(async_proto.get());
+                }
                 gc_heap_.Register(async_wrapper.get());
-                gc_heap_.Register(async_proto.get());
                 stack.push_back(Value::object(ObjectPtr(async_wrapper)));
             } else {
                 stack.push_back(Value::object(ObjectPtr(fn)));
@@ -5615,6 +5698,13 @@ EvalResult VM::run(size_t exit_depth) {
             if (fn->is_arrow()) {
                 frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
                     "arrow function is not a constructor");
+                continue;
+            }
+            // 方法简写不可 new
+            if (fn->is_method()) {
+                std::string fn_name = fn->name().has_value() ? *fn->name() : "method";
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    fn_name + " is not a constructor");
                 continue;
             }
             if (fn->is_native()) {

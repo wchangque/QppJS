@@ -5353,11 +5353,63 @@ EvalResult Interpreter::eval_object_expr(const ObjectExpression& expr) {
                 "Invalid shorthand property initializer");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
-        auto val = eval_expr(*prop.value);
-        if (!val.is_ok()) {
-            return val;
+
+        if (prop.method_kind == MethodKind::kData) {
+            auto val = eval_expr(*prop.value);
+            if (!val.is_ok()) return val;
+            obj->set_property(prop.key, val.value());
+        } else if (prop.method_kind == MethodKind::kMethod ||
+                   prop.method_kind == MethodKind::kGenerator) {
+            auto fn_res = eval_expr(*prop.value);
+            if (!fn_res.is_ok()) return fn_res;
+            Value fn_val = fn_res.value();
+            if (fn_val.is_object() && fn_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
+                fn->set_is_method(true);
+                fn->set_property("name", Value::string(prop.key));
+            }
+            obj->set_property(prop.key, fn_val);
+        } else if (prop.method_kind == MethodKind::kAsyncMethod) {
+            auto fn_res = eval_expr(*prop.value);
+            if (!fn_res.is_ok()) return fn_res;
+            Value fn_val = fn_res.value();
+            if (fn_val.is_object() && fn_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
+                fn->set_is_method(true);
+                fn->set_property("name", Value::string(prop.key));
+            }
+            obj->set_property(prop.key, fn_val);
+        } else if (prop.method_kind == MethodKind::kGetter) {
+            auto fn_res = eval_expr(*prop.value);
+            if (!fn_res.is_ok()) return fn_res;
+            Value fn_val = fn_res.value();
+            if (fn_val.is_object() && fn_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
+                fn->set_is_method(true);
+                fn->set_property("name", Value::string("get " + prop.key));
+            }
+            PropDesc desc;
+            desc.getter = fn_val;
+            desc.enumerable = true;
+            desc.configurable = true;
+            auto res = obj->define_property(prop.key, desc);
+            if (!res.is_ok()) return res;
+        } else if (prop.method_kind == MethodKind::kSetter) {
+            auto fn_res = eval_expr(*prop.value);
+            if (!fn_res.is_ok()) return fn_res;
+            Value fn_val = fn_res.value();
+            if (fn_val.is_object() && fn_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
+                fn->set_is_method(true);
+                fn->set_property("name", Value::string("set " + prop.key));
+            }
+            PropDesc desc;
+            desc.setter = fn_val;
+            desc.enumerable = true;
+            desc.configurable = true;
+            auto res = obj->define_property(prop.key, desc);
+            if (!res.is_ok()) return res;
         }
-        obj->set_property(prop.key, val.value());
     }
     return EvalResult::ok(Value::object(ObjectPtr(obj)));
 }
@@ -5640,6 +5692,14 @@ Value Interpreter::make_function_value(std::optional<std::string> name, const st
 
 StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
                                       std::vector<Value> args, bool is_new_call) {
+    // 守卫 0：method 不可用 new 构造
+    if (fn->is_method() && is_new_call) {
+        std::string fn_name = fn->name().has_value() ? *fn->name() : "method";
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            fn_name + " is not a constructor");
+        return StmtResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+
     if (fn->is_native()) {
         auto r = fn->native_fn()(this_val, std::move(args), is_new_call);
         if (!r.is_ok()) {

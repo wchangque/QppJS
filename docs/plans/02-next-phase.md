@@ -32,6 +32,13 @@
 16. ~~**`in` 运算符** — 已完成（2026-05-26，3733/3733 测试通过，0 LSan 泄漏）~~
 17. ~~**位运算符 `&` `|` `^` `~` `<<` `>>` `>>>` 及复合赋值** — 已完成（2026-05-26，含 Review M1/M2/M3 修复，3919/3919 测试通过，0 LSan 泄漏）~~
 
+**第三轮候选目标（test262 通过率提升）：**
+
+18. ~~**方法简写 `{foo() {}}` [T262-P1]** — 已完成（2026-05-26，32 测试，3949/3949 通过）~~
+19. **计算属性键 `{[expr]: val}` [T262-P2]** — 预计 ~810 个测试（含 propertyHelper.js 解锁）。Parser：对象字面量 nud(LBrace) 和类体属性解析支持 `[expr]` 作为 computed 键名。Interpreter + VM 对称适配。
+19. **`??` nullish coalescing [T262-P3]** — 预计 ~600 个测试。Lexer：`?` 之后若仍是 `?` 则发射 `QuestionQuestion` token；Parser：`lbp(QuestionQuestion)=3`，led 实现短路求值（lhs 非 null/undefined 时返回 lhs，否则返回 rhs）。Interpreter + VM 对称。
+20. **`?.` optional chaining [T262-P4]** — 预计 ~180 个测试。Lexer：`?` 之后若是 `.`（不跟数字）则发射 `QuestionDot` token；Parser：`lbp=19`，支持 `?.`（属性访问）、`?.[` （下标访问）、`?.(` （调用）三种形式，lhs 为 null/undefined 时短路返回 undefined。Interpreter + VM 对称。
+
 ## 3. 进入前提
 
 当前已具备：

@@ -34,6 +34,16 @@ enum class AssignOp {
 };
 enum class VarKind { Var, Let, Const };
 
+// 对象字面量属性的种类
+enum class MethodKind {
+    kData,        // key: value / shorthand {x}
+    kMethod,      // foo() {}
+    kGetter,      // get foo() {}
+    kSetter,      // set foo(v) {}
+    kAsyncMethod, // async foo() {}
+    kGenerator,   // *foo() {} — 解析时记录，执行层降级为 kMethod
+};
+
 // ---- 前向声明 ----
 
 struct ExprNode;
@@ -96,6 +106,7 @@ struct AssignmentExpression {
 // 对象字面量的单个属性（不是 ExprNode，只是辅助结构）
 struct ObjectProperty {
     std::string key;
+    MethodKind method_kind = MethodKind::kData;
     std::unique_ptr<ExprNode> value;
     SourceRange range;
 };

@@ -23,6 +23,7 @@ struct BytecodeFunction {
     bool is_named_expr = false;                                  // true for named function expressions
     bool is_async = false;                                       // true for async functions
     bool is_arrow = false;                                       // true for arrow functions
+    bool is_method = false;                                      // true for object literal method shorthand
     std::optional<std::string> rest_param;                       // rest parameter name (...args)
     std::shared_ptr<std::vector<ParamDef>> param_defs;           // parameter default value definitions
     uint16_t length_count = 0;                                   // number of params before first default

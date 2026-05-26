@@ -4,6 +4,18 @@
 
 ## 1. 已完成任务
 
+- [x] **方法简写 Method Shorthand [T262-P1]**（2026-05-26）：
+  - **实现内容**：`MethodKind` 枚举（kData/kMethod/kGetter/kSetter/kAsyncMethod/kGenerator）；`ObjectProperty` 增加 `method_kind` 字段；`BytecodeFunction::is_method`；`JSFunction::is_method_` + getter/setter；`kDefineGetter`/`kDefineSetter` 两条新 opcode（2 字节操作数）；Parser `nud(LBrace)` 扩展 `*foo(){}`（kGenerator）、`get/set foo(){}`（kGetter/kSetter，含消歧：`get:`/`get,`/`get}`/`get=`/`get(` fallthrough 为数据属性）、`async foo(){}`（kAsyncMethod，含消歧）、普通方法简写 `foo(){}`（kMethod，key 已解析后遇 `(` 时触发）；Interpreter `eval_object_expr` 分支处理每种 MethodKind（kGetter/kSetter 调用 `define_property` + PropDesc）；Interpreter `call_function` 新增守卫 0：`is_method() && is_new_call → TypeError`（置于 native 检查前，覆盖 async 方法场景）；Compiler `compile_object_expr` 直接调用 `compile_function` 并设置 `child->is_method = true` / `child->is_async = true`，kGetter/kSetter 使用 `kDefineGetter`/`kDefineSetter` 指令；VM `kMakeFunction` 设 `fn->set_is_method(fn_bc->is_method)` + `.name` 写入（仅 is_method 路径）；async 方法 wrapper 跳过 proto 创建；`kDefineGetter`/`kDefineSetter` VM 处理器（pop fn + pop obj，define_property，push fn）；`kNewCall` 在 is_arrow 守卫之后增加 is_method 守卫；`ast_dump.cpp` 扩展 ObjectProperty 输出 method_kind；新增 `tests/unit/method_shorthand_test.cpp`（32 个测试 MS-01～MS-32，覆盖 8 个 Parser 用例 + 12 个 Interpreter 用例 + 12 个 VM 用例）。
+  - **测试结果**：3949/3949 通过（coverage），0 LSan 泄漏。
+
+- [x] **compiler.cpp build 修复 + test262 通过率基准建立**（2026-05-26）：
+  - **根因**：`src/vm/compiler.cpp` 使用 `std::any_of` 但缺少 `#include <algorithm>`，导致增量构建失败后二进制停留在旧版本；旧版本三元运算符 `?:` 完全无法解析，language/expressions 通过率仅 26.5%。
+  - **修复**：`compiler.cpp` 头部补加 `#include <algorithm>`，重建成功后通过率升至 32.4%（+5.9pp）。
+  - **test262 失败原因矩阵**（language/expressions，5837 个失败）：
+    - SyntaxError 5293 个（91%）：`unexpected token: Star` 545（generator）、`expected '}'` 517（method shorthand）、`expected property key` 333（computed 键）、`expected function name` 176（method shorthand）、`expected parameter name` 150（解构参数）、`unexpected token: Question` 28（`??`）、`unexpected token: Dot` 24（`?.`）
+    - RuntimeError 544 个（9%）：`eval not defined` 91、`Function not defined` 60、`Object spread not supported` 27、`TypeError value is not a function` 26
+  - **待修复优先列表（已写入 01-current-status.md 和 02-next-phase.md）**：T262-P2 计算属性键、T262-P3 `??`、T262-P4 `?.`。
+
 - [x] **位运算符 Review 必修修复 M1/M2/M3**（2026-05-26）：
   - **M1 hasOwnProperty kFunction 修复**：`interpreter.cpp` + `vm.cpp` 的 `Object.prototype.hasOwnProperty` lambda 删除 `raw->object_kind() == ObjectKind::kFunction` 早返回，新增 kFunction 分支 `static_cast<JSFunction*>(raw)->has_property(key)`，使 `Number.hasOwnProperty("MAX_VALUE")` 等正确返回 `true`。
   - **M2 isPrototypeOf kFunction 修复**：`interpreter.cpp` + `vm.cpp` 的 `Object.prototype.isPrototypeOf` lambda 改为 `[this]` 捕获，`args[0]` 为 kFunction 时检查 `needle == function_prototype_.get()` 或 `needle == object_prototype_.get()`，使 `Object.prototype.isPrototypeOf(Number.isNaN)` 正确返回 `true`。

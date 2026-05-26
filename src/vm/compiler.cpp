@@ -5,6 +5,7 @@
 #include "qppjs/vm/bytecode.h"
 #include "qppjs/vm/opcode.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <memory>
@@ -1131,25 +1132,69 @@ void Compiler::compile_object_expr(const ObjectExpression& expr) {
             emit(Opcode::kThrow);
             return;
         }
-        emit(Opcode::kDup);  // dup obj reference
-        compile_expr(*prop.value);
-        uint16_t name_idx = add_name(prop.key);
-        emit(Opcode::kSetProp);
-        emit_u16(name_idx);
-        // SetProp pops val and obj, pushes val back. But we need the obj.
-        // Wait — design says: SetProp pops val+obj, writes, pushes val back.
-        // That means after SetProp we have val on stack (not obj).
-        // But we need obj for next property. So we must pop val, leaving nothing...
-        // Actually we need to rethink the object construction pattern.
-        // Let's use: Dup obj → push obj on stack, then:
-        //   compile_value → stack: obj | val
-        //   SetProp(key)  → pops val+obj, pushes val
-        //   Pop           → discard val, obj is gone too
-        // But we Dup'd obj first, so we have the original obj below.
-        // Actually: after Dup, stack is: [obj, obj]. After compile_value: [obj, obj, val].
-        // SetProp pops val+obj, pushes val. Stack becomes: [obj, val].
-        // Pop: [obj]. Good — the original obj reference remains.
-        emit(Opcode::kPop);
+        if (prop.method_kind == MethodKind::kData) {
+            // 普通数据属性
+            emit(Opcode::kDup);
+            compile_expr(*prop.value);
+            uint16_t name_idx = add_name(prop.key);
+            emit(Opcode::kSetProp);
+            emit_u16(name_idx);
+            emit(Opcode::kPop);
+        } else if (prop.method_kind == MethodKind::kMethod ||
+                   prop.method_kind == MethodKind::kGenerator) {
+            // 普通方法简写 / generator 方法（降级为普通函数）
+            const auto& fe = std::get<FunctionExpression>(prop.value->v);
+            auto child = compile_function(fe.name, fe.params, *fe.body, false, fe.rest_param);
+            child->is_method = true;
+            uint16_t fn_idx = add_function(std::move(child));
+            emit(Opcode::kDup);
+            emit(Opcode::kMakeFunction);
+            emit_u16(fn_idx);
+            uint16_t name_idx = add_name(prop.key);
+            emit(Opcode::kSetProp);
+            emit_u16(name_idx);
+            emit(Opcode::kPop);
+        } else if (prop.method_kind == MethodKind::kAsyncMethod) {
+            // async 方法
+            const auto& afe = std::get<AsyncFunctionExpression>(prop.value->v);
+            auto child = compile_function(afe.name, afe.params, *afe.body, false, afe.rest_param);
+            child->is_async = true;
+            child->is_method = true;
+            uint16_t fn_idx = add_function(std::move(child));
+            emit(Opcode::kDup);
+            emit(Opcode::kMakeFunction);
+            emit_u16(fn_idx);
+            uint16_t name_idx = add_name(prop.key);
+            emit(Opcode::kSetProp);
+            emit_u16(name_idx);
+            emit(Opcode::kPop);
+        } else if (prop.method_kind == MethodKind::kGetter) {
+            // getter 方法
+            const auto& fe = std::get<FunctionExpression>(prop.value->v);
+            auto child = compile_function(fe.name, fe.params, *fe.body, false, fe.rest_param);
+            child->is_method = true;
+            uint16_t fn_idx = add_function(std::move(child));
+            emit(Opcode::kDup);
+            emit(Opcode::kMakeFunction);
+            emit_u16(fn_idx);
+            uint16_t name_idx = add_name(prop.key);
+            emit(Opcode::kDefineGetter);
+            emit_u16(name_idx);
+            emit(Opcode::kPop);
+        } else if (prop.method_kind == MethodKind::kSetter) {
+            // setter 方法
+            const auto& fe = std::get<FunctionExpression>(prop.value->v);
+            auto child = compile_function(fe.name, fe.params, *fe.body, false, fe.rest_param);
+            child->is_method = true;
+            uint16_t fn_idx = add_function(std::move(child));
+            emit(Opcode::kDup);
+            emit(Opcode::kMakeFunction);
+            emit_u16(fn_idx);
+            uint16_t name_idx = add_name(prop.key);
+            emit(Opcode::kDefineSetter);
+            emit_u16(name_idx);
+            emit(Opcode::kPop);
+        }
     }
     // stack: obj (the constructed object)
 }

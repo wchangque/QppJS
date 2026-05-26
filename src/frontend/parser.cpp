@@ -944,7 +944,7 @@ struct Parser {
                     ExprNode{ArrayExpression{std::move(elements), span(start, end)}});
             }
             case TokenKind::LBrace: {
-                // 对象字面量 { key: value, key, ...spread }
+                // 对象字面量 { key: value, key, ...spread, method(){}, get/set accessor, async method, *gen }
                 uint32_t start = tok.range.offset;
                 std::vector<ObjectProperty> props;
                 while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
@@ -955,8 +955,6 @@ struct Parser {
                         advance();  // 消费 ...
                         auto arg = parse_expr(1);
                         if (!arg.ok()) return arg;
-                        // SpreadElement in object: use empty key to signal spread,
-                        // wrap in SpreadElement expression
                         uint32_t prop_end = range_end(expr_range(arg.value()));
                         ObjectProperty prop;
                         prop.key = "";  // sentinel for spread
@@ -969,65 +967,231 @@ struct Parser {
                         continue;
                     }
 
-                    std::string key;
-                    Token key_tok = cur;
-                    if (cur.kind == TokenKind::Ident) {
-                        key = std::string(token_text(cur));
-                        advance();
-                    } else if (cur.kind == TokenKind::String) {
-                        key = decode_string(token_text(cur));
-                        advance();
-                    } else if (cur.kind == TokenKind::Number) {
-                        double num_val = parse_number_text(token_text(cur));
-                        key = number_to_property_key(num_val);
-                        advance();
-                    } else if (is_keyword(cur.kind)) {
-                        // 关键字也可以作为属性键
-                        key = std::string(token_text(cur));
-                        advance();
-                    } else {
-                        return ParseResult<ExprNode>::Err(
-                                make_parse_error(source, cur, "expected property key"));
+                    // --- Generator method: *foo() {} ---
+                    if (cur.kind == TokenKind::Star) {
+                        advance();  // 消费 *
+                        std::string gkey;
+                        if (cur.kind == TokenKind::Ident) {
+                            gkey = std::string(token_text(cur)); advance();
+                        } else if (cur.kind == TokenKind::String) {
+                            gkey = decode_string(token_text(cur)); advance();
+                        } else if (cur.kind == TokenKind::Number) {
+                            gkey = number_to_property_key(parse_number_text(token_text(cur))); advance();
+                        } else if (is_keyword(cur.kind)) {
+                            gkey = std::string(token_text(cur)); advance();
+                        } else {
+                            return ParseResult<ExprNode>::Err(
+                                make_parse_error(source, cur, "expected method name after *"));
+                        }
+                        std::optional<std::string> fn_rest_g;
+                        auto params_g = parse_function_params(fn_rest_g);
+                        if (!params_g.ok()) return ParseResult<ExprNode>::Err(params_g.error());
+                        bool saved_async_g = in_async_function_;
+                        in_async_function_ = false;
+                        auto body_g = parse_function_body();
+                        in_async_function_ = saved_async_g;
+                        if (!body_g.ok()) return ParseResult<ExprNode>::Err(body_g.error());
+                        uint32_t prop_end = range_end(body_g.value().second);
+                        auto body_ptr = std::make_shared<std::vector<StmtNode>>(
+                            std::move(body_g.value().first));
+                        ObjectProperty prop;
+                        prop.key = gkey;
+                        prop.method_kind = MethodKind::kGenerator;
+                        prop.value = std::make_unique<ExprNode>(ExprNode{FunctionExpression{
+                            std::optional<std::string>{gkey}, std::move(params_g.value()),
+                            std::move(fn_rest_g), std::move(body_ptr), span(key_start, prop_end)}});
+                        prop.range = span(key_start, prop_end);
+                        props.push_back(std::move(prop));
+                        if (cur.kind == TokenKind::Comma) advance();
+                        continue;
                     }
 
-                    if (cur.kind == TokenKind::Colon) {
-                        advance();  // 消费 :
-                        auto val = parse_expr(1);
-                        if (!val.ok()) return val;
-                        uint32_t prop_end = range_end(expr_range(val.value()));
-                        ObjectProperty prop;
-                        prop.key = key;
-                        prop.value = std::make_unique<ExprNode>(std::move(val.value()));
-                        prop.range = span(key_start, prop_end);
-                        props.push_back(std::move(prop));
-                    } else if (cur.kind == TokenKind::Eq) {
-                        // shorthand with default: { a = expr } (cover grammar for destructuring)
-                        advance();  // 消费 =
-                        auto def_val = parse_expr(1);
-                        if (!def_val.ok()) return def_val;
-                        uint32_t prop_end = range_end(expr_range(def_val.value()));
-                        // Represent as AssignmentExpression with target = key
-                        ObjectProperty prop;
-                        prop.key = key;
-                        prop.value = std::make_unique<ExprNode>(ExprNode{AssignmentExpression{
-                            AssignOp::Assign,
-                            key,
-                            std::make_unique<ExprNode>(std::move(def_val.value())),
-                            span(key_start, prop_end)}});
-                        prop.range = span(key_start, prop_end);
-                        props.push_back(std::move(prop));
+                    // --- get/set disambiguation ---
+                    bool already_handled = false;
+                    std::string key;
+                    Token key_tok = cur;
+
+                    if (cur.kind == TokenKind::Ident &&
+                        (token_text(cur) == "get" || token_text(cur) == "set")) {
+                        std::string mod = std::string(token_text(cur));
+                        Token mod_tok = cur;
+                        advance();  // 消费 get/set
+                        if (cur.kind != TokenKind::LParen && cur.kind != TokenKind::Colon &&
+                            cur.kind != TokenKind::Comma && cur.kind != TokenKind::RBrace &&
+                            cur.kind != TokenKind::Eq) {
+                            // 真正的 getter/setter: 接下来解析属性名
+                            std::string accessor_key;
+                            if (cur.kind == TokenKind::Ident) {
+                                accessor_key = std::string(token_text(cur)); advance();
+                            } else if (cur.kind == TokenKind::String) {
+                                accessor_key = decode_string(token_text(cur)); advance();
+                            } else if (cur.kind == TokenKind::Number) {
+                                accessor_key = number_to_property_key(
+                                    parse_number_text(token_text(cur))); advance();
+                            } else if (is_keyword(cur.kind)) {
+                                accessor_key = std::string(token_text(cur)); advance();
+                            } else {
+                                return ParseResult<ExprNode>::Err(
+                                    make_parse_error(source, cur, "expected property name"));
+                            }
+                            std::optional<std::string> fn_rest_ac;
+                            auto params_ac = parse_function_params(fn_rest_ac);
+                            if (!params_ac.ok()) return ParseResult<ExprNode>::Err(params_ac.error());
+                            bool saved_async_ac = in_async_function_;
+                            in_async_function_ = false;
+                            auto body_ac = parse_function_body();
+                            in_async_function_ = saved_async_ac;
+                            if (!body_ac.ok()) return ParseResult<ExprNode>::Err(body_ac.error());
+                            uint32_t prop_end = range_end(body_ac.value().second);
+                            auto body_ptr = std::make_shared<std::vector<StmtNode>>(
+                                std::move(body_ac.value().first));
+                            MethodKind mk = (mod == "get") ? MethodKind::kGetter : MethodKind::kSetter;
+                            ObjectProperty prop;
+                            prop.key = accessor_key;
+                            prop.method_kind = mk;
+                            prop.value = std::make_unique<ExprNode>(ExprNode{FunctionExpression{
+                                std::optional<std::string>{accessor_key}, std::move(params_ac.value()),
+                                std::move(fn_rest_ac), std::move(body_ptr), span(key_start, prop_end)}});
+                            prop.range = span(key_start, prop_end);
+                            props.push_back(std::move(prop));
+                            if (cur.kind == TokenKind::Comma) advance();
+                            continue;
+                        }
+                        // get/set 作为普通属性名
+                        key = mod;
+                        key_tok = mod_tok;
+                    } else if (cur.kind == TokenKind::Ident && token_text(cur) == "async") {
+                        // --- async method disambiguation ---
+                        Token async_tok = cur;
+                        advance();  // 消费 async
+                        // got_lf 此时反映 async 后是否有换行
+                        if (cur.kind != TokenKind::LParen && cur.kind != TokenKind::Colon &&
+                            cur.kind != TokenKind::Comma && cur.kind != TokenKind::RBrace &&
+                            cur.kind != TokenKind::Eq) {
+                            // async method（或 async generator，降级处理）
+                            bool is_gen = (cur.kind == TokenKind::Star);
+                            if (is_gen) advance();  // 消费 *
+                            std::string akey;
+                            if (cur.kind == TokenKind::Ident) {
+                                akey = std::string(token_text(cur)); advance();
+                            } else if (cur.kind == TokenKind::String) {
+                                akey = decode_string(token_text(cur)); advance();
+                            } else if (cur.kind == TokenKind::Number) {
+                                akey = number_to_property_key(
+                                    parse_number_text(token_text(cur))); advance();
+                            } else if (is_keyword(cur.kind)) {
+                                akey = std::string(token_text(cur)); advance();
+                            } else {
+                                return ParseResult<ExprNode>::Err(
+                                    make_parse_error(source, cur, "expected method name after async"));
+                            }
+                            std::optional<std::string> fn_rest_am;
+                            auto params_am = parse_function_params(fn_rest_am);
+                            if (!params_am.ok()) return ParseResult<ExprNode>::Err(params_am.error());
+                            bool saved_async_am = in_async_function_;
+                            in_async_function_ = true;
+                            auto body_am = parse_function_body();
+                            in_async_function_ = saved_async_am;
+                            if (!body_am.ok()) return ParseResult<ExprNode>::Err(body_am.error());
+                            uint32_t prop_end = range_end(body_am.value().second);
+                            auto body_ptr = std::make_shared<std::vector<StmtNode>>(
+                                std::move(body_am.value().first));
+                            MethodKind mk = is_gen ? MethodKind::kGenerator : MethodKind::kAsyncMethod;
+                            ObjectProperty prop;
+                            prop.key = akey;
+                            prop.method_kind = mk;
+                            prop.value = std::make_unique<ExprNode>(ExprNode{AsyncFunctionExpression{
+                                std::optional<std::string>{akey}, std::move(params_am.value()),
+                                std::move(fn_rest_am), std::move(body_ptr), span(key_start, prop_end)}});
+                            prop.range = span(key_start, prop_end);
+                            props.push_back(std::move(prop));
+                            if (cur.kind == TokenKind::Comma) advance();
+                            continue;
+                        }
+                        // async 作为普通属性名
+                        key = "async";
+                        key_tok = async_tok;
                     } else {
-                        // shorthand: { a } = { a: a }
-                        ObjectProperty prop;
-                        prop.key = key;
-                        prop.value = std::make_unique<ExprNode>(ExprNode{Identifier{key, key_tok.range}});
-                        prop.range = span(key_start, range_end(key_tok.range));
-                        props.push_back(std::move(prop));
+                        // 普通键解析（Ident / String / Number / 关键字）
+                        if (cur.kind == TokenKind::Ident) {
+                            key = std::string(token_text(cur));
+                            advance();
+                        } else if (cur.kind == TokenKind::String) {
+                            key = decode_string(token_text(cur));
+                            advance();
+                        } else if (cur.kind == TokenKind::Number) {
+                            double num_val = parse_number_text(token_text(cur));
+                            key = number_to_property_key(num_val);
+                            advance();
+                        } else if (is_keyword(cur.kind)) {
+                            key = std::string(token_text(cur));
+                            advance();
+                        } else {
+                            return ParseResult<ExprNode>::Err(
+                                    make_parse_error(source, cur, "expected property key"));
+                        }
                     }
-                    if (cur.kind == TokenKind::Comma) {
-                        advance();  // 消费 ,
-                    } else {
-                        break;
+
+                    if (!already_handled) {
+                        if (cur.kind == TokenKind::Colon) {
+                            advance();  // 消费 :
+                            auto val = parse_expr(1);
+                            if (!val.ok()) return val;
+                            uint32_t prop_end = range_end(expr_range(val.value()));
+                            ObjectProperty prop;
+                            prop.key = key;
+                            prop.value = std::make_unique<ExprNode>(std::move(val.value()));
+                            prop.range = span(key_start, prop_end);
+                            props.push_back(std::move(prop));
+                        } else if (cur.kind == TokenKind::LParen) {
+                            // method shorthand: foo() {}
+                            std::optional<std::string> fn_rest_m;
+                            auto params_m = parse_function_params(fn_rest_m);
+                            if (!params_m.ok()) return ParseResult<ExprNode>::Err(params_m.error());
+                            bool saved_async_m = in_async_function_;
+                            in_async_function_ = false;
+                            auto body_m = parse_function_body();
+                            in_async_function_ = saved_async_m;
+                            if (!body_m.ok()) return ParseResult<ExprNode>::Err(body_m.error());
+                            uint32_t prop_end = range_end(body_m.value().second);
+                            auto body_ptr = std::make_shared<std::vector<StmtNode>>(
+                                std::move(body_m.value().first));
+                            ObjectProperty prop;
+                            prop.key = key;
+                            prop.method_kind = MethodKind::kMethod;
+                            prop.value = std::make_unique<ExprNode>(ExprNode{FunctionExpression{
+                                std::optional<std::string>{key}, std::move(params_m.value()),
+                                std::move(fn_rest_m), std::move(body_ptr), span(key_start, prop_end)}});
+                            prop.range = span(key_start, prop_end);
+                            props.push_back(std::move(prop));
+                        } else if (cur.kind == TokenKind::Eq) {
+                            // shorthand with default: { a = expr } (cover grammar for destructuring)
+                            advance();  // 消费 =
+                            auto def_val = parse_expr(1);
+                            if (!def_val.ok()) return def_val;
+                            uint32_t prop_end = range_end(expr_range(def_val.value()));
+                            ObjectProperty prop;
+                            prop.key = key;
+                            prop.value = std::make_unique<ExprNode>(ExprNode{AssignmentExpression{
+                                AssignOp::Assign,
+                                key,
+                                std::make_unique<ExprNode>(std::move(def_val.value())),
+                                span(key_start, prop_end)}});
+                            prop.range = span(key_start, prop_end);
+                            props.push_back(std::move(prop));
+                        } else {
+                            // shorthand: { a } = { a: a }
+                            ObjectProperty prop;
+                            prop.key = key;
+                            prop.value = std::make_unique<ExprNode>(ExprNode{Identifier{key, key_tok.range}});
+                            prop.range = span(key_start, range_end(key_tok.range));
+                            props.push_back(std::move(prop));
+                        }
+                        if (cur.kind == TokenKind::Comma) {
+                            advance();  // 消费 ,
+                        } else {
+                            break;
+                        }
                     }
                 }
                 if (cur.kind != TokenKind::RBrace) {

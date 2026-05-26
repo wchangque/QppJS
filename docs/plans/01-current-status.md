@@ -7,10 +7,10 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 3919/3919 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 3949/3949 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-05-26 |
-| 下一步 | 继续提升 test262 通过率（逗号运算符、void 等） |
-| test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
+| 下一步 | 计算属性键 `{[expr]: val}` [T262-P2] → `??` [T262-P3] → `?.` [T262-P4] |
+| test262 | language/expressions 32.4%（method shorthand 后预计约 +5pp） |
 
 ## 已知遗留问题
 
@@ -22,6 +22,10 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **方法简写 Method Shorthand [T262-P1]**（2026-05-26）：`MethodKind` 枚举（kData/kMethod/kGetter/kSetter/kAsyncMethod/kGenerator）；Parser `nud(LBrace)` 扩展：`*foo(){}`（kGenerator）、`get/set foo(){}`（含消歧）、`async foo(){}`（含消歧）、普通方法 `foo(){}`（kMethod）；Interpreter/Compiler/VM 三路径对称实现；`kDefineGetter`/`kDefineSetter` 新指令；is_method 守卫（new 不可构造）；`.name` 写入仅限 is_method 路径；async 方法 wrapper 跳过 proto 创建；32 个新测试（MS-01～MS-32）。3949/3949 通过，0 LSan 泄漏。
+
+- [x] **compiler.cpp build 修复 + test262 基准建立**（2026-05-26）：`compiler.cpp` 补 `#include <algorithm>`（`std::any_of` 未声明导致旧二进制被沿用，三元运算符 `?:` 完全失效）；重建后 language/expressions 通过率 26.5% → 32.4%；建立 test262 失败原因矩阵（主要根因：计算属性键、`??`/`?.`、method shorthand、generator、eval/Function 缺失）。
 
 - [x] **位运算符 Review 必修修复 M1/M2/M3**（2026-05-26）：M1：`Object.prototype.hasOwnProperty` 对 kFunction 对象改为 `static_cast<JSFunction*>(raw)->has_property(key)`（Interpreter+VM 双侧）；M2：`Object.prototype.isPrototypeOf` 对 kFunction `args[0]` 改为 `[this]` 捕获，检查 `function_prototype_` / `object_prototype_`（双侧）；M3：`Number.MIN_VALUE` 从 `numeric_limits<double>::min()` 改为 `denorm_min()`（双侧）。3919/3919 通过（coverage），0 LSan 泄漏。
 - [x] **位运算符 `&` `|` `^` `~` `<<` `>>` `>>>` 及复合赋值**（2026-05-26）：新增 9 个 token（LShift/RShift/URShift/AmpEq/PipeEq/CaretEq/LShiftEq/RShiftEq/URShiftEq）；`UnaryOp::BitNot`、`BinaryOp::{BitAnd,BitOr,BitXor,Shl,Sar,Shr}`、`AssignOp::{BitAndAssign,BitOrAssign,BitXorAssign,ShlAssign,SarAssign,ShrAssign}`；6 个新 opcode（kBitAnd/kBitOr/kBitXor/kShl/kSar/kShr）；`include/qppjs/runtime/number_utils.h`（内联 ToInt32/ToUint32，含小整数快路径）；lbp 전역 조정（BitOR=7,BitXOR=8,BitAND=9,Shift=14，已有比较/算术 lbp +3）；修复 kBitNot 使用 `to_int32_bits` 替代 `static_cast`；Interpreter+VM 双路径对称实现；更新 4 个 lexer_test 已知遗留测试；新增 `tests/unit/bitwise_test.cpp`（BW-01～BW-30 × Interp+VM = 60 个测试）；附带修复：Number 静态属性（MAX_VALUE/MIN_VALUE 等）、Object.prototype 方法（valueOf/toString/hasOwnProperty/isPrototypeOf）、JSFunction in 运算符 kFunction RHS 安全处理、for-in Object.prototype 非枚举性。3879→3919/3919 通过（coverage），0 LSan 泄漏。
@@ -156,7 +160,12 @@
 - [x] Phase 8.1：Error 子类（TypeError/ReferenceError/RangeError）+ instanceof — 完成（917/917，含 Review M1/M2/M3 修复）
 - [x] 构建脚本跨平台探测修复：无 brew 的 Linux/WSL 环境不再因 `brew --prefix llvm` 直接退出，3 个构建脚本验证通过
 
-## 未开始
+## 未开始（test262 通过率提升候选，按优先级）
+
+- ~~**[T262-P1] 方法简写 `{foo() {}}`**：已完成（2026-05-26，3949/3949 通过，0 LSan 泄漏）~~
+- **[T262-P2] 计算属性键 `{[expr]: val}`**：Parser 对象/类体 `[` 开头属性键不支持，报 `expected property key`。修复后还可解锁依赖 `propertyHelper.js` 的约 477 个 class/dstr 测试（约 810 个合计）。
+- **[T262-P3] `??` nullish coalescing**：Lexer 把 `??` 拆成两个 `?`，第二个 `?` 在表达式中报错。需 Lexer 新增 `QuestionQuestion` token，Parser 新增 `lbp=3` 的 `??` 中缀运算符。预计影响 ~600 个测试（含 propertyHelper.js 的三元链）。
+- **[T262-P4] `?.` optional chaining**：`?.` 被词法切成 `?` + `.`，Parser 消费 `?` 后遇 `.` 报 `unexpected token`。需 Lexer 新增 `QuestionDot` token，Parser 新增 `?.` 成员访问/调用语义。预计影响 ~180 个测试。
 
 - QuickJS 风格优化调研
 

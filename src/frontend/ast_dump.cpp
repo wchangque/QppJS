@@ -185,7 +185,16 @@ std::string dump_expr(const ExprNode& node, int indent) {
                        [&](const ObjectExpression& oe) {
                            result = prefix + "ObjectExpression\n";
                            for (const auto& prop : oe.properties) {
-                               result += ind(indent + 1) + "prop \"" + prop.key + "\":\n";
+                               std::string kind_str;
+                               switch (prop.method_kind) {
+                                   case MethodKind::kData:        kind_str = "data"; break;
+                                   case MethodKind::kMethod:      kind_str = "method"; break;
+                                   case MethodKind::kGetter:      kind_str = "getter"; break;
+                                   case MethodKind::kSetter:      kind_str = "setter"; break;
+                                   case MethodKind::kAsyncMethod: kind_str = "async_method"; break;
+                                   case MethodKind::kGenerator:   kind_str = "generator"; break;
+                               }
+                               result += ind(indent + 1) + "prop[" + kind_str + "] \"" + prop.key + "\":\n";
                                result += dump_expr(*prop.value, indent + 2);
                            }
                        },
