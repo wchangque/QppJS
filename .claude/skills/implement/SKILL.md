@@ -30,6 +30,7 @@ description: 编排 QppJS 的 agent team 完成一个具体语言特性或模块
     → [并行] review-agent（首次审查）+ perf-agent（代码审查）
     → implementation-agent（修复必修问题 + P0 性能问题）
     → review-agent（验证审查，仅确认修复）
+    → sync-commit-agent（状态同步 + git commit）
 ```
 
 **全程自动执行，各阶段之间不停顿等待用户确认。**
@@ -270,13 +271,28 @@ description: 编排 QppJS 的 agent team 完成一个具体语言特性或模块
 
 ---
 
+## 阶段 7：状态同步与提交
+
+**触发条件：** 所有前序阶段完成后自动执行（不可跳过）。
+
+启动 `sync-commit-agent`（subagent_type: `sync-commit-agent`），传入：
+
+```
+主题：<topic>
+今日日期：<YYYY-MM-DD>
+
+## 实现摘要
+<implementation-agent 最终输出的"代码改动文件列表"与"测试结果">
+```
+
+---
+
 ## 收尾
 
 每轮 skill 执行结束后，主会话必须：
 
 1. 向用户汇报各阶段结论（一句话/阶段）。
-2. 更新 `docs/plans/01-current-status.md`。
-3. 若阶段推进，更新 `docs/plans/02-next-phase.md`。
+2. 确认阶段 7 已完成状态同步与 commit。
 
 ---
 
