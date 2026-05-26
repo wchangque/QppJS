@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 3694/3694 通过（coverage），0 LSan 泄漏 |
-| 最近更新 | 2026-05-25 |
-| 下一步 | 继续提升 test262 通过率（in 运算符、comma 多变量声明等） |
+| 测试计数 | 3733/3733 通过（coverage），0 LSan 泄漏 |
+| 最近更新 | 2026-05-26 |
+| 下一步 | 继续提升 test262 通过率（comma 多变量声明、typeof、void 等） |
 | test262 | Array 442/2984（14.8%），Number 89/340（26.2%），String 159/1334（11.9%），Interpreter 模式 |
 
 ## 已知遗留问题
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **`in` 运算符**（2026-05-26）：`BinaryOp::In` 枚举值；`kIn`（0-byte 指令，pop rhs/lhs → push bool）；`JSObject::has_property(key)` + `has_property_by_symbol(symbol_id)` 迭代原型链（while 循环，与 get_property 对称）；Parser Pratt loop lbp=9 for "in"，no_in_ guard 隔离 for-loop head；Interpreter + VM 双路径对称（Symbol is_symbol() 先行，TypeError if RHS 非对象）；39 个测试（IN-01~IN-20 × Interp+VM）。3733/3733 通过（coverage），0 LSan 泄漏。
 
 - [x] **解构赋值 Review 必修问题修复 M1/M2/M3/M4/M5 + P1.2**（2026-05-25）：M1：compiler.cpp `has_block_scope_decl()` 新增 `DestructuringDeclaration` 分支（let/const 时返回 true），修复 `{ let {x} = ... }` 不创建 scope 导致 x 泄漏的 Bug；M2：interpreter.cpp `eval_destructuring_decl()` 在 bind_pattern 前对 let/const 模式调用 `collect_pattern_names` + `define(name, kind)` 预声明所有变量为 TDZ，使默认值表达式可以看到后续变量；M3：interpreter.cpp `hoist_vars_stmt` ForOfStatement 分支新增 `pattern_binding` 检查，`for (var [x] of ...)` 的 x 现在正确被 hoist；M4：eval_object_expr（interpreter）+ compile_object_expr（VM）遇到 SpreadElement 属性时抛 SyntaxError "Object spread not supported"；M5：eval_object_expr + compile_object_expr 遇到 AssignmentExpression 属性值时抛 SyntaxError "Invalid shorthand property initializer"；P1.2：vm.cpp `kCopyDataProperties` handler 中 excluded key 比较改用 `k.sv()` 替代 `to_string_val(k)`，避免不必要的类型转换；新增 12 个测试（DS-38～DS-43 × Interp+VM）。3694/3694 通过（coverage），0 LSan 泄漏。
 

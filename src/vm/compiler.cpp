@@ -1043,6 +1043,7 @@ void Compiler::compile_binary(const BinaryExpression& expr) {
     case BinaryOp::EqEqEq:    emit(Opcode::kStrictEq);  break;
     case BinaryOp::NotEqEq:   emit(Opcode::kStrictNEq); break;
     case BinaryOp::Instanceof: emit(Opcode::kInstanceof); break;
+    case BinaryOp::In:         emit(Opcode::kIn);         break;
     }
 }
 

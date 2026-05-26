@@ -4968,6 +4968,27 @@ EvalResult Interpreter::eval_binary(const BinaryExpression& expr) {
         }
         return EvalResult::ok(Value::boolean(found));
     }
+    case BinaryOp::In: {
+        if (!rv.is_object()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Right-hand side of 'in' must be an object");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        RcObject* raw = rv.as_object_raw();
+        if (!raw) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Right-hand side of 'in' must be an object");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* obj = static_cast<JSObject*>(raw);
+        bool found;
+        if (lv.is_symbol()) {
+            found = obj->has_property_by_symbol(lv.as_symbol_id());
+        } else {
+            found = obj->has_property(to_string_val(lv));
+        }
+        return EvalResult::ok(Value::boolean(found));
+    }
     }
     return EvalResult::ok(Value::undefined());
 }

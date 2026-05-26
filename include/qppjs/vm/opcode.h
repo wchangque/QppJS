@@ -64,6 +64,7 @@ namespace qppjs {
     X(Typeof, 0)                        \
     X(TypeofVar, 2)                     \
     X(Instanceof, 0)                    \
+    X(In, 0)                            \
     /* Control flow */                  \
     X(Jump, 4)                          \
     X(JumpIfFalse, 4)                   \

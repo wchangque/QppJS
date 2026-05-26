@@ -5923,6 +5923,31 @@ EvalResult VM::run(size_t exit_depth) {
             break;
         }
 
+        case Opcode::kIn: {
+            Value rhs = std::move(stack.back()); stack.pop_back();
+            Value lhs = std::move(stack.back()); stack.pop_back();
+            if (!rhs.is_object()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Right-hand side of 'in' must be an object");
+                continue;
+            }
+            RcObject* raw = rhs.as_object_raw();
+            if (!raw) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Right-hand side of 'in' must be an object");
+                continue;
+            }
+            auto* obj = static_cast<JSObject*>(raw);
+            bool found;
+            if (lhs.is_symbol()) {
+                found = obj->has_property_by_symbol(lhs.as_symbol_id());
+            } else {
+                found = obj->has_property(to_string_val(lhs));
+            }
+            stack.push_back(Value::boolean(found));
+            break;
+        }
+
         // ---- Control flow ----
 
         case Opcode::kJump: {

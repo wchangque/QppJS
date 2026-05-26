@@ -59,6 +59,10 @@ public:
     // constructor_property_ is a raw (non-owning) pointer — weak reference semantics.
     void set_constructor_property(RcObject* value);
     bool has_own_property(const std::string& key) const;
+    // Check whether key exists anywhere in this object's prototype chain.
+    bool has_property(const std::string& key) const;
+    // Check whether symbol_id exists anywhere in this object's prototype chain.
+    bool has_property_by_symbol(uint64_t symbol_id) const;
     void clear_function_properties();
     std::vector<std::string> own_enumerable_string_keys() const;
     // Enumerate all string keys reachable via this object and its prototype chain,

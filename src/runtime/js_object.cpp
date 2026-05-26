@@ -574,4 +574,33 @@ bool JSObject::has_own_symbol(uint64_t symbol_id) const {
     return symbol_index_->count(symbol_id) > 0;
 }
 
+bool JSObject::has_property(const std::string& key) const {
+    const JSObject* cur = this;
+    while (cur != nullptr) {
+        if (cur->object_kind() == ObjectKind::kArray) {
+            if (key == "length") return true;
+            uint32_t idx = 0;
+            if (try_parse_array_index(key, idx)) {
+                if (cur->elements_.count(idx) > 0) return true;
+                // Fall through: non-index keys checked in properties_ below
+                cur = cur->proto_.get();
+                continue;
+            }
+        }
+        if (cur->index_map_.count(key) > 0) return true;
+        if (key == "constructor" && cur->has_constructor_property_) return true;
+        cur = cur->proto_.get();
+    }
+    return false;
+}
+
+bool JSObject::has_property_by_symbol(uint64_t symbol_id) const {
+    const JSObject* cur = this;
+    while (cur != nullptr) {
+        if (cur->symbol_index_ && cur->symbol_index_->count(symbol_id) > 0) return true;
+        cur = cur->proto_.get();
+    }
+    return false;
+}
+
 }  // namespace qppjs

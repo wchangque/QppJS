@@ -4,6 +4,18 @@
 
 ## 1. 已完成任务
 
+- [x] **`in` 运算符（in operator）**（2026-05-26）：
+  - **AST**：`include/qppjs/frontend/ast.h` `BinaryOp` 枚举新增 `In`；`src/frontend/ast_dump.cpp` 添加 `case BinaryOp::In: return "In"` 分支。
+  - **Opcode**：`include/qppjs/vm/opcode.h` 新增 `X(In, 0)`（0-byte 操作数，pop rhs，pop lhs → push bool）。
+  - **JSObject**：`include/qppjs/runtime/js_object.h` 声明 `has_property(const std::string& key) const` 和 `has_property_by_symbol(uint64_t symbol_id) const`；`src/runtime/js_object.cpp` 实现两个方法，均使用 `while (cur != nullptr)` 迭代原型链（与 get_property 对称，不用递归）。`has_property` 处理：Array length 特判、`try_parse_array_index` 数字索引检测（elements_ 是 unordered_map，key 不存在 = hole = false）、`index_map_` 普通属性、`has_constructor_property_` constructor 特判。
+  - **Parser**：`src/frontend/parser.cpp` Pratt loop 为 Token::Ident "in"（当 `no_in_ == false`）设置 lbp=9；`led()` 构建 `BinaryExpression(BinaryOp::In)`；`is_in_token()` 辅助函数；`no_in_` guard 已有，for-loop head 自动隔离。
+  - **Interpreter**：`src/runtime/interpreter.cpp` `eval_binary_expr` 新增 `BinaryOp::In` 分支：RHS 非对象 → TypeError；`lv.is_symbol()` → `has_property_by_symbol`；else → `to_string_val(lv)` → `has_property`。
+  - **Compiler**：`src/vm/compiler.cpp` `compile_binary_expr` 新增 `BinaryOp::In` 分支：`compile_expr(*lhs)`; `compile_expr(*rhs)`; `emit(kIn)`。
+  - **VM**：`src/vm/vm.cpp` `kIn` handler：pop rhs/lhs；RHS 非对象 → pending_throw TypeError；is_symbol → has_property_by_symbol；else → has_property；push bool。
+  - **Tests**：`tests/unit/in_operator_test.cpp`，IN-01～IN-20，共 39 个测试（Interp+VM 双路径）。
+  - **修改文件**：`include/qppjs/frontend/ast.h`、`include/qppjs/vm/opcode.h`、`include/qppjs/runtime/js_object.h`、`src/runtime/js_object.cpp`、`src/frontend/parser.cpp`、`src/frontend/ast_dump.cpp`、`src/runtime/interpreter.cpp`、`src/vm/compiler.cpp`、`src/vm/vm.cpp`、`tests/CMakeLists.txt`、`tests/unit/in_operator_test.cpp`（新建）。
+  - 3733/3733 通过（coverage），0 LSan 泄漏。
+
 - [x] **解构赋值 Review 必修问题修复 M1/M2/M3/M4/M5 + P1.2**（2026-05-25）：
   - **M1**：`src/vm/compiler.cpp` `has_block_scope_decl()` 新增 `DestructuringDeclaration` 分支（let/const 时返回 true）。修复 `{ let {x} = {x:1}; } x;` 应抛 ReferenceError 但实际泄漏变量的 Bug。
   - **M2**：`src/runtime/interpreter.cpp` `eval_destructuring_decl()` 在调用 `bind_pattern` 前，对 let/const 模式先调用 `collect_pattern_names` 收集所有 IdentifierPattern 名字，然后对每个名字 `current_env_->define(name, kind)`（TDZ 预声明）。确保默认值表达式执行时，后续变量名已在 env 中可见（TDZ 状态）。

@@ -46,6 +46,7 @@ add_executable(qppjs_unit_tests
     unit/spread_rest_test.cpp
     unit/default_params_test.cpp
     unit/destructuring_test.cpp
+    unit/in_operator_test.cpp
     # unit/global_stubs_test.cpp  # FIXME: pre-existing compilation error (is_err not a member of EvalResult)
 )
 

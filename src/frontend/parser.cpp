@@ -1307,6 +1307,16 @@ struct Parser {
                                                std::make_unique<ExprNode>(std::move(right.value())), log_r}});
         }
 
+        // 'in' 运算符（contextual keyword，TokenKind::Ident，text=="in"）
+        if (kind == TokenKind::Ident && token_text(op_tok) == "in") {
+            auto right = parse_expr(9);
+            if (!right.ok()) return right;
+            auto bin_r = span(expr_range(left).offset, range_end(expr_range(right.value())));
+            return ParseResult<ExprNode>::Ok(
+                ExprNode{BinaryExpression{BinaryOp::In, std::make_unique<ExprNode>(std::move(left)),
+                                          std::make_unique<ExprNode>(std::move(right.value())), bin_r}});
+        }
+
         // 其他二元操作符：BinaryExpression（左结合）
         auto right = parse_expr(bp);
         if (!right.ok()) return right;
@@ -1374,6 +1384,8 @@ struct Parser {
 
         while (true) {
             int bp = lbp(cur.kind);
+            // Contextual 'in' operator: lbp=9, suppressed inside for-init via no_in_
+            if (bp == 0 && !no_in_ && is_in_token()) bp = 9;
             if (bp <= min_bp) break;
             Token op_tok = cur;
             // got_lf at this point is "before the operator". Save it for led()
@@ -2888,6 +2900,7 @@ struct Parser {
                     if (!left2.ok()) return ParseResult<StmtNode>::Err(left2.error());
                     while (true) {
                         int bp = lbp(cur.kind);
+                        if (bp == 0 && !no_in_ && is_in_token()) bp = 9;
                         if (bp <= 0) break;
                         Token op_tok3 = cur;
                         advance();
@@ -2929,6 +2942,7 @@ struct Parser {
                 // 继续 Pratt loop
                 while (true) {
                     int bp = lbp(cur.kind);
+                    if (bp == 0 && !no_in_ && is_in_token()) bp = 9;
                     if (bp <= 0) break;
                     Token op_tok2 = cur;
                     advance();
