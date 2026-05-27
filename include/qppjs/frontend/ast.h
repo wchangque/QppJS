@@ -27,7 +27,7 @@ enum class BinaryOp {
     Add, Sub, Mul, Div, Mod, Lt, Gt, LtEq, GtEq, EqEq, NotEq, EqEqEq, NotEqEq, Instanceof, In,
     BitAnd, BitOr, BitXor, Shl, Sar, Shr
 };
-enum class LogicalOp { And, Or };
+enum class LogicalOp { And, Or, Nullish };
 enum class AssignOp {
     Assign, AddAssign, SubAssign, MulAssign, DivAssign, ModAssign,
     BitAndAssign, BitOrAssign, BitXorAssign, ShlAssign, SarAssign, ShrAssign
@@ -269,6 +269,8 @@ struct ExprNode {
                  ArrowFunctionExpression, ConditionalExpression, SpreadElement,
                  DestructuringAssignmentExpression>
             v;
+
+    bool is_parenthesized = false;  // set by Parser when wrapped in ( )
 
     ExprNode() = default;
 

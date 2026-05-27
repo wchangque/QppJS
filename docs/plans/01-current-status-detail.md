@@ -4,6 +4,21 @@
 
 ## 1. 已完成任务
 
+- [x] **`??` nullish coalescing Testing Agent 边界补测**（2026-05-27）：追加 NC-31～NC-41（23 个新测试）至 `nullish_coalescing_test.cpp`：getter 副作用两场景（非 nullish：getter 调用 1 次 + RHS 不求值；nullish：getter 调用 1 次 + RHS 求值 1 次）；LHS 为对象 `{}`；LHS 为空数组 `[]`；`??` 作为函数参数；`??` 在 return 语句；嵌套三元中 `??`（`(null??"a")==="a" ? "yes":"no"` → "yes"）；`??` 与 `+` 优先级（`null??1+2` → 3）；链接不同类型（`null??0??X` → 0，0 非 nullish）；Symbol 为 LHS（Symbol 非 nullish）；解构 `{x=undefined}={}` 后接 `??`（→ fallback）；`??=` 占位测试（当前 parse error）。技术注意：`??=` 字符串字面量使用字符串连接 `"??" "= 42"` 拆分规避 GCC `-Wtrigraphs` 编译错误。4132/4132 通过（coverage），0 LSan 泄漏。
+
+- [x] **`??` nullish coalescing [T262-P3]**（2026-05-27）：
+  - **Lexer**：`case '?'` 四路消歧（顺序：`??=` → `??` → `?.`（非数字前缀）→ `?`），新增 `QuestionQuestion`/`QuestionQuestionEq`/`QuestionDot` 三个 token；`token_kind_name` 补全；旧 lexer 测试 `OperatorQuestionQuestionSplits` 从"split 为两个 `?`"更新为"单个 `QuestionQuestion` token"。
+  - **AST**：`LogicalOp::Nullish`；`ExprNode.is_parenthesized = false`（默认 false，`nud(LParen)` 返回普通括号表达式时设为 true）。
+  - **Parser**：`lbp(Question)` 从 4 → 3（与 `lbp(QuestionQuestion)=3` 同级，三元 `?:` 低于 `||`）；`nud(LParen)` 两个返回路径均设 `is_parenthesized = true`；`led(PipePipe/AmpAmp)` 新增 Nullish LHS 混用检查；`led(QuestionQuestion)` 新块：LHS 混用检查 + `parse_expr(3)` 左结合 + RHS 混用检查 + 返回 `LogicalExpression{Nullish, ...}`；错误消息用 `\?` 转义避免 `-Wtrigraphs`。
+  - **Opcode**：`X(JumpIfNotNullish, 4)` —— 与现有跳转指令统一使用 4 字节偏移，`emit_jump`/`patch_jump` 基础设施复用。
+  - **Interpreter**：`eval_logical` 新增 `LogicalOp::Nullish` 分支（`is_null() || is_undefined()` → eval RHS；否则返回 LHS）。
+  - **Compiler**：`compile_logical` 从 if/else 改为 if/else-if/else，新增 Nullish 分支（kDup + kJumpIfNotNullish + kPop + RHS + patch_jump）。
+  - **VM**：`kJumpIfNotNullish` handler（pop TOS；非 nullish → jump；nullish → continue）。
+  - **ast_dump**：`logical_op_str` 补全 `LogicalOp::Nullish` → `"??"`。
+  - **hoist_vars_scan_expr**（compiler.cpp）：`LogicalExpression` 分支已遍历 left/right 子节点，Nullish 自动覆盖，无需额外修改。
+  - **测试**：新建 `tests/unit/nullish_coalescing_test.cpp`（NC-01～NC-30 × Interp+VM = 56 个测试 + 4 个 SyntaxError 混用检查），CMakeLists.txt 注册。
+  - 4109/4109 通过（coverage），4107/4107 通过（run_ut ASAN），0 LSan 泄漏。
+
 - [x] **计算属性键 T262-P2 Review 必修修复 M1/M2/P1**（2026-05-26）：
   - **M1：Symbol 计算 accessor 修复**：新增 `JSObject::find_symbol_entry(uint64_t)` 公开方法（遍历原型链返回 `const SymbolPropertyEntry*`），`SymbolPropertyEntry` 结构体从 private 移至 public（js_object.h/js_object.cpp）。interpreter.cpp 三处 Symbol 读/写调用点改为先调用 `find_symbol_entry` 检查 `is_accessor`：(1) `bind_pattern` 解构时读 Symbol 属性调用 getter；(2) `eval_member_expr` 计算属性读路径调用 getter；(3) `eval_member_assign` Symbol 赋值路径检查 setter 并调用。vm.cpp kGetElem Symbol 路径同样通过 `find_symbol_entry` 检查 accessor，getter 通过 `call_function_val` 调用（含 `call_stack_.back()` 重取和异常处理）；kSetElem Symbol 路径对称处理 setter。
   - **附带 Bug 修复**：`js_object.cpp::clear_function_properties` 中 `symbol_props_` 段只检查 `entry.value` 跳过 accessor 条目（value=undefined），导致 `entry.getter`/`entry.setter` 持有闭包引用形成循环泄漏——新增对 `entry.getter.is_object()` / `entry.setter.is_object()` 的清零，与字符串属性路径对称（预存在 Bug，被 CP-49 测试暴露）。

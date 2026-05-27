@@ -6366,6 +6366,15 @@ EvalResult VM::run(size_t exit_depth) {
             break;
         }
 
+        case Opcode::kJumpIfNotNullish: {
+            int32_t offset = read_i32(bc, pc);
+            Value v = std::move(stack.back()); stack.pop_back();
+            if (!v.is_null() && !v.is_undefined()) {
+                pc = static_cast<size_t>(static_cast<int64_t>(pc) + offset);
+            }
+            break;
+        }
+
         // ---- Stack ----
 
         case Opcode::kPop:

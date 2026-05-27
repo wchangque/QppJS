@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 4053/4053 通过（coverage），0 LSan 泄漏 |
-| 最近更新 | 2026-05-26 |
-| 下一步 | `??` nullish coalescing [T262-P3] → `?.` optional chaining [T262-P4] |
+| 测试计数 | 4132/4132 通过（coverage），0 LSan 泄漏 |
+| 最近更新 | 2026-05-27 |
+| 下一步 | `?.` optional chaining [T262-P4] |
 | test262 | language/expressions 32.4%（method shorthand 后预计约 +5pp） |
 
 ## 已知遗留问题
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **`??` nullish coalescing [T262-P3] + Testing Agent 边界补测**（2026-05-27）：Lexer 新增 `QuestionQuestion`/`QuestionQuestionEq`/`QuestionDot` 三个 token（四路消歧 `case '?'`）；`LogicalOp::Nullish`；`ExprNode.is_parenthesized` 字段；Parser `lbp(Question)` 4→3，`lbp(QuestionQuestion)=3`，`nud(LParen)` 设置 `is_parenthesized`，`led(QuestionQuestion)` 含 LHS/RHS 混用检查，`led(PipePipe/AmpAmp)` 新增 Nullish LHS 检查；`kJumpIfNotNullish`（4 字节跳转）；Interpreter `eval_logical` Nullish 分支；Compiler `compile_logical` Nullish 分支；VM `kJumpIfNotNullish` handler；ast_dump `"??"` 输出；更新旧 lexer 测试（QuestionQuestion 单 token）；新增 `nullish_coalescing_test.cpp`（NC-01～NC-30 × Interp+VM = 56 个测试 + 4 个 SyntaxError 检查）；Testing Agent 补测 NC-31～NC-41（23 个新测试）：getter 副作用（非 nullish/nullish 两场景，getter 只调用一次 RHS 不求值验证）；LHS 为对象 {}；LHS 为空数组 []；??  作为函数参数；?? 在 return 语句；嵌套三元中 ??；?? 与 + 优先级（null ?? 1+2 → 3）；链接 0 非 nullish（null??0??X → 0）；Symbol 为 LHS；解构默认值 undefined 后接 ??；??= 占位测试（当前 parse error 预期）。4132/4132 通过（coverage），0 LSan 泄漏。
 
 - [x] **计算属性键 T262-P2 Review 必修修复 M1/M2/P1**（2026-05-26）：M1：`find_symbol_entry` 新方法（js_object.h/cpp，遍历原型链返回 SymbolPropertyEntry*）；interpreter.cpp 三处 Symbol accessor 调用点修复（bind_pattern/eval_computed_member/eval_member_assign 均通过 find_symbol_entry 检查 is_accessor，getter/setter 走 call_function_val）；vm.cpp kGetElem Symbol 路径添加 accessor getter 调用（含 call_function_val + cur_frame 重取模式），kSetElem Symbol 路径添加 accessor setter 调用；附带修复 js_object.cpp clear_function_properties 中 symbol_props_ 段未清除 entry.getter/setter 导致 accessor 闭包泄漏的预存在 Bug（与字符串属性路径对称）；M2：compiler.cpp compile_bind_pattern 计算键路径（has_rest 时先保存 key 到 $__qppjs_ckey_N__ 临时变量，rest 阶段追加 kGetVar 并传给 kCopyDataProperties）；vm.cpp kCopyDataProperties handler 从 k.sv() 改为 to_string_val(k)（支持非 string 运行时键值），Symbol 键跳过（永不出现在 own_enumerable_string_keys）；P1：vm.cpp kDefineComputedGetter/kDefineComputedSetter 各新增局部 str_key = to_string_val(key)，两次 to_string_val 调用减为一次；新增 6 个测试（CP-49/CP-50/CP-51 × Interp+VM）。4053/4053 通过（coverage），0 LSan 泄漏。
 
@@ -170,7 +172,7 @@
 
 - ~~**[T262-P1] 方法简写 `{foo() {}}`**：已完成（2026-05-26，3949/3949 通过，0 LSan 泄漏）~~
 - ~~**[T262-P2] 计算属性键 `{[expr]: val}`**：已完成（2026-05-26，4053/4053 通过，0 LSan 泄漏）~~
-- **[T262-P3] `??` nullish coalescing**：Lexer 把 `??` 拆成两个 `?`，第二个 `?` 在表达式中报错。需 Lexer 新增 `QuestionQuestion` token，Parser 新增 `lbp=3` 的 `??` 中缀运算符。预计影响 ~600 个测试（含 propertyHelper.js 的三元链）。
+- ~~**[T262-P3] `??` nullish coalescing**：已完成（2026-05-27，79 个新测试（NC-01～NC-41 × Interp+VM）+ 4 个 SyntaxError 检查，4132/4132 通过，0 LSan 泄漏）~~
 - **[T262-P4] `?.` optional chaining**：`?.` 被词法切成 `?` + `.`，Parser 消费 `?` 后遇 `.` 报 `unexpected token`。需 Lexer 新增 `QuestionDot` token，Parser 新增 `?.` 成员访问/调用语义。预计影响 ~180 个测试。
 
 - QuickJS 风格优化调研

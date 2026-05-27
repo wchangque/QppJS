@@ -1104,9 +1104,14 @@ void Compiler::compile_logical(const LogicalExpression& expr) {
         emit(Opcode::kPop);
         compile_expr(*expr.right);
         patch_jump(patch);
-    } else {
-        // Or
+    } else if (expr.op == LogicalOp::Or) {
         size_t patch = emit_jump(Opcode::kJumpIfTrue);
+        emit(Opcode::kPop);
+        compile_expr(*expr.right);
+        patch_jump(patch);
+    } else {
+        // Nullish: LHS is non-nullish → jump (keep LHS), else pop LHS and eval RHS
+        size_t patch = emit_jump(Opcode::kJumpIfNotNullish);
         emit(Opcode::kPop);
         compile_expr(*expr.right);
         patch_jump(patch);

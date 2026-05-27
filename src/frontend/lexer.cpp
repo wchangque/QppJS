@@ -743,6 +743,18 @@ Token next_token(LexerState& state) {
             ++state.pos;
             return {TokenKind::Comma, {start, 1}};
         case '?':
+            if (peek(1) == '?') {
+                if (peek(2) == '=') {
+                    state.pos += 3;
+                    return {TokenKind::QuestionQuestionEq, {start, 3}};
+                }
+                state.pos += 2;
+                return {TokenKind::QuestionQuestion, {start, 2}};
+            }
+            if (peek(1) == '.' && !(peek(2) >= '0' && peek(2) <= '9')) {
+                state.pos += 2;
+                return {TokenKind::QuestionDot, {start, 2}};
+            }
             ++state.pos;
             return {TokenKind::Question, {start, 1}};
         case '`':

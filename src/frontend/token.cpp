@@ -92,6 +92,12 @@ std::string_view token_kind_name(TokenKind kind) {
             return "DotDotDot";
         case TokenKind::Question:
             return "Question";
+        case TokenKind::QuestionQuestion:
+            return "QuestionQuestion";
+        case TokenKind::QuestionQuestionEq:
+            return "QuestionQuestionEq";
+        case TokenKind::QuestionDot:
+            return "QuestionDot";
         case TokenKind::Plus:
             return "Plus";
         case TokenKind::Minus:

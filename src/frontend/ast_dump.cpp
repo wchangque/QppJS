@@ -100,6 +100,8 @@ const char* logical_op_str(LogicalOp op) {
             return "&&";
         case LogicalOp::Or:
             return "||";
+        case LogicalOp::Nullish:
+            return "??";
     }
     return "?";
 }

@@ -5183,6 +5183,11 @@ EvalResult Interpreter::eval_logical(const LogicalExpression& expr) {
             return left_result;
         }
         return eval_expr(*expr.right);
+    case LogicalOp::Nullish:
+        if (lv.is_null() || lv.is_undefined()) {
+            return eval_expr(*expr.right);
+        }
+        return left_result;
     }
     return EvalResult::ok(Value::undefined());
 }

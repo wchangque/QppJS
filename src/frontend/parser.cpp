@@ -543,7 +543,8 @@ struct Parser {
             case TokenKind::URShiftEq:
                 return 2;
             case TokenKind::Question:
-                return 4;
+            case TokenKind::QuestionQuestion:
+                return 3;
             case TokenKind::PipePipe:
                 return 4;
             case TokenKind::AmpAmp:
@@ -744,7 +745,9 @@ struct Parser {
                         return parse_arrow_body(std::move(params), paren_start, std::move(rest));
                     }
                     // 逗号表达式：(a, b) 的值为最后一项
-                    return ParseResult<ExprNode>::Ok(std::move(items.back()));
+                    ExprNode last_item = std::move(items.back());
+                    last_item.is_parenthesized = true;
+                    return ParseResult<ExprNode>::Ok(std::move(last_item));
                 }
 
                 // 消费 )
@@ -786,6 +789,7 @@ struct Parser {
                 }
 
                 // 普通括号表达式
+                first.value().is_parenthesized = true;
                 return first;
             }
             // 一元前缀
@@ -1580,6 +1584,12 @@ struct Parser {
         }
 
         if (kind == TokenKind::PipePipe || kind == TokenKind::AmpAmp) {
+            if (auto* le = std::get_if<LogicalExpression>(&left.v)) {
+                if (le->op == LogicalOp::Nullish && !left.is_parenthesized) {
+                    return ParseResult<ExprNode>::Err(make_parse_error(
+                        source, op_tok, "cannot mix '&&' or '||' with '?\?'"));
+                }
+            }
             auto right = parse_expr(bp);
             if (!right.ok()) return right;
             LogicalOp lop = (kind == TokenKind::AmpAmp) ? LogicalOp::And : LogicalOp::Or;
@@ -1587,6 +1597,27 @@ struct Parser {
             return ParseResult<ExprNode>::Ok(
                     ExprNode{LogicalExpression{lop, std::make_unique<ExprNode>(std::move(left)),
                                                std::make_unique<ExprNode>(std::move(right.value())), log_r}});
+        }
+
+        if (kind == TokenKind::QuestionQuestion) {
+            if (auto* le = std::get_if<LogicalExpression>(&left.v)) {
+                if ((le->op == LogicalOp::And || le->op == LogicalOp::Or) && !left.is_parenthesized) {
+                    return ParseResult<ExprNode>::Err(make_parse_error(
+                        source, op_tok, "cannot mix '?\?' with '&&' or '||'"));
+                }
+            }
+            auto right = parse_expr(3);  // lbp=3，左结合
+            if (!right.ok()) return right;
+            if (auto* le = std::get_if<LogicalExpression>(&right.value().v)) {
+                if ((le->op == LogicalOp::And || le->op == LogicalOp::Or) && !right.value().is_parenthesized) {
+                    return ParseResult<ExprNode>::Err(make_parse_error(
+                        source, op_tok, "'&&' and '||' cannot appear in the right side of '?\?' without parentheses"));
+                }
+            }
+            auto null_r = span(expr_range(left).offset, range_end(expr_range(right.value())));
+            return ParseResult<ExprNode>::Ok(
+                ExprNode{LogicalExpression{LogicalOp::Nullish, std::make_unique<ExprNode>(std::move(left)),
+                                           std::make_unique<ExprNode>(std::move(right.value())), null_r}});
         }
 
         // 'in' 运算符（contextual keyword，TokenKind::Ident，text=="in"）

@@ -1060,11 +1060,12 @@ TEST(LexerTest, OperatorStarStarSplitsToStarStar) {
 }
 
 TEST(LexerTest, OperatorQuestionQuestionSplits) {
-    // '??' 空值合并，当前未定义，应切分为 Question + Question
+    // '??' 空值合并运算符，tokenize 为单个 QuestionQuestion token
     auto tokens = collect_tokens("??");
-    ASSERT_EQ(tokens.size(), 3u);
-    EXPECT_EQ(tokens[0].kind, TokenKind::Question);
-    EXPECT_EQ(tokens[1].kind, TokenKind::Question);
+    ASSERT_EQ(tokens.size(), 2u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::QuestionQuestion);
+    EXPECT_EQ(tokens[0].range.length, 2u);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Eof);
 }
 
 TEST(LexerTest, OperatorSpreadSplitsToDotDotDot) {

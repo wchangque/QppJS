@@ -55,6 +55,9 @@ enum class TokenKind {
     Dot,
     DotDotDot,  // ...
     Question,
+    QuestionQuestion,    // ??
+    QuestionQuestionEq,  // ??=（lexer 识别，parser lbp=0）
+    QuestionDot,         // ?.（lexer 识别，parser lbp=0，T262-P4 时实现）
 
     // 操作符
     Plus,

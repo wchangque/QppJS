@@ -76,6 +76,7 @@ namespace qppjs {
     X(Jump, 4)                          \
     X(JumpIfFalse, 4)                   \
     X(JumpIfTrue, 4)                    \
+    X(JumpIfNotNullish, 4)              \
     /* Stack */                         \
     X(Pop, 0)                           \
     X(Dup, 0)                           \
