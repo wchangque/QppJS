@@ -387,6 +387,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const ConditionalExpression& n) { return n.range; },
                               [](const SpreadElement& n) { return n.range; },
                               [](const DestructuringAssignmentExpression& n) { return n.range; },
+                              [](const OptionalChainExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -584,6 +585,7 @@ struct Parser {
                 return 20;
             case TokenKind::Dot:
             case TokenKind::LBracket:
+            case TokenKind::QuestionDot:
                 return 21;
             default:
                 return 0;
@@ -866,6 +868,10 @@ struct Parser {
                 // Use lbp(Dot)=18 as min_bp to allow member access but stop before call
                 auto callee = parse_expr(20);  // stop before LParen (lbp=19) and ++/--(lbp=20), allow Dot/LBracket (lbp=21)
                 if (!callee.ok()) return callee;
+                if (std::holds_alternative<OptionalChainExpression>(callee.value().v)) {
+                    return ParseResult<ExprNode>::Err(
+                        make_parse_error(source, tok, "cannot use 'new' with optional chaining"));
+                }
                 std::vector<std::unique_ptr<ExprNode>> args;
                 if (cur.kind == TokenKind::LParen) {
                     advance();  // consume '('
@@ -1395,6 +1401,12 @@ struct Parser {
                 return ParseResult<ExprNode>::Err(
                     make_parse_error(source, op_tok, "unexpected line break after operand"));
             }
+            // Optional chaining is not a valid assignment target
+            if (std::holds_alternative<OptionalChainExpression>(left.v)) {
+                return ParseResult<ExprNode>::Err(
+                    make_parse_error(source, op_tok,
+                        "invalid left-hand side expression in postfix operation: optional chain is not a valid assignment target"));
+            }
             // left must be a valid assignment target (Identifier or MemberExpression)
             if (!std::holds_alternative<Identifier>(left.v) &&
                 !std::holds_alternative<MemberExpression>(left.v)) {
@@ -1470,11 +1482,118 @@ struct Parser {
                     span(obj_start, end)}});
         }
 
+        // Optional chaining: base?.prop / base?.[expr] / base?.()
+        if (kind == TokenKind::QuestionDot) {
+            uint32_t chain_start = expr_range(left).offset;
+            OptionalChainExpression chain;
+            chain.base = std::make_unique<ExprNode>(std::move(left));
+            uint32_t last_end = range_end(op_tok.range);
+
+            // Parse a single link after consuming QuestionDot or Dot
+            // optional=true for ?. trigger, false for . / [ / (
+            auto parse_one_link = [&](bool optional)
+                -> ParseResult<OptionalChainExpression::ChainLink> {
+                if (cur.kind == TokenKind::LParen) {
+                    advance();  // consume '('
+                    std::vector<std::unique_ptr<ExprNode>> args;
+                    while (cur.kind != TokenKind::RParen && cur.kind != TokenKind::Eof) {
+                        auto arg = parse_expr(2);
+                        if (!arg.ok()) return ParseResult<OptionalChainExpression::ChainLink>::Err(arg.error());
+                        args.push_back(std::make_unique<ExprNode>(std::move(arg.value())));
+                        if (cur.kind == TokenKind::Comma) advance();
+                        else break;
+                    }
+                    auto rp = expect(TokenKind::RParen);
+                    if (!rp.ok()) return ParseResult<OptionalChainExpression::ChainLink>::Err(rp.error());
+                    last_end = range_end(rp.value().range);
+                    return ParseResult<OptionalChainExpression::ChainLink>::Ok(
+                        OptionalChainExpression::CallLink{optional, std::move(args)});
+                } else if (cur.kind == TokenKind::LBracket) {
+                    advance();  // consume '['
+                    auto key = parse_expr(0);
+                    if (!key.ok()) return ParseResult<OptionalChainExpression::ChainLink>::Err(key.error());
+                    auto rb = expect(TokenKind::RBracket);
+                    if (!rb.ok()) return ParseResult<OptionalChainExpression::ChainLink>::Err(rb.error());
+                    last_end = range_end(rb.value().range);
+                    return ParseResult<OptionalChainExpression::ChainLink>::Ok(
+                        OptionalChainExpression::ElemLink{optional,
+                            std::make_unique<ExprNode>(std::move(key.value()))});
+                } else if (cur.kind == TokenKind::Ident || is_keyword(cur.kind)) {
+                    std::string name = std::string(token_text(cur));
+                    last_end = range_end(cur.range);
+                    advance();
+                    return ParseResult<OptionalChainExpression::ChainLink>::Ok(
+                        OptionalChainExpression::PropLink{optional, std::move(name)});
+                } else {
+                    return ParseResult<OptionalChainExpression::ChainLink>::Err(
+                        make_parse_error(source, cur, "expected property name, '[', or '(' after '?.'"));
+                }
+            };
+
+            // First link: triggered by ?. (optional=true)
+            auto first = parse_one_link(true);
+            if (!first.ok()) return ParseResult<ExprNode>::Err(first.error());
+            chain.links.push_back(std::move(first.value()));
+
+            // Continue consuming subsequent links
+            while (true) {
+                if (cur.kind == TokenKind::QuestionDot) {
+                    advance();  // consume ?.
+                    auto lnk = parse_one_link(true);
+                    if (!lnk.ok()) return ParseResult<ExprNode>::Err(lnk.error());
+                    chain.links.push_back(std::move(lnk.value()));
+                } else if (cur.kind == TokenKind::Dot) {
+                    advance();  // consume .
+                    if (cur.kind != TokenKind::Ident && !is_keyword(cur.kind)) {
+                        return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, cur, "expected property name after '.'"));
+                    }
+                    std::string name = std::string(token_text(cur));
+                    last_end = range_end(cur.range);
+                    advance();
+                    chain.links.push_back(OptionalChainExpression::PropLink{false, std::move(name)});
+                } else if (cur.kind == TokenKind::LBracket) {
+                    advance();  // consume [
+                    auto key = parse_expr(0);
+                    if (!key.ok()) return key;
+                    auto rb = expect(TokenKind::RBracket);
+                    if (!rb.ok()) return ParseResult<ExprNode>::Err(rb.error());
+                    last_end = range_end(rb.value().range);
+                    chain.links.push_back(OptionalChainExpression::ElemLink{false,
+                        std::make_unique<ExprNode>(std::move(key.value()))});
+                } else if (cur.kind == TokenKind::LParen) {
+                    advance();  // consume (
+                    std::vector<std::unique_ptr<ExprNode>> args;
+                    while (cur.kind != TokenKind::RParen && cur.kind != TokenKind::Eof) {
+                        auto arg = parse_expr(2);
+                        if (!arg.ok()) return arg;
+                        args.push_back(std::make_unique<ExprNode>(std::move(arg.value())));
+                        if (cur.kind == TokenKind::Comma) advance();
+                        else break;
+                    }
+                    auto rp = expect(TokenKind::RParen);
+                    if (!rp.ok()) return ParseResult<ExprNode>::Err(rp.error());
+                    last_end = range_end(rp.value().range);
+                    chain.links.push_back(OptionalChainExpression::CallLink{false, std::move(args)});
+                } else {
+                    break;
+                }
+            }
+
+            chain.range = span(chain_start, last_end);
+            return ParseResult<ExprNode>::Ok(ExprNode{std::move(chain)});
+        }
+
         // 赋值：右结合，检查左侧是 Identifier 或 MemberExpression 或解构模式
         if (kind == TokenKind::Eq || kind == TokenKind::PlusEq || kind == TokenKind::MinusEq ||
             kind == TokenKind::StarEq || kind == TokenKind::SlashEq || kind == TokenKind::PercentEq ||
             kind == TokenKind::AmpEq || kind == TokenKind::PipeEq || kind == TokenKind::CaretEq ||
             kind == TokenKind::LShiftEq || kind == TokenKind::RShiftEq || kind == TokenKind::URShiftEq) {
+            // Optional chaining 不能作为赋值左值
+            if (std::holds_alternative<OptionalChainExpression>(left.v)) {
+                return ParseResult<ExprNode>::Err(
+                    make_parse_error(source, op_tok, "invalid left-hand side: optional chain is not a valid assignment target"));
+            }
             // 解构赋值模式：左侧为 ArrayExpression 或 ObjectExpression，且 op 为 =
             if (kind == TokenKind::Eq &&
                 (std::holds_alternative<ArrayExpression>(left.v) ||

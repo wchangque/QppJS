@@ -4,6 +4,17 @@
 
 ## 1. 已完成任务
 
+- [x] **`?.` optional chaining [T262-P4] + Testing Agent 边界补测**（2026-05-27）：
+  - **AST**：`OptionalChainExpression` 节点加入 `ExprNode` variant，内含 `PropLink{optional,name}` / `ElemLink{optional,key_expr}` / `CallLink{optional,args}` 三种 `ChainLink` variant 及 `std::vector<ChainLink> links`。
+  - **Lexer**：`QuestionDot` token 已在 T262-P3 中引入，本轮无需修改。
+  - **Parser**：`lbp(QuestionDot)=19`（与 Dot/LBracket 同级）；`led(QuestionDot)` 贪婪消费整条链（第一个 link 为 `optional=true`，后续遇 `.`/`[`/`(`/`?.` 继续追加）；`led(Assign)` 对 OptionalChainExpression 抛 SyntaxError（赋值目标非法）；`nud(KwNew)` 对 OptionalChainExpression callee 抛 SyntaxError（new 不可用于可选链）。
+  - **Interpreter**：`eval_optional_chain`：逐 link 遍历，optional 节点在值为 null/undefined 时短路返回 undefined；PropLink/ElemLink 正常访问；CallLink 区分方法调用（保留 receiver this）与普通调用；`eval_unary(Delete)` 在 OptionalChainExpression 上短路返回 true（base 为 null/undefined），非短路时正常 delete。
+  - **Compiler**：`compile_optional_chain(expr, delete_mode)`：为每条 optional link 发射 `kDup + kJumpIfNotNullish` + null 路径（kPop + kLoadTrue/kLoadUndefined + kJump chain_end）；所有短路 kJump 共享同一 `chain_end_label`；PropLink 后跟 CallLink 时发射 `kDup + kGetProp` 保留 receiver，CallLink 据此选 `kCallMethod` vs `kCall`；ElemLink 发射 `compile_expr(key) + kGetElem`；`kDup + kGetProp/kGetElem` 模式 + `kCallMethod` 的 this 绑定语义。
+  - **Bug M1 修复**：`compile_optional_chain` delete 模式条件 `if (delete_mode && i+1==n)` → `if (delete_mode)`，确保所有短路路径（而非仅最后一个 link）均发射 `kLoadTrue`，符合 spec（delete 短路一律返回 true）。
+  - **ast_dump**：OptionalChainExpression 分支输出 `[computed]` 计算键表示法。
+  - **测试**：新建 `tests/unit/optional_chaining_test.cpp`（OC-01～OC-16 × Interp+VM 核心语义 + OC-13b/c M1 修复覆盖 + OC_Ex1～OC_Ex9 × Interp+VM 边界补测 = 59 个测试），CMakeLists.txt 注册。
+  - 4191/4191 通过（coverage），0 LSan 泄漏。
+
 - [x] **`??` nullish coalescing Testing Agent 边界补测**（2026-05-27）：追加 NC-31～NC-41（23 个新测试）至 `nullish_coalescing_test.cpp`：getter 副作用两场景（非 nullish：getter 调用 1 次 + RHS 不求值；nullish：getter 调用 1 次 + RHS 求值 1 次）；LHS 为对象 `{}`；LHS 为空数组 `[]`；`??` 作为函数参数；`??` 在 return 语句；嵌套三元中 `??`（`(null??"a")==="a" ? "yes":"no"` → "yes"）；`??` 与 `+` 优先级（`null??1+2` → 3）；链接不同类型（`null??0??X` → 0，0 非 nullish）；Symbol 为 LHS（Symbol 非 nullish）；解构 `{x=undefined}={}` 后接 `??`（→ fallback）；`??=` 占位测试（当前 parse error）。技术注意：`??=` 字符串字面量使用字符串连接 `"??" "= 42"` 拆分规避 GCC `-Wtrigraphs` 编译错误。4132/4132 通过（coverage），0 LSan 泄漏。
 
 - [x] **`??` nullish coalescing [T262-P3]**（2026-05-27）：

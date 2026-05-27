@@ -354,6 +354,29 @@ std::string dump_expr(const ExprNode& node, int indent) {
                            result += ind(indent + 1) + "value:\n";
                            result += dump_expr(*da.value, indent + 2);
                        },
+                       [&](const OptionalChainExpression& oc) {
+                           result = prefix + "OptionalChainExpression\n";
+                           result += ind(indent + 1) + "base:\n";
+                           result += dump_expr(*oc.base, indent + 2);
+                           for (size_t i = 0; i < oc.links.size(); ++i) {
+                               std::visit(overloaded{
+                                   [&](const OptionalChainExpression::PropLink& p) {
+                                       result += ind(indent + 1) + "PropLink[" + std::to_string(i) + "] " +
+                                                 (p.optional ? "?." : ".") + p.name + "\n";
+                                   },
+                                   [&](const OptionalChainExpression::ElemLink& e) {
+                                       result += ind(indent + 1) + "ElemLink[" + std::to_string(i) + "] " +
+                                                 (e.optional ? "?.[" : "[") + "]\n";
+                                       result += dump_expr(*e.key, indent + 2);
+                                   },
+                                   [&](const OptionalChainExpression::CallLink& c) {
+                                       result += ind(indent + 1) + "CallLink[" + std::to_string(i) + "] " +
+                                                 (c.optional ? "?." : "") + "(argc=" +
+                                                 std::to_string(c.args.size()) + ")\n";
+                                   },
+                               }, oc.links[i]);
+                           }
+                       },
                },
                node.v);
 

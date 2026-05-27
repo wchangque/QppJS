@@ -257,6 +257,19 @@ struct DestructuringAssignmentExpression {
     SourceRange range;
 };
 
+// Optional chaining 表达式：base?.prop / base?.[key] / base?.()
+// 定义在 ExprNode 之前：ElemLink/CallLink 内的 unique_ptr 只需前向声明
+struct OptionalChainExpression {
+    struct PropLink  { bool optional; std::string name; };
+    struct ElemLink  { bool optional; std::unique_ptr<ExprNode> key; };
+    struct CallLink  { bool optional; std::vector<std::unique_ptr<ExprNode>> args; };
+    using ChainLink = std::variant<PropLink, ElemLink, CallLink>;
+
+    std::unique_ptr<ExprNode> base;
+    std::vector<ChainLink> links;
+    SourceRange range;
+};
+
 // ---- ExprNode 完整定义（必须在所有表达式 struct 定义之后）----
 
 struct ExprNode {
@@ -267,7 +280,7 @@ struct ExprNode {
                  AwaitExpression, UpdateExpression, AsyncFunctionExpression,
                  MetaProperty, ImportCallExpression, RegexLiteral, TemplateLiteral,
                  ArrowFunctionExpression, ConditionalExpression, SpreadElement,
-                 DestructuringAssignmentExpression>
+                 DestructuringAssignmentExpression, OptionalChainExpression>
             v;
 
     bool is_parenthesized = false;  // set by Parser when wrapped in ( )

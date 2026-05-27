@@ -92,6 +92,9 @@ private:
     EvalResult eval_import_call(const ImportCallExpression& expr);
     EvalResult eval_template_literal(const TemplateLiteral& expr);
     EvalResult eval_regex_literal(const RegexLiteral& expr);
+    EvalResult eval_optional_chain(const OptionalChainExpression& expr);
+    // Helper: property access on a pre-evaluated object value
+    EvalResult eval_get_property_of(const Value& obj, const Value& key_val);
 
     // Create a JSRegExp from pattern/flags. Returns error on invalid flags or pattern.
     EvalResult make_regexp(const std::string& pattern, const std::string& flags);

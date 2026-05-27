@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 4132/4132 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 4191/4191 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-05-27 |
-| 下一步 | `?.` optional chaining [T262-P4] |
+| 下一步 | 下一批 test262 候选目标（generator / tagged template / eval 等） |
 | test262 | language/expressions 32.4%（method shorthand 后预计约 +5pp） |
 
 ## 已知遗留问题
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **`?.` optional chaining [T262-P4] + Testing Agent 边界补测**（2026-05-27）：`OptionalChainExpression` AST 节点（PropLink/ElemLink/CallLink variant 链）；Parser `lbp(QuestionDot)=19`，`led(QuestionDot)` 贪婪消费整条链（三种形式 `?.b`/`?.[e]`/`?.()`）；`led(Assign)`/`nud(KwNew)` SyntaxError 校验；Interpreter `eval_optional_chain`（short-circuit on null/undefined，this 绑定保留 receiver，delete 分支短路返回 true）；Compiler `compile_optional_chain`（复用 kJumpIfNotNullish，chain_end_label 共享，delete_mode 短路返回 true，M1 修复：所有 optional 短路位置均 emit kLoadTrue）；ast_dump 扩展；新增 `optional_chaining_test.cpp`（OC-01～OC-16 + OC-13b/c + Extra × 3 + Ex1～Ex9 = 59 个测试）。4191/4191 通过（coverage），0 LSan 泄漏。
 
 - [x] **`??` nullish coalescing [T262-P3] + Testing Agent 边界补测**（2026-05-27）：Lexer 新增 `QuestionQuestion`/`QuestionQuestionEq`/`QuestionDot` 三个 token（四路消歧 `case '?'`）；`LogicalOp::Nullish`；`ExprNode.is_parenthesized` 字段；Parser `lbp(Question)` 4→3，`lbp(QuestionQuestion)=3`，`nud(LParen)` 设置 `is_parenthesized`，`led(QuestionQuestion)` 含 LHS/RHS 混用检查，`led(PipePipe/AmpAmp)` 新增 Nullish LHS 检查；`kJumpIfNotNullish`（4 字节跳转）；Interpreter `eval_logical` Nullish 分支；Compiler `compile_logical` Nullish 分支；VM `kJumpIfNotNullish` handler；ast_dump `"??"` 输出；更新旧 lexer 测试（QuestionQuestion 单 token）；新增 `nullish_coalescing_test.cpp`（NC-01～NC-30 × Interp+VM = 56 个测试 + 4 个 SyntaxError 检查）；Testing Agent 补测 NC-31～NC-41（23 个新测试）：getter 副作用（非 nullish/nullish 两场景，getter 只调用一次 RHS 不求值验证）；LHS 为对象 {}；LHS 为空数组 []；??  作为函数参数；?? 在 return 语句；嵌套三元中 ??；?? 与 + 优先级（null ?? 1+2 → 3）；链接 0 非 nullish（null??0??X → 0）；Symbol 为 LHS；解构默认值 undefined 后接 ??；??= 占位测试（当前 parse error 预期）。4132/4132 通过（coverage），0 LSan 泄漏。
 

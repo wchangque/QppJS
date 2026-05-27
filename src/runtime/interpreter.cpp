@@ -4385,6 +4385,7 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
                 // Expression result is the rhs value
                 return EvalResult::ok(rhs);
             },
+            [this](const OptionalChainExpression& e) { return eval_optional_chain(e); },
         },
         expr.v);
 }
@@ -4766,6 +4767,96 @@ EvalResult Interpreter::eval_unary(const UnaryExpression& expr) {
             // TODO: strict mode Early Error (SyntaxError for delete of unqualified identifier)
             bool deleted = current_env_->delete_binding(id.name);
             return EvalResult::ok(Value::boolean(deleted));
+        }
+        // delete OptionalChainExpression: short-circuit on null/undefined base, then delete last member
+        if (std::holds_alternative<OptionalChainExpression>(expr.operand->v)) {
+            const auto& oc = std::get<OptionalChainExpression>(expr.operand->v);
+            auto base_r = eval_expr(*oc.base);
+            if (!base_r.is_ok()) return base_r;
+            if (base_r.value().is_null() || base_r.value().is_undefined()) {
+                return EvalResult::ok(Value::boolean(true));
+            }
+            if (oc.links.empty()) {
+                return EvalResult::ok(Value::boolean(true));
+            }
+            // Evaluate all links except the last to get the receiver
+            Value current = base_r.value();
+            Value receiver = Value::undefined();
+            bool prev_was_member = false;
+            for (size_t i = 0; i + 1 < oc.links.size(); ++i) {
+                const auto& lnk = oc.links[i];
+                bool optional = std::visit([](const auto& l) { return l.optional; }, lnk);
+                if (optional && (current.is_null() || current.is_undefined())) {
+                    return EvalResult::ok(Value::boolean(true));
+                }
+                if (const auto* p = std::get_if<OptionalChainExpression::PropLink>(&lnk)) {
+                    receiver = current;
+                    auto r = eval_get_property_of(current, Value::string(p->name));
+                    if (!r.is_ok()) return r;
+                    current = r.value();
+                    prev_was_member = true;
+                } else if (const auto* e2 = std::get_if<OptionalChainExpression::ElemLink>(&lnk)) {
+                    receiver = current;
+                    auto key_r = eval_expr(*e2->key);
+                    if (!key_r.is_ok()) return key_r;
+                    auto r = eval_get_property_of(current, key_r.value());
+                    if (!r.is_ok()) return r;
+                    current = r.value();
+                    prev_was_member = true;
+                } else if (const auto* c = std::get_if<OptionalChainExpression::CallLink>(&lnk)) {
+                    std::vector<Value> call_args;
+                    for (const auto& arg : c->args) {
+                        auto arg_r = eval_expr(*arg);
+                        if (!arg_r.is_ok()) return arg_r;
+                        call_args.push_back(arg_r.value());
+                    }
+                    Value this_v = prev_was_member ? receiver : Value::undefined();
+                    auto r = call_function_val(current, this_v, call_args);
+                    if (!r.is_ok()) return r;
+                    current = r.value();
+                    receiver = Value::undefined();
+                    prev_was_member = false;
+                }
+            }
+            // Handle the last link
+            const auto& last = oc.links.back();
+            bool opt_last = std::visit([](const auto& l) { return l.optional; }, last);
+            if (opt_last && (current.is_null() || current.is_undefined())) {
+                return EvalResult::ok(Value::boolean(true));
+            }
+            if (const auto* p = std::get_if<OptionalChainExpression::PropLink>(&last)) {
+                if (!current.is_object()) return EvalResult::ok(Value::boolean(true));
+                RcObject* raw = current.as_object_raw();
+                if (!raw || (raw->object_kind() != ObjectKind::kOrdinary &&
+                             raw->object_kind() != ObjectKind::kArray)) {
+                    return EvalResult::ok(Value::boolean(true));
+                }
+                return EvalResult::ok(Value::boolean(static_cast<JSObject*>(raw)->delete_property(p->name)));
+            } else if (const auto* e2 = std::get_if<OptionalChainExpression::ElemLink>(&last)) {
+                auto key_r = eval_expr(*e2->key);
+                if (!key_r.is_ok()) return key_r;
+                if (!current.is_object()) return EvalResult::ok(Value::boolean(true));
+                RcObject* raw = current.as_object_raw();
+                if (!raw || (raw->object_kind() != ObjectKind::kOrdinary &&
+                             raw->object_kind() != ObjectKind::kArray)) {
+                    return EvalResult::ok(Value::boolean(true));
+                }
+                std::string k = to_string_val(key_r.value());
+                return EvalResult::ok(Value::boolean(static_cast<JSObject*>(raw)->delete_property(k)));
+            } else {
+                // CallLink as last: eval for side effects, return true
+                const auto* c = std::get_if<OptionalChainExpression::CallLink>(&last);
+                std::vector<Value> call_args;
+                for (const auto& arg : c->args) {
+                    auto arg_r = eval_expr(*arg);
+                    if (!arg_r.is_ok()) return arg_r;
+                    call_args.push_back(arg_r.value());
+                }
+                Value this_v = prev_was_member ? receiver : Value::undefined();
+                auto r = call_function_val(current, this_v, call_args);
+                if (!r.is_ok()) return r;
+                return EvalResult::ok(Value::boolean(true));
+            }
         }
         // delete <other expr> — eval for side effects, return true
         auto operand_result2 = eval_expr(*expr.operand);
@@ -5679,6 +5770,170 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
     }
     // No accessor found — use normal property lookup (handles array length, index, etc.)
     return EvalResult::ok(js_obj->get_property(key));
+}
+
+// Property access on a pre-evaluated object value with a pre-evaluated key.
+// Used by eval_optional_chain to avoid reconstructing AST nodes.
+EvalResult Interpreter::eval_get_property_of(const Value& obj_val, const Value& key_val) {
+    if (obj_val.is_undefined() || obj_val.is_null()) {
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "Cannot read properties of " + to_string_val(obj_val));
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+    if (obj_val.is_string()) {
+        std::string key = to_string_val(key_val);
+        if (key == "length") {
+            return EvalResult::ok(Value::number(static_cast<double>(utf8_cp_len(obj_val.js_string_raw()))));
+        }
+        if (string_prototype_) return EvalResult::ok(string_prototype_->get_property(key));
+        return EvalResult::ok(Value::undefined());
+    }
+    if (obj_val.is_symbol()) {
+        if (!key_val.is_symbol()) {
+            std::string key = to_string_val(key_val);
+            if (key == "description") {
+                const std::string* desc = symbol_table_.GetDescription(obj_val.as_symbol_id());
+                return EvalResult::ok(desc ? Value::string(*desc) : Value::undefined());
+            }
+            if (symbol_prototype_) return EvalResult::ok(symbol_prototype_->get_property(key));
+        }
+        return EvalResult::ok(Value::undefined());
+    }
+    if (!obj_val.is_object()) {
+        return EvalResult::ok(Value::undefined());
+    }
+    if (key_val.is_symbol()) {
+        RcObject* raw = obj_val.as_object_raw();
+        if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+            auto* js_obj_sym = static_cast<JSObject*>(raw);
+            uint64_t sym_id = key_val.as_symbol_id();
+            const JSObject::SymbolPropertyEntry* sym_entry = js_obj_sym->find_symbol_entry(sym_id);
+            if (sym_entry != nullptr && sym_entry->is_accessor) {
+                if (sym_entry->getter.is_undefined() || sym_entry->getter.is_null()) {
+                    return EvalResult::ok(Value::undefined());
+                }
+                Value getter_copy = sym_entry->getter;
+                return call_function_val(getter_copy, obj_val, {});
+            }
+            if (sym_entry != nullptr) return EvalResult::ok(sym_entry->value);
+        }
+        return EvalResult::ok(Value::undefined());
+    }
+    std::string key = to_string_val(key_val);
+    RcObject* raw_obj = obj_val.as_object_raw();
+    if (raw_obj->object_kind() == ObjectKind::kFunction) {
+        auto* fn = static_cast<JSFunction*>(raw_obj);
+        Value own = fn->get_property(key);
+        if (!own.is_undefined()) return EvalResult::ok(own);
+        if (key == "prototype") {
+            const auto& proto = fn->prototype_obj();
+            return EvalResult::ok(proto ? Value::object(ObjectPtr(proto)) : Value::undefined());
+        }
+        if (function_prototype_) return EvalResult::ok(function_prototype_->get_property(key));
+        return EvalResult::ok(Value::undefined());
+    }
+    if (raw_obj->object_kind() == ObjectKind::kPromise) {
+        if (promise_prototype_) return EvalResult::ok(promise_prototype_->get_property(key));
+        return EvalResult::ok(Value::undefined());
+    }
+    if (raw_obj->object_kind() == ObjectKind::kRegExp) {
+        auto* rx = static_cast<JSRegExp*>(raw_obj);
+        if (key == "source") return EvalResult::ok(Value::string(rx->pattern_.empty() ? "(?:)" : rx->pattern_));
+        if (key == "flags") return EvalResult::ok(Value::string(rx->flags_str_));
+        if (key == "global") return EvalResult::ok(Value::boolean(rx->global_));
+        if (key == "ignoreCase") return EvalResult::ok(Value::boolean(rx->ignore_case_));
+        if (key == "multiline") return EvalResult::ok(Value::boolean(rx->multiline_));
+        if (key == "dotAll") return EvalResult::ok(Value::boolean(rx->dot_all_));
+        if (key == "sticky") return EvalResult::ok(Value::boolean(rx->sticky_));
+        if (key == "unicode") return EvalResult::ok(Value::boolean(rx->unicode_));
+        if (key == "lastIndex") return EvalResult::ok(Value::number(static_cast<double>(rx->last_index_)));
+        if (regexp_prototype_) return EvalResult::ok(regexp_prototype_->get_property(key));
+        return EvalResult::ok(Value::undefined());
+    }
+    if (raw_obj->object_kind() == ObjectKind::kStringObject) {
+        auto* js_obj = static_cast<JSObject*>(raw_obj);
+        if (key == "length") {
+            JSString* js_str = js_obj->wrapped_value().js_string_raw();
+            return EvalResult::ok(Value::number(static_cast<double>(utf8_cp_len(js_str))));
+        }
+        return EvalResult::ok(js_obj->get_property(key));
+    }
+    if (raw_obj->object_kind() == ObjectKind::kBooleanObject) {
+        auto* js_obj = static_cast<JSObject*>(raw_obj);
+        return EvalResult::ok(js_obj->get_property(key));
+    }
+    if (raw_obj->object_kind() != ObjectKind::kOrdinary && raw_obj->object_kind() != ObjectKind::kArray) {
+        return EvalResult::ok(Value::undefined());
+    }
+    auto* js_obj = static_cast<JSObject*>(raw_obj);
+    {
+        const JSObject* cur = js_obj;
+        while (cur != nullptr) {
+            const JSObject::PropertyEntry* entry = cur->get_own_entry(key);
+            if (entry != nullptr) {
+                if (entry->flags & kPropIsAccessor) {
+                    if (entry->getter.is_undefined() || entry->getter.is_null()) {
+                        return EvalResult::ok(Value::undefined());
+                    }
+                    Value getter_copy = entry->getter;
+                    return call_function_val(getter_copy, obj_val, {});
+                }
+                break;
+            }
+            cur = cur->proto().get();
+        }
+    }
+    return EvalResult::ok(js_obj->get_property(key));
+}
+
+EvalResult Interpreter::eval_optional_chain(const OptionalChainExpression& expr) {
+    auto base_r = eval_expr(*expr.base);
+    if (!base_r.is_ok()) return base_r;
+
+    Value current = base_r.value();
+    Value receiver = Value::undefined();
+    bool prev_was_member = false;
+
+    for (size_t i = 0; i < expr.links.size(); ++i) {
+        const auto& link = expr.links[i];
+
+        // Check optional short-circuit: if base is null/undefined, return undefined
+        bool optional = std::visit([](const auto& l) { return l.optional; }, link);
+        if (optional && (current.is_null() || current.is_undefined())) {
+            return EvalResult::ok(Value::undefined());
+        }
+
+        if (const auto* prop = std::get_if<OptionalChainExpression::PropLink>(&link)) {
+            receiver = current;
+            auto r = eval_get_property_of(current, Value::string(prop->name));
+            if (!r.is_ok()) return r;
+            current = r.value();
+            prev_was_member = true;
+        } else if (const auto* elem = std::get_if<OptionalChainExpression::ElemLink>(&link)) {
+            receiver = current;
+            auto key_r = eval_expr(*elem->key);
+            if (!key_r.is_ok()) return key_r;
+            auto r = eval_get_property_of(current, key_r.value());
+            if (!r.is_ok()) return r;
+            current = r.value();
+            prev_was_member = true;
+        } else if (const auto* call = std::get_if<OptionalChainExpression::CallLink>(&link)) {
+            std::vector<Value> args;
+            for (const auto& arg : call->args) {
+                auto arg_r = eval_expr(*arg);
+                if (!arg_r.is_ok()) return arg_r;
+                args.push_back(arg_r.value());
+            }
+            Value this_val = prev_was_member ? receiver : Value::undefined();
+            auto r = call_function_val(current, this_val, args);
+            if (!r.is_ok()) return r;
+            current = r.value();
+            receiver = Value::undefined();
+            prev_was_member = false;
+        }
+    }
+
+    return EvalResult::ok(current);
 }
 
 EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& expr) {

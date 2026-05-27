@@ -105,6 +105,7 @@ private:
     void compile_update_expr(const UpdateExpression& expr);
     void compile_import_call(const ImportCallExpression& expr);
     void compile_template_literal(const TemplateLiteral& expr);
+    void compile_optional_chain(const OptionalChainExpression& expr, bool delete_mode = false);
 
     // Emit helpers
     void emit(Opcode op);

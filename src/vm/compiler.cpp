@@ -334,6 +334,18 @@ void Compiler::hoist_vars_scan_expr(const ExprNode& expr) {
             [this](const DestructuringAssignmentExpression& e) {
                 hoist_vars_scan_expr(*e.value);
             },
+            [this](const OptionalChainExpression& e) {
+                hoist_vars_scan_expr(*e.base);
+                for (const auto& lnk : e.links) {
+                    if (const auto* el = std::get_if<OptionalChainExpression::ElemLink>(&lnk)) {
+                        hoist_vars_scan_expr(*el->key);
+                    } else if (const auto* cl = std::get_if<OptionalChainExpression::CallLink>(&lnk)) {
+                        for (const auto& arg : cl->args) {
+                            hoist_vars_scan_expr(*arg);
+                        }
+                    }
+                }
+            },
         },
         expr.v);
 }
@@ -998,6 +1010,7 @@ void Compiler::compile_expr(const ExprNode& expr) {
                 // So: stack before bind = [rhs_orig, rhs_dup]; bind consumes rhs_dup; leaves rhs_orig.
                 compile_bind_pattern(*e.pattern, VarKind::Var /* unused for assign */, true);
             },
+            [this](const OptionalChainExpression& e) { compile_optional_chain(e); },
         },
         expr.v);
 }
@@ -1054,6 +1067,9 @@ void Compiler::compile_unary(const UnaryExpression& expr) {
             uint16_t idx = add_name(id.name);
             emit(Opcode::kDeleteVar);
             emit_u16(idx);
+        } else if (std::holds_alternative<OptionalChainExpression>(expr.operand->v)) {
+            const auto& oc = std::get<OptionalChainExpression>(expr.operand->v);
+            compile_optional_chain(oc, /*delete_mode=*/true);
         } else {
             // Other expr: eval for side effects, discard, push true
             compile_expr(*expr.operand);
@@ -2040,6 +2056,15 @@ void Compiler::compile_for_of_stmt(const ForOfStatement& stmt, std::optional<std
 }
 
 void Compiler::compile_update_expr(const UpdateExpression& expr) {
+    if (std::holds_alternative<OptionalChainExpression>(expr.operand->v)) {
+        // a?.b++ is a SyntaxError at runtime
+        uint16_t idx = add_constant(Value::string(
+            "SyntaxError: invalid left-hand side: optional chain is not a valid assignment target"));
+        emit(Opcode::kLoadString);
+        emit_u16(idx);
+        emit(Opcode::kThrow);
+        return;
+    }
     auto is_member = std::holds_alternative<MemberExpression>(expr.operand->v);
 
     if (is_member) {
@@ -2111,6 +2136,101 @@ void Compiler::compile_template_literal(const TemplateLiteral& expr) {
         emit(Opcode::kLoadString);
         emit_u16(idx);
         emit(Opcode::kAdd);
+    }
+}
+
+void Compiler::compile_optional_chain(const OptionalChainExpression& expr, bool delete_mode) {
+    std::vector<size_t> chain_end_patches;
+
+    // Compile base expression
+    compile_expr(*expr.base);
+
+    const size_t n = expr.links.size();
+
+    for (size_t i = 0; i < n; ++i) {
+        const auto& lnk = expr.links[i];
+
+        bool next_is_call = (i + 1 < n) &&
+            std::holds_alternative<OptionalChainExpression::CallLink>(expr.links[i + 1]);
+        bool prev_is_member = (i > 0) &&
+            (std::holds_alternative<OptionalChainExpression::PropLink>(expr.links[i - 1]) ||
+             std::holds_alternative<OptionalChainExpression::ElemLink>(expr.links[i - 1]));
+
+        bool optional = std::visit([](const auto& l) { return l.optional; }, lnk);
+
+        if (optional) {
+            emit(Opcode::kDup);  // null-check copy
+            size_t patch_nn = emit_jump(Opcode::kJumpIfNotNullish);
+            // null/undefined path: clean up stack and jump to chain end
+            if (std::holds_alternative<OptionalChainExpression::CallLink>(lnk) && prev_is_member) {
+                emit(Opcode::kPop);  // pop method
+                emit(Opcode::kPop);  // pop receiver
+            } else {
+                emit(Opcode::kPop);  // pop base/current
+            }
+            if (delete_mode) {
+                emit(Opcode::kLoadTrue);
+            } else {
+                emit(Opcode::kLoadUndefined);
+            }
+            chain_end_patches.push_back(emit_jump(Opcode::kJump));
+            patch_jump(patch_nn);  // non-null path continues here
+        }
+
+        // Determine if this is the last link and we're in delete mode targeting it
+        bool is_last_delete = delete_mode && (i + 1 == n);
+
+        if (const auto* prop = std::get_if<OptionalChainExpression::PropLink>(&lnk)) {
+            uint16_t idx = add_name(prop->name);
+            if (is_last_delete) {
+                emit(Opcode::kDeleteProp);
+                emit_u16(idx);
+            } else if (next_is_call) {
+                emit(Opcode::kDup);          // receiver copy
+                emit(Opcode::kGetProp);      // pops dup'd copy, pushes method: [receiver, method]
+                emit_u16(idx);
+            } else {
+                emit(Opcode::kGetProp);
+                emit_u16(idx);
+            }
+        } else if (const auto* elem = std::get_if<OptionalChainExpression::ElemLink>(&lnk)) {
+            if (is_last_delete) {
+                compile_expr(*elem->key);
+                emit(Opcode::kDeleteElem);
+            } else if (next_is_call) {
+                emit(Opcode::kDup);           // receiver copy
+                compile_expr(*elem->key);
+                emit(Opcode::kGetElem);       // [receiver, elem]
+            } else {
+                compile_expr(*elem->key);
+                emit(Opcode::kGetElem);
+            }
+        } else if (const auto* call = std::get_if<OptionalChainExpression::CallLink>(&lnk)) {
+            if (prev_is_member) {
+                // Stack: [receiver, method, arg0 ... argN-1]
+                for (const auto& arg : call->args) {
+                    compile_expr(*arg);
+                }
+                emit(Opcode::kCallMethod);
+                emit_u8(static_cast<uint8_t>(call->args.size()));
+            } else {
+                // Stack: [func, arg0 ... argN-1]
+                for (const auto& arg : call->args) {
+                    compile_expr(*arg);
+                }
+                emit(Opcode::kCall);
+                emit_u8(static_cast<uint8_t>(call->args.size()));
+            }
+            if (is_last_delete) {
+                emit(Opcode::kPop);
+                emit(Opcode::kLoadTrue);
+            }
+        }
+    }
+
+    // Patch all chain_end jumps to here
+    for (size_t patch : chain_end_patches) {
+        patch_jump(patch);
     }
 }
 
