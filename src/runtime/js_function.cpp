@@ -26,6 +26,7 @@ void JSFunction::TraceRefs(GcHeap& heap) {
 void JSFunction::ClearRefs() {
     // Release normally: non-GC objects get their ref_count decremented;
     // GC-swept objects have kGcSentinel so release() is a no-op.
+    native_fn_.reset();  // destroy closure; any RcPtr captures call release() which is safe (sentinel)
     closure_env_ = RcPtr<Environment>();
     prototype_ = RcPtr<JSObject>();
     own_properties_.clear();

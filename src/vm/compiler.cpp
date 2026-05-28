@@ -346,6 +346,9 @@ void Compiler::hoist_vars_scan_expr(const ExprNode& expr) {
                     }
                 }
             },
+            [this](const YieldExpression& e) {
+                if (e.argument) hoist_vars_scan_expr(*e.argument);
+            },
         },
         expr.v);
 }
@@ -448,6 +451,7 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
         if (fdecl_ptr) {
             auto child = compile_function(fdecl_ptr->name, fdecl_ptr->params, *fdecl_ptr->body,
                                           false, fdecl_ptr->rest_param);
+            child->is_generator = fdecl_ptr->is_generator;
             uint16_t fn_idx = add_function(std::move(child));
             emit(Opcode::kMakeFunction);
             emit_u16(fn_idx);
@@ -1011,6 +1015,37 @@ void Compiler::compile_expr(const ExprNode& expr) {
                 compile_bind_pattern(*e.pattern, VarKind::Var /* unused for assign */, true);
             },
             [this](const OptionalChainExpression& e) { compile_optional_chain(e); },
+            [this](const YieldExpression& e) {
+                if (e.is_delegate) {
+                    // yield* iterable
+                    // Stack progression: [] → [iter] → loop: [iter, val, done] → yield val → [iter]
+                    compile_expr(*e.argument);
+                    emit(Opcode::kForOfStart);    // [iter]
+                    size_t loop_top = current_->code.size();
+                    emit(Opcode::kForOfNext);     // [iter, value, done]
+                    // done=false (falsy) → jump to loop_body; done=true → fall through to exit
+                    size_t jmp_to_body = emit_jump(Opcode::kJumpIfFalse);  // pops done
+                    // done=true path: stack is [iter, value]
+                    emit(Opcode::kPop);           // discard return value; stack: [iter]
+                    emit(Opcode::kIteratorClose); // close and pop iter; stack: []
+                    emit(Opcode::kLoadUndefined); // yield* result = undefined (basic impl)
+                    size_t jmp_end = emit_jump(Opcode::kJump);
+                    // done=false path: stack is [iter, value]
+                    patch_jump(jmp_to_body);
+                    // value is TOS; kYield pops TOS as yield value; iter remains below
+                    emit(Opcode::kYield);         // yields value; after resume: [iter, resume_val]
+                    emit(Opcode::kPop);           // discard resume_val (not forwarded, basic impl)
+                    emit_jump_to(Opcode::kJump, loop_top);
+                    patch_jump(jmp_end);
+                } else {
+                    if (e.argument) {
+                        compile_expr(*e.argument);
+                    } else {
+                        emit(Opcode::kLoadUndefined);
+                    }
+                    emit(Opcode::kYield);
+                }
+            },
         },
         expr.v);
 }
@@ -1207,6 +1242,7 @@ void Compiler::compile_object_expr(const ObjectExpression& expr) {
                 const auto& fe = std::get<FunctionExpression>(prop.value->v);
                 auto child = compile_function(fe.name, fe.params, *fe.body, false, fe.rest_param);
                 child->is_method = true;
+                child->is_generator = (prop.method_kind == MethodKind::kGenerator);
                 uint16_t fn_idx = add_function(std::move(child));
                 emit(Opcode::kDup);
                 compile_expr(*prop.key_expr);
@@ -1262,10 +1298,11 @@ void Compiler::compile_object_expr(const ObjectExpression& expr) {
             emit(Opcode::kPop);
         } else if (prop.method_kind == MethodKind::kMethod ||
                    prop.method_kind == MethodKind::kGenerator) {
-            // 普通方法简写 / generator 方法（降级为普通函数）
+            // 普通方法简写 / generator 方法
             const auto& fe = std::get<FunctionExpression>(prop.value->v);
             auto child = compile_function(fe.name, fe.params, *fe.body, false, fe.rest_param);
             child->is_method = true;
+            child->is_generator = (prop.method_kind == MethodKind::kGenerator);
             uint16_t fn_idx = add_function(std::move(child));
             emit(Opcode::kDup);
             emit(Opcode::kMakeFunction);
@@ -1351,6 +1388,7 @@ void Compiler::compile_member_assign(const MemberAssignmentExpression& expr) {
 void Compiler::compile_function_expr(const FunctionExpression& expr) {
     auto child = compile_function(expr.name, expr.params, *expr.body, false, expr.rest_param);
     child->is_named_expr = expr.name.has_value();
+    child->is_generator = expr.is_generator;
     uint16_t fn_idx = add_function(std::move(child));
     emit(Opcode::kMakeFunction);
     emit_u16(fn_idx);

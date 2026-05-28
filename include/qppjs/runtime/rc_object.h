@@ -14,7 +14,8 @@ class GcHeap;
 enum class ObjectKind {
     kOrdinary, kFunction, kArray, kEnvironment, kModule, kPromise, kRegExp,
     kStringObject, kBooleanObject, kForInIterator,
-    kForOfIterator, kArrayIterator, kStringIterator
+    kForOfIterator, kArrayIterator, kStringIterator,
+    kGenerator
 };
 
 // Base class for all heap-allocated JS objects with non-atomic reference counting.

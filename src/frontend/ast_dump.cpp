@@ -225,7 +225,7 @@ std::string dump_expr(const ExprNode& node, int indent) {
                            result += dump_expr(*mae.value, indent + 2);
                        },
                        [&](const FunctionExpression& fe) {
-                           result = prefix + "FunctionExpression";
+                           result = prefix + (fe.is_generator ? "GeneratorExpression" : "FunctionExpression");
                            if (fe.name.has_value()) result += " " + *fe.name;
                            result += "\n";
                            result += ind(indent + 1) + "params: (";
@@ -377,6 +377,13 @@ std::string dump_expr(const ExprNode& node, int indent) {
                                }, oc.links[i]);
                            }
                        },
+                       [&](const YieldExpression& ye) {
+                           result = prefix + (ye.is_delegate ? "YieldDelegate\n" : "Yield\n");
+                           if (ye.argument) {
+                               result += ind(indent + 1) + "argument:\n";
+                               result += dump_expr(*ye.argument, indent + 2);
+                           }
+                       },
                },
                node.v);
 
@@ -438,7 +445,8 @@ std::string dump_stmt(const StmtNode& node, int indent) {
                            }
                        },
                        [&](const FunctionDeclaration& fd) {
-                           result = prefix + "FunctionDeclaration " + fd.name + "\n";
+                           result = prefix + (fd.is_generator ? "GeneratorDeclaration " : "FunctionDeclaration ")
+                                    + fd.name + "\n";
                            result += ind(indent + 1) + "params: (";
                            for (size_t i = 0; i < fd.params.size(); ++i) {
                                if (i > 0) result += ", ";

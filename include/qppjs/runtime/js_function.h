@@ -72,6 +72,10 @@ public:
     bool is_method() const { return is_method_; }
     void set_is_method(bool v) { is_method_ = v; }
 
+    // Generator function flag
+    bool is_generator() const { return is_generator_; }
+    void set_is_generator(bool v) { is_generator_ = v; }
+
     // import.meta 词法绑定：记录函数是在哪个模块中创建的
     ModuleRecord* defining_module() const { return defining_module_; }
     void set_defining_module(ModuleRecord* mod) { defining_module_ = mod; }
@@ -114,6 +118,9 @@ private:
 
     // Method shorthand data
     bool is_method_ = false;
+
+    // Generator function data
+    bool is_generator_ = false;
 
     // import.meta 词法绑定：函数定义时所在的模块（非拥有指针）
     ModuleRecord* defining_module_ = nullptr;

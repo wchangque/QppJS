@@ -91,6 +91,8 @@ namespace qppjs {
     X(SetExportDefault, 0)              \
     /* Async/Await */                   \
     X(Await, 0)                         \
+    /* Generator yield */               \
+    X(Yield, 0)                         \
     /* Array hole (elision) */          \
     X(ArrayHole, 0)                     \
     /* Dynamic import() */              \

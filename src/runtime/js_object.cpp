@@ -415,6 +415,9 @@ void JSObject::clear_function_properties(std::unordered_set<const JSObject*>& vi
             // Clear accessor getter/setter (mirrors string-key property handling above)
             if (entry.getter.is_object()) entry.getter = Value::undefined();
             if (entry.setter.is_object()) entry.setter = Value::undefined();
+            // Also release heap-allocated strings (e.g. Symbol.toStringTag = "Generator").
+            // Strings can't create reference cycles, so clearing them is always safe.
+            if (entry.value.is_string()) entry.value = Value::undefined();
             if (!entry.value.is_object()) continue;
             RcObject* raw = entry.value.as_object_raw();
             if (raw == nullptr) continue;

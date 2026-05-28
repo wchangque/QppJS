@@ -6,6 +6,7 @@
 #include "qppjs/runtime/gc_heap.h"
 #include "qppjs/runtime/job_queue.h"
 #include "qppjs/runtime/js_function.h"
+#include "qppjs/runtime/js_generator.h"
 #include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/js_regexp.h"
 #include "qppjs/runtime/module_loader.h"
@@ -93,6 +94,7 @@ private:
     EvalResult eval_template_literal(const TemplateLiteral& expr);
     EvalResult eval_regex_literal(const RegexLiteral& expr);
     EvalResult eval_optional_chain(const OptionalChainExpression& expr);
+    EvalResult eval_yield_expr(const YieldExpression& expr);
     // Helper: property access on a pre-evaluated object value
     EvalResult eval_get_property_of(const Value& obj, const Value& key_val);
 
@@ -112,6 +114,14 @@ private:
 
     // Statement execution for async functions
     StmtResult eval_async_function_decl(const AsyncFunctionDeclaration& stmt);
+
+    // Generator helpers: execute generator body from suspended state
+    EvalResult generator_next(RcPtr<JSGeneratorObject> gen, Value resume_val);
+    EvalResult generator_return(RcPtr<JSGeneratorObject> gen, Value return_val);
+    EvalResult generator_throw(RcPtr<JSGeneratorObject> gen, Value throw_val);
+
+    // Execute one iteration of generator body, returning {value, done} result object.
+    EvalResult generator_resume(RcPtr<JSGeneratorObject> gen);
 
     // Hoist var declarations; var_target is the function-level env to receive var bindings.
     void hoist_vars(const std::vector<StmtNode>& stmts, Environment& var_target);
@@ -201,6 +211,7 @@ private:
     RcPtr<JSObject> number_prototype_;   // Number.prototype
     RcPtr<JSObject> regexp_prototype_;   // RegExp.prototype
     RcPtr<JSObject> symbol_prototype_;   // Symbol.prototype (toString/valueOf)
+    RcPtr<JSObject> generator_prototype_;  // Generator prototype (.next/.return/.throw/[Symbol.iterator])
     RcPtr<JSFunction> object_constructor_;  // global Object function
     RcPtr<JSFunction> number_constructor_;  // global Number function
     RcPtr<JSFunction> boolean_constructor_;  // global Boolean function
@@ -225,6 +236,19 @@ private:
     // Sentinel returned by eval_await_expr when the async function suspends.
     // All intermediate eval_* layers propagate this upward without extra processing.
     static constexpr const char* kAsyncSuspendSentinel = "__qppjs_async_suspend__";
+
+    // Generator yield state: set by eval_yield_expr when the generator body yields.
+    static constexpr const char* kGeneratorYieldSentinel = "__qppjs_generator_yield__";
+    // When true, eval_yield_expr returns resume_value_ instead of yielding.
+    bool in_generator_resume_mode_ = false;
+    std::optional<Value> pending_generator_resume_value_;
+    std::optional<Value> pending_generator_yield_value_;
+    // When true (alongside in_generator_resume_mode_), eval_yield_expr injects a throw.
+    bool in_generator_throw_mode_ = false;
+    std::optional<Value> pending_generator_throw_value_;
+    // Live delegate iterator for an in-progress yield* (restored from gen->yield_delegate_iter_).
+    Value current_yield_delegate_iter_;
+    Value current_yield_delegate_next_;
 
     // When an async function resumes after an await, the fulfilled value is stored here
     // so that eval_await_expr can return it without re-suspending.

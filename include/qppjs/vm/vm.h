@@ -5,6 +5,7 @@
 #include "qppjs/runtime/gc_heap.h"
 #include "qppjs/runtime/job_queue.h"
 #include "qppjs/runtime/js_function.h"
+#include "qppjs/runtime/js_generator.h"
 #include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/js_regexp.h"
 #include "qppjs/runtime/module_loader.h"
@@ -53,6 +54,11 @@ struct CallFrame {
 
     // Phase 10.2: 当前模块（非拥有指针，仅模块顶层帧有效）
     ModuleRecord* current_module = nullptr;
+
+    // Generator: owning generator object (non-owning raw pointer, GC managed).
+    // Set when this frame belongs to an executing generator body.
+    // JSGeneratorObject is forward-declared here; vm.cpp includes js_generator.h.
+    struct JSGeneratorObject* owning_generator = nullptr;
 };
 
 class VM {
@@ -100,6 +106,13 @@ private:
     // Also handles nested suspension (multiple awaits).
     void vm_handle_async_result(EvalResult body_result, RcPtr<JSPromise> outer_promise);
 
+    // Generator helpers: resume a suspended generator frame
+    EvalResult vm_generator_next(RcPtr<JSGeneratorObject> gen, Value resume_val);
+    EvalResult vm_generator_return(RcPtr<JSGeneratorObject> gen, Value return_val);
+    EvalResult vm_generator_throw(RcPtr<JSGeneratorObject> gen, Value throw_val);
+    // Execute the suspended generator frame; handles yield/complete/throw
+    EvalResult vm_generator_resume(RcPtr<JSGeneratorObject> gen);
+
     // Create a JSRegExp from pattern/flags. Returns error on invalid flags or pattern.
     EvalResult vm_make_regexp(const std::string& pattern, const std::string& flags);
 
@@ -122,6 +135,11 @@ private:
     std::optional<RcPtr<JSPromise>> vm_pending_inner_promise_;
     std::optional<CallFrame> vm_suspended_frame_;
 
+    // Generator yield state: set by kYield when a generator frame suspends.
+    static constexpr const char* kGeneratorYieldSentinel = "__qppjs_generator_yield__";
+    bool vm_generator_yielded_ = false;
+    std::optional<Value> vm_generator_yield_value_;
+
     // deque: push_back does not invalidate references to existing elements
     std::deque<CallFrame> call_stack_;
     int call_depth_ = 0;
@@ -137,6 +155,7 @@ private:
     RcPtr<JSObject> number_prototype_;   // Number.prototype
     RcPtr<JSObject> regexp_prototype_;   // RegExp.prototype
     RcPtr<JSObject> symbol_prototype_;   // Symbol.prototype (toString/valueOf)
+    RcPtr<JSObject> generator_prototype_;  // Generator prototype (.next/.return/.throw/[Symbol.iterator])
     RcPtr<JSFunction> object_constructor_;  // global Object function
     RcPtr<JSFunction> number_constructor_;  // global Number function
     RcPtr<JSFunction> boolean_constructor_;  // global Boolean function

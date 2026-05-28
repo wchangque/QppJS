@@ -149,6 +149,14 @@ struct FunctionExpression {
     std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body;
     SourceRange range;
+    bool is_generator = false;  // true for function* expressions
+};
+
+// yield 表达式（只在 generator 函数体内合法）
+struct YieldExpression {
+    bool is_delegate;                          // yield* 时为 true
+    std::unique_ptr<ExprNode> argument;        // 可为 nullptr（yield; == yield undefined;）
+    SourceRange range;
 };
 
 // 数组字面量 [elem0, elem1, ...]
@@ -280,7 +288,8 @@ struct ExprNode {
                  AwaitExpression, UpdateExpression, AsyncFunctionExpression,
                  MetaProperty, ImportCallExpression, RegexLiteral, TemplateLiteral,
                  ArrowFunctionExpression, ConditionalExpression, SpreadElement,
-                 DestructuringAssignmentExpression, OptionalChainExpression>
+                 DestructuringAssignmentExpression, OptionalChainExpression,
+                 YieldExpression>
             v;
 
     bool is_parenthesized = false;  // set by Parser when wrapped in ( )
@@ -394,6 +403,7 @@ struct FunctionDeclaration {
     std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body;
     SourceRange range;
+    bool is_generator = false;  // true for function* declarations
 };
 
 // async 函数声明语句 async function name(params) { body }

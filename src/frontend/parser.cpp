@@ -388,6 +388,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const SpreadElement& n) { return n.range; },
                               [](const DestructuringAssignmentExpression& n) { return n.range; },
                               [](const OptionalChainExpression& n) { return n.range; },
+                              [](const YieldExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -428,6 +429,7 @@ struct Parser {
     bool got_lf;       // cur 前是否有换行（ASI 用）
     bool is_top_level_; // import/export 只允许在顶层
     bool in_async_function_; // P2-E: await 只在 async 函数体内有效
+    bool in_generator_function_; // yield 只在 generator 函数体内有效
     bool in_module_;         // TLA: 模块顶层上下文，允许 await 表达式
     bool in_module_context_; // import.meta: 模块内任意位置（含函数体）均合法
     // When true, the `in` identifier is not treated as a binary operator.
@@ -436,8 +438,8 @@ struct Parser {
 
     explicit Parser(std::string_view src, bool is_module = false)
         : source(src), lex(lexer_init(src)), cur{TokenKind::Eof, {0, 0}}, got_lf(false),
-          is_top_level_(true), in_async_function_(false), in_module_(is_module),
-          in_module_context_(is_module) {
+          is_top_level_(true), in_async_function_(false), in_generator_function_(false),
+          in_module_(is_module), in_module_context_(is_module) {
         advance();  // 载入第一个 token
     }
 
@@ -649,6 +651,30 @@ struct Parser {
                             std::make_unique<ExprNode>(std::move(arg.value())),
                             span(tok.range.offset, end)}});
                     }
+                }
+                // yield [*] expr — 在 generator 函数体内有效
+                if (tok_text == "yield" && in_generator_function_) {
+                    bool is_delegate = false;
+                    if (cur.kind == TokenKind::Star) {
+                        is_delegate = true;
+                        advance();  // 消费 *
+                    }
+                    // 无参数 yield：后续是换行、};、或 EOF
+                    if (!is_delegate && (got_lf || cur.kind == TokenKind::Semicolon ||
+                        cur.kind == TokenKind::RBrace || cur.kind == TokenKind::Eof ||
+                        cur.kind == TokenKind::RParen || cur.kind == TokenKind::RBracket ||
+                        cur.kind == TokenKind::Comma || cur.kind == TokenKind::Colon)) {
+                        return ParseResult<ExprNode>::Ok(ExprNode{YieldExpression{
+                            false, nullptr, tok.range}});
+                    }
+                    // 有参数 yield：解析 AssignmentExpression
+                    auto arg = parse_expr(2);
+                    if (!arg.ok()) return arg;
+                    uint32_t end = range_end(expr_range(arg.value()));
+                    return ParseResult<ExprNode>::Ok(ExprNode{YieldExpression{
+                        is_delegate,
+                        std::make_unique<ExprNode>(std::move(arg.value())),
+                        span(tok.range.offset, end)}});
                 }
                 // import(specifier) — 动态 import 表达式
                 if (tok_text == "import" && cur.kind == TokenKind::LParen) {
@@ -901,8 +927,10 @@ struct Parser {
                         span(new_start, new_end)}});
             }
             case TokenKind::KwFunction: {
-                // 函数表达式 function [name](params) { body }
+                // 函数表达式 function[*] [name](params) { body }
                 uint32_t fn_start = tok.range.offset;
+                bool is_gen_fe = (cur.kind == TokenKind::Star);
+                if (is_gen_fe) advance();  // 消费 *
                 std::optional<std::string> fn_name;
                 if (cur.kind == TokenKind::Ident) {
                     fn_name = std::string(token_text(cur));
@@ -915,17 +943,21 @@ struct Parser {
                 // TLA: also reset in_module_ so await inside a plain function is not allowed
                 bool saved_in_async_fe = in_async_function_;
                 bool saved_in_module_fe = in_module_;
+                bool saved_in_gen_fe = in_generator_function_;
                 in_async_function_ = false;
                 in_module_ = false;
+                in_generator_function_ = is_gen_fe;
                 auto body_result = parse_function_body();
                 in_async_function_ = saved_in_async_fe;
                 in_module_ = saved_in_module_fe;
+                in_generator_function_ = saved_in_gen_fe;
                 if (!body_result.ok()) return ParseResult<ExprNode>::Err(body_result.error());
                 uint32_t fn_end = range_end(body_result.value().second);
                 auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
-                return ParseResult<ExprNode>::Ok(ExprNode{FunctionExpression{
-                        std::move(fn_name), std::move(params_result.value()), std::move(fn_rest2),
-                        std::move(body_ptr), span(fn_start, fn_end)}});
+                FunctionExpression fe{std::move(fn_name), std::move(params_result.value()), std::move(fn_rest2),
+                        std::move(body_ptr), span(fn_start, fn_end)};
+                fe.is_generator = is_gen_fe;
+                return ParseResult<ExprNode>::Ok(ExprNode{std::move(fe)});
             }
             case TokenKind::LBracket: {
                 // 数组字面量 [elem0, elem1, ...]
@@ -1007,9 +1039,12 @@ struct Parser {
                         auto params_g = parse_function_params(fn_rest_g);
                         if (!params_g.ok()) return ParseResult<ExprNode>::Err(params_g.error());
                         bool saved_async_g = in_async_function_;
+                        bool saved_gen_g = in_generator_function_;
                         in_async_function_ = false;
+                        in_generator_function_ = true;
                         auto body_g = parse_function_body();
                         in_async_function_ = saved_async_g;
+                        in_generator_function_ = saved_gen_g;
                         if (!body_g.ok()) return ParseResult<ExprNode>::Err(body_g.error());
                         uint32_t prop_end = range_end(body_g.value().second);
                         auto body_ptr = std::make_shared<std::vector<StmtNode>>(
@@ -2492,6 +2527,8 @@ struct Parser {
         // cur 是 KwFunction
         Token kw = cur;
         advance();
+        bool is_gen = (cur.kind == TokenKind::Star);
+        if (is_gen) advance();  // 消费 *
         if (cur.kind != TokenKind::Ident) {
             return ParseResult<StmtNode>::Err(
                     make_parse_error(source, cur, "expected function name"));
@@ -2505,17 +2542,21 @@ struct Parser {
         // TLA: also reset in_module_ so await inside a plain function is not allowed
         bool saved_in_async_fd = in_async_function_;
         bool saved_in_module_fd = in_module_;
+        bool saved_in_gen_fd = in_generator_function_;
         in_async_function_ = false;
         in_module_ = false;
+        in_generator_function_ = is_gen;
         auto body_result = parse_function_body();
         in_async_function_ = saved_in_async_fd;
         in_module_ = saved_in_module_fd;
+        in_generator_function_ = saved_in_gen_fd;
         if (!body_result.ok()) return ParseResult<StmtNode>::Err(body_result.error());
         uint32_t fn_end = range_end(body_result.value().second);
         auto body_ptr = std::make_shared<std::vector<StmtNode>>(std::move(body_result.value().first));
-        return ParseResult<StmtNode>::Ok(StmtNode{FunctionDeclaration{
-                std::move(fn_name), std::move(params_result.value()), std::move(fn_rest3),
-                std::move(body_ptr), span(kw.range.offset, fn_end)}});
+        FunctionDeclaration fdecl{std::move(fn_name), std::move(params_result.value()), std::move(fn_rest3),
+                std::move(body_ptr), span(kw.range.offset, fn_end)};
+        fdecl.is_generator = is_gen;
+        return ParseResult<StmtNode>::Ok(StmtNode{std::move(fdecl)});
     }
 
     ParseResult<StmtNode> parse_throw_stmt() {

@@ -888,3 +888,63 @@
 ### 验证
 - `./build/debug/tests/qppjs_unit_tests --gtest_filter="Destructuring*"`：40/40 通过
 - `./scripts/coverage.sh --quiet`：3641/3641 通过，0 LSan 泄漏
+
+---
+
+## Generator functions `function*` / `yield` / `yield*`（2026-05-28）
+
+### 目标
+实现 JavaScript generator functions 的完整语义，覆盖 Interpreter + VM 两路径，对称实现。
+
+### 新增文件
+
+**`include/qppjs/runtime/js_generator.h`**
+- `JSGeneratorObject` 类（继承 RcObject，ObjectKind::kGenerator）
+- `GeneratorState` 枚举（kSuspendedStart / kExecuting / kSuspendedYield / kCompleted）
+- `ResumeMode` 枚举（kNormal / kReturn / kThrow）
+- 存储 generator body 执行上下文（env、body、stmt_index、this_val）
+
+**`src/runtime/js_generator.cpp`**
+- `TraceRefs`：追踪 env_、result_、pending_throw_（含 Value 对象引用）
+- `ClearRefs`：清零所有 RcPtr 和 Value 成员，防 GC 悬挂
+
+**`tests/unit/generator_test.cpp`**
+- GEN01～GEN18 × Interp+VM + GENExtra01～GENExtra05 × Interp+VM = 43 个测试
+- 覆盖：基础 yield、多次 next、return 提前结束、throw 注入异常、yield*（委托生成器/数组/字符串）、generator 中 try/finally、done 语义、传值给 yield、无限序列、generator as iterable（for...of）
+
+### 主要变更
+
+**AST（ast.h）**
+- `FunctionDeclaration` / `FunctionExpression` 新增 `is_generator` 字段
+- 新增 `YieldExpression{bool delegate, unique_ptr<ExprNode> argument}` 加入 ExprNode variant
+
+**Parser（parser.cpp）**
+- `parse_function_declaration` / `parse_function_expression`：检测 `*` token，设 `is_generator = true`，解析 body 时设 `in_generator_ = true` 标志
+- `nud(Ident "yield")`：在 `in_generator_` 上下文中解析为 YieldExpression，支持 `yield`（无参）、`yield expr`、`yield* expr`（委托）
+
+**Interpreter（interpreter.cpp）**
+- `eval_yield_expr`：挂起 generator，将 yield 值写入 generator 对象，切换状态为 kSuspendedYield，返回特殊哨兵
+- `run_generator_body`：驱动 generator body 逐 yield 执行，处理 resume value 注入（ResumeMode::kReturn/kThrow）
+- `eval_function_decl` / `eval_function_expr`：is_generator 时调用 `make_generator_function_value`，返回调用即创建 generator 对象
+- generator prototype 初始化：`.next(value)`、`.return(value)`、`.throw(err)` 三个 native 方法
+- `eval_for_of_stmt`：新增 kGenerator 迭代快路径
+
+**Compiler（compiler.cpp）**
+- `compile_yield_expr`：发射 `kYield` 指令（含 delegate 模式）
+- `compile_function`：传递 `is_generator` 标志给 BytecodeFunction
+- `hoist_vars_scan_expr`：追加 YieldExpression 分支
+
+**VM（vm.cpp + bytecode.h + opcode.h）**
+- 新增 `kYield` 指令（1 字节操作数，delegate flag）
+- `kMakeFunction`：is_generator 时创建 generator wrapper（调用即返回新的 JSGeneratorObject）
+- generator wrapper native：创建 JSGeneratorObject，存储 bytecode + env
+- `.next/.return/.throw`：恢复 suspended frame（`vm_suspended_frame_`），通过 `vm_handle_async_result` 模式驱动 generator 执行
+- `kYield` handler：挂起当前帧，设置 `vm_generator_suspended_` + `vm_suspended_frame_`，返回哨兵
+
+**内存安全修复（LSan）**
+
+- `src/runtime/environment.cpp`：`clear_function_bindings` 新增 kGenerator 分支，将 generator binding 的 Value 清零（generator 函数对应的 cell 持有对 env 的反向引用形成 RC 环路，清零后环路打断）
+- `src/runtime/js_object.cpp`：`clear_function_properties` 中 `symbol_props_` 遍历时，对 `entry.value.is_string()` 的条目也清零（修复 `Symbol.iterator` 属性值为 `"Generator"` JSString 的泄漏；原仅清 `is_object()` 条目）
+
+### 测试结果
+- `./scripts/coverage.sh --quiet`：4232/4232 通过，0 LSan 泄漏

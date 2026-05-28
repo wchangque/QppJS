@@ -11,6 +11,7 @@ add_library(qppjs_core
     runtime/module_record.cpp
     runtime/module_loader.cpp
     runtime/promise.cpp
+    runtime/js_generator.cpp
     runtime/symbol_table.cpp
     runtime/interpreter.cpp
     debug/format.cpp

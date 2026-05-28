@@ -6,6 +6,7 @@
 #include "qppjs/runtime/environment.h"
 #include "qppjs/runtime/for_of_iterator.h"
 #include "qppjs/runtime/js_function.h"
+#include "qppjs/runtime/js_generator.h"
 #include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/js_regexp.h"
 #include "qppjs/runtime/module_loader.h"
@@ -3371,6 +3372,22 @@ void Interpreter::init_runtime() {
     // we need to handle the Symbol case there. For now, we handle it in to_string_val
     // via a special path in the String() constructor.
 
+    // Generator prototype: [Symbol.toStringTag] = "Generator", [Symbol.iterator] = return this
+    generator_prototype_ = RcPtr<JSObject>::make();
+    generator_prototype_->set_proto(object_prototype_);
+    gc_heap_.Register(generator_prototype_.get());
+    generator_prototype_->set_property_by_symbol(symbol_table_.well_known_to_string_tag,
+        Value::string("Generator"));
+    {
+        auto gen_iter_fn = RcPtr<JSFunction>::make();
+        gen_iter_fn->set_native_fn([](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+            return EvalResult::ok(this_val);
+        });
+        gc_heap_.Register(gen_iter_fn.get());
+        generator_prototype_->set_property_by_symbol(symbol_table_.well_known_iterator,
+            Value::object(ObjectPtr(gen_iter_fn)));
+    }
+
     // Register the global environment with GcHeap so user-created closures reachable
     // from it are treated as roots and not swept.
     gc_heap_.Register(global_env_.get());
@@ -3863,11 +3880,14 @@ EvalResult Interpreter::exec(const Program& program) {
         add_obj(regexp_constructor_.get());
         add_obj(symbol_prototype_.get());
         add_obj(symbol_constructor_.get());
+        add_obj(generator_prototype_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
         if (pending_throw_.has_value()) add_val(*pending_throw_);
         // Include the result value so it is not swept
         if (final_result.is_ok()) add_val(final_result.value());
+        // Include last expression value: may differ from final_result if re-eval updated final_result
+        add_val(last);
         // Include job queue roots
         std::vector<Value> jq_vals;
         job_queue_.CollectRoots(jq_vals);
@@ -3888,12 +3908,16 @@ EvalResult Interpreter::exec(const Program& program) {
     if (number_prototype_) number_prototype_->clear_function_properties();
     if (regexp_prototype_) regexp_prototype_->clear_function_properties();
     if (symbol_prototype_) symbol_prototype_->clear_function_properties();
+    if (generator_prototype_) generator_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     if (number_constructor_) number_constructor_->clear_own_properties();
     if (boolean_constructor_) boolean_constructor_->clear_own_properties();
     if (string_constructor_) string_constructor_->clear_own_properties();
     if (regexp_constructor_) regexp_constructor_->clear_own_properties();
     if (symbol_constructor_) symbol_constructor_->clear_own_properties();
+    in_generator_resume_mode_ = false;
+    pending_generator_resume_value_ = std::nullopt;
+    pending_generator_yield_value_ = std::nullopt;
 
     return final_result;
 }
@@ -3989,16 +4013,7 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
     if (decl.kind == VarKind::Var) {
         // var: binding already hoisted; just assign if there is an initializer
         if (decl.init.has_value()) {
-            const auto* fn_expr = std::get_if<FunctionExpression>(&decl.init->v);
-            EvalResult init_result = fn_expr
-                ? EvalResult::ok(make_function_value(
-                    fn_expr->name,
-                    fn_expr->params,
-                    fn_expr->body,
-                    current_env_,
-                    fn_expr->name.has_value(),
-                    fn_expr->rest_param))
-                : eval_expr(decl.init.value());
+            EvalResult init_result = eval_expr(decl.init.value());
             if (!init_result.is_ok()) {
                 return StmtResult::err(init_result.error());
             }
@@ -4014,16 +4029,7 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
             current_env_->define(decl.name, decl.kind);
         }
         if (decl.init.has_value()) {
-            const auto* fn_expr = std::get_if<FunctionExpression>(&decl.init->v);
-            EvalResult init_result = fn_expr
-                ? EvalResult::ok(make_function_value(
-                    fn_expr->name,
-                    fn_expr->params,
-                    fn_expr->body,
-                    current_env_,
-                    fn_expr->name.has_value(),
-                    fn_expr->rest_param))
-                : eval_expr(decl.init.value());
+            EvalResult init_result = eval_expr(decl.init.value());
             if (!init_result.is_ok()) {
                 return StmtResult::err(init_result.error());
             }
@@ -4386,6 +4392,7 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
                 return EvalResult::ok(rhs);
             },
             [this](const OptionalChainExpression& e) { return eval_optional_chain(e); },
+            [this](const YieldExpression& e) { return eval_yield_expr(e); },
         },
         expr.v);
 }
@@ -4491,7 +4498,8 @@ bool Interpreter::spread_into(const Value& iterable, std::vector<Value>& out) {
     ObjectKind k = iterable.as_object_raw()->object_kind();
     JSObject* obj = nullptr;
     if (k == ObjectKind::kOrdinary || k == ObjectKind::kRegExp ||
-        k == ObjectKind::kStringObject || k == ObjectKind::kBooleanObject) {
+        k == ObjectKind::kStringObject || k == ObjectKind::kBooleanObject ||
+        k == ObjectKind::kGenerator) {
         obj = static_cast<JSObject*>(iterable.as_object_raw());
     }
     if (!obj) {
@@ -4514,7 +4522,7 @@ bool Interpreter::spread_into(const Value& iterable, std::vector<Value>& out) {
     ObjectKind ik = iterator.as_object_raw()->object_kind();
     if (ik == ObjectKind::kOrdinary || ik == ObjectKind::kArray ||
         ik == ObjectKind::kRegExp || ik == ObjectKind::kStringObject ||
-        ik == ObjectKind::kBooleanObject) {
+        ik == ObjectKind::kBooleanObject || ik == ObjectKind::kGenerator) {
         next_method = static_cast<JSObject*>(iterator.as_object_raw())->get_property("next");
     }
     while (true) {
@@ -5514,6 +5522,7 @@ EvalResult Interpreter::eval_object_expr(const ObjectExpression& expr) {
                 if (fn_val.is_object() && fn_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
                     auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
                     fn->set_is_method(true);
+                    if (prop.method_kind == MethodKind::kGenerator) fn->set_is_generator(true);
                     if (key_is_symbol) {
                         const std::string* desc = symbol_table_.GetDescription(sym_id);
                         std::string name = "[" + (desc ? *desc : "") + "]";
@@ -5574,6 +5583,7 @@ EvalResult Interpreter::eval_object_expr(const ObjectExpression& expr) {
             if (fn_val.is_object() && fn_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
                 auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
                 fn->set_is_method(true);
+                if (prop.method_kind == MethodKind::kGenerator) fn->set_is_generator(true);
                 fn->set_property("name", Value::string(prop.key));
             }
             obj->set_property(prop.key, fn_val);
@@ -5679,7 +5689,8 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
         if (!obj_val.is_object()) return EvalResult::ok(Value::undefined());
         RcObject* raw_for_sym = obj_val.as_object_raw();
         if (raw_for_sym->object_kind() == ObjectKind::kOrdinary ||
-            raw_for_sym->object_kind() == ObjectKind::kArray) {
+            raw_for_sym->object_kind() == ObjectKind::kArray ||
+            raw_for_sym->object_kind() == ObjectKind::kGenerator) {
             auto* js_obj_sym = static_cast<JSObject*>(raw_for_sym);
             uint64_t sym_id = key_result.value().as_symbol_id();
             const JSObject::SymbolPropertyEntry* sym_entry = js_obj_sym->find_symbol_entry(sym_id);
@@ -5746,7 +5757,8 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
         auto* js_obj = static_cast<JSObject*>(raw_obj);
         return EvalResult::ok(js_obj->get_property(key));
     }
-    if (raw_obj->object_kind() != ObjectKind::kOrdinary && raw_obj->object_kind() != ObjectKind::kArray) {
+    if (raw_obj->object_kind() != ObjectKind::kOrdinary && raw_obj->object_kind() != ObjectKind::kArray &&
+        raw_obj->object_kind() != ObjectKind::kGenerator) {
         return EvalResult::ok(Value::undefined());
     }
     auto* js_obj = static_cast<JSObject*>(raw_obj);
@@ -5804,7 +5816,8 @@ EvalResult Interpreter::eval_get_property_of(const Value& obj_val, const Value& 
     }
     if (key_val.is_symbol()) {
         RcObject* raw = obj_val.as_object_raw();
-        if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+        if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray ||
+            raw->object_kind() == ObjectKind::kGenerator) {
             auto* js_obj_sym = static_cast<JSObject*>(raw);
             uint64_t sym_id = key_val.as_symbol_id();
             const JSObject::SymbolPropertyEntry* sym_entry = js_obj_sym->find_symbol_entry(sym_id);
@@ -5862,7 +5875,8 @@ EvalResult Interpreter::eval_get_property_of(const Value& obj_val, const Value& 
         auto* js_obj = static_cast<JSObject*>(raw_obj);
         return EvalResult::ok(js_obj->get_property(key));
     }
-    if (raw_obj->object_kind() != ObjectKind::kOrdinary && raw_obj->object_kind() != ObjectKind::kArray) {
+    if (raw_obj->object_kind() != ObjectKind::kOrdinary && raw_obj->object_kind() != ObjectKind::kArray &&
+        raw_obj->object_kind() != ObjectKind::kGenerator) {
         return EvalResult::ok(Value::undefined());
     }
     auto* js_obj = static_cast<JSObject*>(raw_obj);
@@ -6069,6 +6083,7 @@ Value Interpreter::make_function_value(std::optional<std::string> name, const st
     fn->set_defining_module(current_module_);
     fn->set_rest_param(std::move(rest_param));
     fn->set_property("length", Value::number(static_cast<double>(length_count)));
+    fn->set_property("name", Value::string(name.value_or("")));
 
     // Eager prototype initialization: F.prototype = { constructor: F }
     Value fn_val = Value::object(ObjectPtr(fn));
@@ -6191,6 +6206,60 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
         fn_env->initialize(rest_name, Value::object(ObjectPtr(rest_arr)));
     }
 
+    // Generator function: create generator object without executing the body
+    if (fn->is_generator()) {
+        if (is_new_call) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                (fn->name().has_value() ? *fn->name() : "GeneratorFunction") +
+                " is not a constructor");
+            return StmtResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto gen_obj = RcPtr<JSGeneratorObject>::make();
+        gc_heap_.Register(gen_obj.get());
+        gen_obj->set_proto(generator_prototype_);
+        gen_obj->state_ = GeneratorState::kSuspendedStart;
+        gen_obj->gen_body_ = fn->body();
+        gen_obj->gen_env_ = fn_env;
+        gen_obj->gen_this_val_ = actual_this;
+        gen_obj->suspended_stmt_index_ = 0;
+
+        Value gen_val = Value::object(ObjectPtr(gen_obj));
+        // Set up .next() method
+        {
+            auto next_fn = RcPtr<JSFunction>::make();
+            next_fn->set_name(std::string("next"));
+            next_fn->set_property("length", Value::number(1));
+            next_fn->set_native_fn([this, gen_obj](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+                return generator_next(gen_obj, args.empty() ? Value::undefined() : args[0]);
+            });
+            gc_heap_.Register(next_fn.get());
+            gen_obj->set_property("next", Value::object(ObjectPtr(next_fn)));
+        }
+        // Set up .return() method
+        {
+            auto ret_fn = RcPtr<JSFunction>::make();
+            ret_fn->set_name(std::string("return"));
+            ret_fn->set_property("length", Value::number(1));
+            ret_fn->set_native_fn([this, gen_obj](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+                return generator_return(gen_obj, args.empty() ? Value::undefined() : args[0]);
+            });
+            gc_heap_.Register(ret_fn.get());
+            gen_obj->set_property("return", Value::object(ObjectPtr(ret_fn)));
+        }
+        // Set up .throw() method
+        {
+            auto throw_fn = RcPtr<JSFunction>::make();
+            throw_fn->set_name(std::string("throw"));
+            throw_fn->set_property("length", Value::number(1));
+            throw_fn->set_native_fn([this, gen_obj](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+                return generator_throw(gen_obj, args.empty() ? Value::undefined() : args[0]);
+            });
+            gc_heap_.Register(throw_fn.get());
+            gen_obj->set_property("throw", Value::object(ObjectPtr(throw_fn)));
+        }
+        return StmtResult::ok(Completion::return_(gen_val));
+    }
+
     ScopeGuard guard(*this, fn_env, fn_env, std::move(actual_this), /*is_call=*/true);
     hoist_vars(*fn->body(), *fn_env);
 
@@ -6220,6 +6289,10 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
 StmtResult Interpreter::eval_function_decl(const FunctionDeclaration& stmt) {
     Value fn_val = make_function_value(stmt.name, stmt.params, stmt.body, current_env_,
                                        false, stmt.rest_param);
+    if (stmt.is_generator) {
+        auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
+        fn->set_is_generator(true);
+    }
     auto set_result = var_env_->set(stmt.name, fn_val);
     if (!set_result.is_ok()) {
         return StmtResult::err(set_result.error());
@@ -6246,10 +6319,11 @@ static Value extract_throw_value(std::optional<Value>& pending, const std::strin
 StmtResult Interpreter::eval_throw_stmt(const ThrowStatement& stmt) {
     auto r = eval_expr(stmt.argument);
     if (!r.is_ok()) {
-        if (r.error().message() == kAsyncSuspendSentinel) {
+        const std::string& em = r.error().message();
+        if (em == kAsyncSuspendSentinel || em == kGeneratorYieldSentinel) {
             return StmtResult::err(r.error());
         }
-        Value thrown = extract_throw_value(pending_throw_, r.error().message(), kPendingThrowSentinel);
+        Value thrown = extract_throw_value(pending_throw_, em, kPendingThrowSentinel);
         return StmtResult::ok(Completion::throw_(std::move(thrown)));
     }
     return StmtResult::ok(Completion::throw_(r.value()));
@@ -6275,13 +6349,13 @@ StmtResult Interpreter::eval_try_stmt(const TryStatement& stmt) {
     StmtResult try_result = eval_block_stmt(stmt.block);
 
     // Internal C++ error from try block → convert to ThrowCompletion
-    // Exception: kAsyncSuspendSentinel must be propagated as-is (async suspension).
+    // Exception: sentinel values must be propagated as-is (async suspension / generator yield).
     if (!try_result.is_ok()) {
-        if (try_result.error().message() == kAsyncSuspendSentinel) {
+        const std::string& em = try_result.error().message();
+        if (em == kAsyncSuspendSentinel || em == kGeneratorYieldSentinel) {
             return try_result;
         }
-        Value thrown = extract_throw_value(pending_throw_, try_result.error().message(),
-                                           kPendingThrowSentinel);
+        Value thrown = extract_throw_value(pending_throw_, em, kPendingThrowSentinel);
         try_result = StmtResult::ok(Completion::throw_(std::move(thrown)));
     }
 
@@ -6291,13 +6365,13 @@ StmtResult Interpreter::eval_try_stmt(const TryStatement& stmt) {
             Value thrown_val = try_result.completion().value;
             try_result = exec_catch(*stmt.handler, std::move(thrown_val));
             // Internal error from catch → convert to ThrowCompletion
-            // Exception: kAsyncSuspendSentinel must be propagated as-is.
+            // Exception: sentinel values must be propagated as-is.
             if (!try_result.is_ok()) {
-                if (try_result.error().message() == kAsyncSuspendSentinel) {
+                const std::string& em2 = try_result.error().message();
+                if (em2 == kAsyncSuspendSentinel || em2 == kGeneratorYieldSentinel) {
                     return try_result;
                 }
-                Value thrown = extract_throw_value(pending_throw_, try_result.error().message(),
-                                                   kPendingThrowSentinel);
+                Value thrown = extract_throw_value(pending_throw_, em2, kPendingThrowSentinel);
                 try_result = StmtResult::ok(Completion::throw_(std::move(thrown)));
             }
         }
@@ -6674,7 +6748,8 @@ StmtResult Interpreter::eval_for_of_stmt(const ForOfStatement& stmt,
         ObjectKind k = iterable.as_object_raw()->object_kind();
         JSObject* obj = nullptr;
         if (k == ObjectKind::kOrdinary || k == ObjectKind::kRegExp ||
-            k == ObjectKind::kStringObject || k == ObjectKind::kBooleanObject) {
+            k == ObjectKind::kStringObject || k == ObjectKind::kBooleanObject ||
+            k == ObjectKind::kGenerator) {
             obj = static_cast<JSObject*>(iterable.as_object_raw());
         }
         if (obj) {
@@ -6701,7 +6776,7 @@ StmtResult Interpreter::eval_for_of_stmt(const ForOfStatement& stmt,
                 ObjectKind ik = iterator.as_object_raw()->object_kind();
                 if (ik == ObjectKind::kOrdinary || ik == ObjectKind::kArray ||
                     ik == ObjectKind::kRegExp || ik == ObjectKind::kStringObject ||
-                    ik == ObjectKind::kBooleanObject) {
+                    ik == ObjectKind::kBooleanObject || ik == ObjectKind::kGenerator) {
                     auto* iter_obj = static_cast<JSObject*>(iterator.as_object_raw());
                     next_method = iter_obj->get_property("next");
                 }
@@ -6750,8 +6825,13 @@ StmtResult Interpreter::eval_for_of_stmt(const ForOfStatement& stmt,
 }
 
 EvalResult Interpreter::eval_function_expr(const FunctionExpression& expr) {
-    return EvalResult::ok(make_function_value(expr.name, expr.params, expr.body, current_env_,
-                                              expr.name.has_value(), expr.rest_param));
+    Value fn_val = make_function_value(expr.name, expr.params, expr.body, current_env_,
+                                       expr.name.has_value(), expr.rest_param);
+    if (expr.is_generator) {
+        auto* fn = static_cast<JSFunction*>(fn_val.as_object_raw());
+        fn->set_is_generator(true);
+    }
+    return EvalResult::ok(std::move(fn_val));
 }
 
 EvalResult Interpreter::eval_arrow_function_expr(const ArrowFunctionExpression& expr) {
@@ -6821,7 +6901,8 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
             } else {
                 RcObject* sym_raw = this_val.as_object_raw();
                 if (sym_raw->object_kind() == ObjectKind::kOrdinary ||
-                    sym_raw->object_kind() == ObjectKind::kArray) {
+                    sym_raw->object_kind() == ObjectKind::kArray ||
+                    sym_raw->object_kind() == ObjectKind::kGenerator) {
                     callee_val = static_cast<JSObject*>(sym_raw)->get_property_by_symbol(sym_id);
                 } else {
                     callee_val = Value::undefined();
@@ -6850,7 +6931,8 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         } else {
         RcObject* obj_ptr = this_val.as_object_raw();
-        if (obj_ptr->object_kind() == ObjectKind::kOrdinary || obj_ptr->object_kind() == ObjectKind::kArray) {
+        if (obj_ptr->object_kind() == ObjectKind::kOrdinary || obj_ptr->object_kind() == ObjectKind::kArray ||
+            obj_ptr->object_kind() == ObjectKind::kGenerator) {
             auto* js_obj = static_cast<JSObject*>(obj_ptr);
             callee_val = js_obj->get_property(key);
         } else if (obj_ptr->object_kind() == ObjectKind::kFunction) {
@@ -7099,6 +7181,7 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
         add_obj(regexp_constructor_.get());
         add_obj(symbol_prototype_.get());
         add_obj(symbol_constructor_.get());
+        add_obj(generator_prototype_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
         if (pending_throw_.has_value()) add_val(*pending_throw_);
@@ -7123,6 +7206,7 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
     if (number_prototype_) number_prototype_->clear_function_properties();
     if (regexp_prototype_) regexp_prototype_->clear_function_properties();
     if (symbol_prototype_) symbol_prototype_->clear_function_properties();
+    if (generator_prototype_) generator_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     if (number_constructor_) number_constructor_->clear_own_properties();
     if (boolean_constructor_) boolean_constructor_->clear_own_properties();
@@ -7921,6 +8005,161 @@ StmtResult Interpreter::eval_async_function_decl(const AsyncFunctionDeclaration&
     return StmtResult::ok(Completion::normal(Value::undefined()));
 }
 
+// ---- Generator helpers ----
+
+EvalResult Interpreter::generator_resume(RcPtr<JSGeneratorObject> gen) {
+    auto& body = *gen->gen_body_;
+
+    // Save interpreter state
+    RcPtr<Environment> saved_env = current_env_;
+    RcPtr<Environment> saved_var_env = var_env_;
+    Value saved_this = current_this_;
+
+    // Switch to generator's environment
+    current_env_ = gen->gen_env_;
+    var_env_ = gen->gen_env_;
+    current_this_ = gen->gen_this_val_;
+
+    // Hoist vars on first execution
+    if (!gen->vars_hoisted_) {
+        hoist_vars(body, *gen->gen_env_);
+        gen->vars_hoisted_ = true;
+    }
+
+    gen->state_ = GeneratorState::kExecuting;
+
+    // Restore any in-progress yield* delegate iterator
+    current_yield_delegate_iter_ = std::move(gen->yield_delegate_iter_);
+    current_yield_delegate_next_ = std::move(gen->yield_delegate_next_);
+
+    auto restore_state = [&]() {
+        current_env_ = saved_env;
+        var_env_ = saved_var_env;
+        current_this_ = saved_this;
+        in_generator_resume_mode_ = false;
+        pending_generator_resume_value_ = std::nullopt;
+        in_generator_throw_mode_ = false;
+        pending_generator_throw_value_ = std::nullopt;
+        // Save delegate iterator back to generator
+        gen->yield_delegate_iter_ = std::move(current_yield_delegate_iter_);
+        gen->yield_delegate_next_ = std::move(current_yield_delegate_next_);
+        current_yield_delegate_iter_ = Value::undefined();
+        current_yield_delegate_next_ = Value::undefined();
+    };
+
+    for (size_t i = gen->suspended_stmt_index_; i < body.size(); ++i) {
+        auto stmt_result = eval_stmt(body[i]);
+        if (!stmt_result.is_ok()) {
+            const std::string& em = stmt_result.error().message();
+            if (em == kGeneratorYieldSentinel) {
+                // Yield: save state and return iter result
+                gen->state_ = GeneratorState::kSuspendedYield;
+                gen->suspended_stmt_index_ = i;
+                Value yield_val = pending_generator_yield_value_.has_value()
+                    ? std::move(*pending_generator_yield_value_) : Value::undefined();
+                pending_generator_yield_value_ = std::nullopt;
+                restore_state();
+                // Build result object manually (gc_heap_ needed)
+                auto result_obj = RcPtr<JSObject>::make();
+                gc_heap_.Register(result_obj.get());
+                result_obj->set_proto(object_prototype_);
+                result_obj->set_property("value", std::move(yield_val));
+                result_obj->set_property("done", Value::boolean(false));
+                return EvalResult::ok(Value::object(ObjectPtr(result_obj)));
+            }
+            // Other error: mark completed and propagate
+            gen->state_ = GeneratorState::kCompleted;
+            restore_state();
+            return EvalResult::err(stmt_result.error());
+        }
+        const Completion& c = stmt_result.completion();
+        if (c.is_return()) {
+            gen->state_ = GeneratorState::kCompleted;
+            Value ret_val = c.value;
+            restore_state();
+            auto result_obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(result_obj.get());
+            result_obj->set_proto(object_prototype_);
+            result_obj->set_property("value", std::move(ret_val));
+            result_obj->set_property("done", Value::boolean(true));
+            return EvalResult::ok(Value::object(ObjectPtr(result_obj)));
+        }
+        if (c.is_throw()) {
+            gen->state_ = GeneratorState::kCompleted;
+            Value thrown = c.value;
+            restore_state();
+            pending_throw_ = std::move(thrown);
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+    }
+
+    // Body completed normally
+    gen->state_ = GeneratorState::kCompleted;
+    restore_state();
+    auto result_obj = RcPtr<JSObject>::make();
+    gc_heap_.Register(result_obj.get());
+    result_obj->set_proto(object_prototype_);
+    result_obj->set_property("value", Value::undefined());
+    result_obj->set_property("done", Value::boolean(true));
+    return EvalResult::ok(Value::object(ObjectPtr(result_obj)));
+}
+
+EvalResult Interpreter::generator_next(RcPtr<JSGeneratorObject> gen, Value resume_val) {
+    if (gen->state_ == GeneratorState::kCompleted) {
+        auto result_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(result_obj.get());
+        result_obj->set_proto(object_prototype_);
+        result_obj->set_property("value", Value::undefined());
+        result_obj->set_property("done", Value::boolean(true));
+        return EvalResult::ok(Value::object(ObjectPtr(result_obj)));
+    }
+    if (gen->state_ == GeneratorState::kExecuting) {
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Generator is already running");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+    if (gen->state_ == GeneratorState::kSuspendedYield) {
+        in_generator_resume_mode_ = true;
+        pending_generator_resume_value_ = std::move(resume_val);
+    }
+    return generator_resume(gen);
+}
+
+EvalResult Interpreter::generator_return(RcPtr<JSGeneratorObject> gen, Value return_val) {
+    if (gen->state_ == GeneratorState::kCompleted ||
+        gen->state_ == GeneratorState::kSuspendedStart) {
+        gen->state_ = GeneratorState::kCompleted;
+        auto result_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(result_obj.get());
+        result_obj->set_proto(object_prototype_);
+        result_obj->set_property("value", std::move(return_val));
+        result_obj->set_property("done", Value::boolean(true));
+        return EvalResult::ok(Value::object(ObjectPtr(result_obj)));
+    }
+    gen->state_ = GeneratorState::kCompleted;
+    auto result_obj = RcPtr<JSObject>::make();
+    gc_heap_.Register(result_obj.get());
+    result_obj->set_proto(object_prototype_);
+    result_obj->set_property("value", std::move(return_val));
+    result_obj->set_property("done", Value::boolean(true));
+    return EvalResult::ok(Value::object(ObjectPtr(result_obj)));
+}
+
+EvalResult Interpreter::generator_throw(RcPtr<JSGeneratorObject> gen, Value throw_val) {
+    if (gen->state_ == GeneratorState::kCompleted ||
+        gen->state_ == GeneratorState::kSuspendedStart) {
+        gen->state_ = GeneratorState::kCompleted;
+        pending_throw_ = std::move(throw_val);
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+    // kSuspendedYield: resume the generator body and inject the throw at the yield point.
+    // eval_yield_expr will detect in_generator_throw_mode_ and propagate kPendingThrowSentinel
+    // into the generator body, allowing internal try-catch to handle it.
+    in_generator_resume_mode_ = true;
+    in_generator_throw_mode_ = true;
+    pending_generator_throw_value_ = std::move(throw_val);
+    return generator_resume(gen);
+}
+
 EvalResult Interpreter::eval_await_expr(const AwaitExpression& expr) {
     // Resume path: pending_await_result_ is set by resume_fn callback.
     // Check pending_throw_ first (reject_fn path).
@@ -7945,6 +8184,102 @@ EvalResult Interpreter::eval_await_expr(const AwaitExpression& expr) {
 
     // Signal suspension — run_async_body will detect this sentinel and set up callbacks.
     return EvalResult::err(Error(ErrorKind::Runtime, kAsyncSuspendSentinel));
+}
+
+EvalResult Interpreter::eval_yield_expr(const YieldExpression& expr) {
+    if (expr.is_delegate) {
+        // yield* iterable: iterate and yield each value, preserving iterator between yields.
+        Value iterator = Value::undefined();
+        Value next_method = Value::undefined();
+
+        if (in_generator_resume_mode_ && !current_yield_delegate_iter_.is_undefined()) {
+            // Resuming an in-progress yield*: consume the resume flag and use the saved iterator.
+            in_generator_resume_mode_ = false;
+            iterator = std::move(current_yield_delegate_iter_);
+            next_method = std::move(current_yield_delegate_next_);
+            current_yield_delegate_iter_ = Value::undefined();
+            current_yield_delegate_next_ = Value::undefined();
+        } else {
+            // First entry into yield*: evaluate argument and create iterator.
+            in_generator_resume_mode_ = false;  // clear if set (no prior delegate state)
+            auto iter_result = eval_expr(*expr.argument);
+            if (!iter_result.is_ok()) return iter_result;
+            Value iterable = iter_result.value();
+
+            if (!iterable.is_object()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError, "not iterable");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            auto* raw = iterable.as_object_raw();
+            Value iter_factory = static_cast<JSObject*>(raw)->get_property_by_symbol(
+                symbol_table_.well_known_iterator);
+            if (iter_factory.is_undefined()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError, "not iterable");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            auto iter_r = call_function_val(iter_factory, iterable, std::span<Value>());
+            if (!iter_r.is_ok()) return EvalResult::err(iter_r.error());
+            iterator = iter_r.value();
+            if (!iterator.is_object()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "iterator must be an object");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            next_method = static_cast<JSObject*>(iterator.as_object_raw())->get_property("next");
+        }
+
+        // Call next once, yield the value, save iterator for the next resume.
+        auto next_r = call_function_val(next_method, iterator, std::span<Value>());
+        if (!next_r.is_ok()) return EvalResult::err(next_r.error());
+        Value result_obj = next_r.value();
+        if (!result_obj.is_object()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "iterator result must be an object");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* res_raw = static_cast<JSObject*>(result_obj.as_object_raw());
+        Value done_val = res_raw->get_property("done");
+        Value value_val = res_raw->get_property("value");
+        if (to_boolean(done_val)) {
+            // Delegate is finished; clear saved state (already cleared above).
+            return EvalResult::ok(value_val);
+        }
+        // Save iterator so that next resume continues from here.
+        current_yield_delegate_iter_ = iterator;
+        current_yield_delegate_next_ = next_method;
+        pending_generator_yield_value_ = value_val;
+        return EvalResult::err(Error(ErrorKind::Runtime, kGeneratorYieldSentinel));
+    }
+
+    // Simple yield expr
+    if (in_generator_resume_mode_) {
+        in_generator_resume_mode_ = false;
+        // g.throw() path: inject the thrown value so the generator's try-catch can handle it
+        if (in_generator_throw_mode_) {
+            in_generator_throw_mode_ = false;
+            Value throw_v = pending_generator_throw_value_.has_value()
+                ? std::move(*pending_generator_throw_value_) : Value::undefined();
+            pending_generator_throw_value_ = std::nullopt;
+            pending_throw_ = std::move(throw_v);
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        // g.next() path: return the resume value
+        Value resume = pending_generator_resume_value_.has_value()
+            ? std::move(*pending_generator_resume_value_) : Value::undefined();
+        pending_generator_resume_value_ = std::nullopt;
+        return EvalResult::ok(std::move(resume));
+    }
+
+    // Evaluate the yield argument
+    Value yield_val = Value::undefined();
+    if (expr.argument) {
+        auto arg_r = eval_expr(*expr.argument);
+        if (!arg_r.is_ok()) return arg_r;
+        yield_val = arg_r.value();
+    }
+
+    pending_generator_yield_value_ = std::move(yield_val);
+    return EvalResult::err(Error(ErrorKind::Runtime, kGeneratorYieldSentinel));
 }
 
 }  // namespace qppjs
