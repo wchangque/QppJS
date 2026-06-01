@@ -7,10 +7,10 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 4344/4344 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 4441/4441 通过（coverage），0 LSan 泄漏（class fields 专项验证通过） |
 | 最近更新 | 2026-06-01 |
-| 下一步 | 下一批 test262 候选目标（tagged template / Map/Set / eval 等） |
-| test262 | language/expressions class 实现后约 22%（expressions 32.4% 基线） |
+| 下一步 | 下一批 test262 候选目标（Map/Set / eval 等） |
+| test262 | language/expressions class fields 实现后约 23%（expressions 32.4% 基线） |
 
 ## 已知遗留问题
 
@@ -22,6 +22,10 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **ES2022 Class Public Instance Fields & Static Fields**（2026-06-01）：AST 新增 `ClassField`（key/key_expr/initializer/is_static/computed 字段，使用 `shared_ptr<ExprNode>` 支持复制）；`ClassDeclaration/ClassExpression` 新增 `fields` 字段；Parser `parse_class_body` 新增 fields 输出参数，在 key 后无 `(` 时解析为字段声明（`=` 初始化器或无初始化器）；JSFunction 新增 `instance_fields_`（`shared_ptr<vector<ClassField>>`）和 `field_initializer_`（`shared_ptr<BytecodeFunction>`）；BytecodeFunction 新增 `field_initializer`；CallFrame 新增 `fields_initialized` 标志；Interpreter: `eval_class_common` 分离 static fields（立即 `set_property`）和 instance fields（存入 ctor `instance_fields_`）；`init_instance_fields` 辅助函数；`call_function` 在 base ctor body 前调用 fields；`eval_super_call` 在 derived ctor super() 后调用 fields；`eval_new_expr` implicit_derived 路径补调用；VM: `compile_field_initializer` 将 instance fields 编译为独立 BytecodeFunction（kLoadThis + kSetProp/kSetElem 序列）；`compile_class_common` 将 static fields 在 kMakeClass 后内联 emit；`kMakeClass` handler 复制 `field_initializer` 到 JSFunction；`run()` 循环顶部对 base class ctor 调用 field_initializer（push_call_frame+run）；`kSuperCall` handler 对 derived ctor 调用 field_initializer；`kNewCall` implicit_derived 路径补调用；`ClearRefs` 新增 instance_fields_/field_initializer_ 清零。新增 `tests/unit/class_fields_test.cpp`（CF-01～CF-17 × Interp+VM + 2 Extra = 38 个测试）。4441/4441 通过（coverage），LSan 待确认。
+
+- [x] **Logical Assignment Operators (&&=, ||=, ??=) + Tagged Template Literals**（2026-06-01）：Lexer 新增 `AmpAmpEq`/`PipePipeEq` token（`&&=`/`||=` 三字符识别）；`QuestionQuestionEq` 已有，parser 同步接入；AST `AssignOp` 新增 `LogicalAndAssign/LogicalOrAssign/NullishAssign`；`MemberAssignmentExpression` 新增 `op` 字段（支持成员 logical assign）；Parser lbp 新增三个 token=2（赋值优先级）；led 中 Identifier 路径和 MemberExpression 路径均支持三个 op；AST 新增 `TaggedTemplateExpression{tag, tmpl, range}` 节点；Parser nud 中 TemplateNoSub/TemplateHead 同步提取 `raw` 字段（行结束规范化），led 中 lbp=19 处理 tagged template 生成 TaggedTemplateExpression；Interpreter 短路逻辑赋值（eval_assignment + eval_member_assign）；Interpreter eval_tagged_template_expr（构建 strings/raw 数组，call_function_val）；Compiler 短路 logical assign（kGetVar + kDup + kJumpIfXxx + kPop + RHS + kSetVar；成员 non-computed 路径用 kDup/kGetProp/kDup/kJumpIfXxx/kSetProp/kSwap/kPop 完整短路实现）；Compiler compile_tagged_template_expr（kCallMethod 布局，kNewArray+kDup+kArrayAppend 模式构建 strings/raw，kSetProp "raw"）；ast_dump/token.cpp/expr_range 同步扩展；更新 NC41 占位测试为语义验证；新增 `tests/unit/logical_assign_test.cpp`（LA-01～LA-15 × Interp+VM + 3 Parser = 37 个测试）；模板字符串测试追加 TTL-01～TTL-10 × Interp+VM = 20 个测试。4403/4403 通过（coverage），0 LSan 泄漏。
 
 - [x] **JavaScript class 语法基础 + Review 必修修复 M1-M6**（2026-06-01）：class declaration/expression，constructor，prototype methods，extends，super()，static，getter/setter；AST 新增 ClassDeclaration/ClassExpression/ClassMethod/SuperCallExpression/SuperMemberExpression/MetaPropertyKind::kNewTarget；Token 新增 KwClass/KwExtends/KwSuper；JSFunction 新增 is_class_ctor_/is_derived_ctor_/home_object_/fn_ctor_proto_；opcode 新增 9 条（MakeClass/GetNewTarget/SuperCall/SuperGetProp/SuperGetElem/SetHomeObject/SetHomeObjectStatic/DefineClassMethod/DefineComputedClassMethod）；Parser/Interpreter/VM/Compiler 完整双路径实现；Review M1-M6 全部修复（M1 kSetHomeObjectStatic no-op；M2 NewTargetGuard RAII new.target 不泄漏；M3 extends null 特殊处理；M4 derived ctor missing super ReferenceError；M5 super accessor getter 遍历原型链；M6 class generator method 标志传递）；新增 `tests/unit/class_test.cpp`（112 个测试：CL-01～CL-55 × Interp+VM 对称）。4344/4344 通过（coverage），0 LSan 泄漏。
 

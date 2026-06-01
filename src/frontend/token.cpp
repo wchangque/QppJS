@@ -146,6 +146,10 @@ std::string_view token_kind_name(TokenKind kind) {
             return "AmpAmp";
         case TokenKind::PipePipe:
             return "PipePipe";
+        case TokenKind::AmpAmpEq:
+            return "AmpAmpEq";
+        case TokenKind::PipePipeEq:
+            return "PipePipeEq";
         case TokenKind::Bang:
             return "Bang";
         case TokenKind::Amp:

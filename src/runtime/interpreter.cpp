@@ -4435,6 +4435,7 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const ClassExpression& e) { return eval_class_expr(e); },
             [this](const SuperCallExpression& e) { return eval_super_call(e); },
             [this](const SuperMemberExpression& e) { return eval_super_member(e); },
+            [this](const TaggedTemplateExpression& e) { return eval_tagged_template_expr(e); },
         },
         expr.v);
 }
@@ -5366,6 +5367,42 @@ EvalResult Interpreter::eval_assignment(const AssignmentExpression& expr) {
         return rhs;
     }
 
+    // Logical assignment operators (short-circuit)
+    if (expr.op == AssignOp::LogicalAndAssign || expr.op == AssignOp::LogicalOrAssign ||
+        expr.op == AssignOp::NullishAssign) {
+        auto lhs_result = current_env_->get(expr.target);
+        if (!lhs_result.is_ok()) {
+            const std::string& msg = lhs_result.error().message();
+            NativeErrorType err_type = NativeErrorType::kReferenceError;
+            if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+            pending_throw_ = make_error_value(err_type, strip_error_prefix(msg));
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        const Value& lv = lhs_result.value();
+        bool should_assign = false;
+        if (expr.op == AssignOp::LogicalAndAssign) {
+            should_assign = to_boolean(lv);
+        } else if (expr.op == AssignOp::LogicalOrAssign) {
+            should_assign = !to_boolean(lv);
+        } else {
+            should_assign = lv.is_null() || lv.is_undefined();
+        }
+        if (!should_assign) {
+            return lhs_result;
+        }
+        auto rhs = eval_expr(*expr.value);
+        if (!rhs.is_ok()) return rhs;
+        auto set_result = current_env_->set(expr.target, rhs.value());
+        if (!set_result.is_ok()) {
+            const std::string& msg = set_result.error().message();
+            NativeErrorType err_type = NativeErrorType::kTypeError;
+            if (msg.rfind("ReferenceError:", 0) == 0) err_type = NativeErrorType::kReferenceError;
+            pending_throw_ = make_error_value(err_type, strip_error_prefix(msg));
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        return rhs;
+    }
+
     // Compound assignment: read current value, compute, write back
     auto current_result = current_env_->get(expr.target);
     if (!current_result.is_ok()) {
@@ -6022,6 +6059,48 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
         return key_result;
     }
 
+    // Logical assignment: read current value, short-circuit if needed
+    if (expr.op == AssignOp::LogicalAndAssign || expr.op == AssignOp::LogicalOrAssign ||
+        expr.op == AssignOp::NullishAssign) {
+        auto cur_val = eval_get_property_of(obj_val, key_result.value());
+        if (!cur_val.is_ok()) return cur_val;
+        const Value& lv = cur_val.value();
+        bool should_assign = false;
+        if (expr.op == AssignOp::LogicalAndAssign) {
+            should_assign = to_boolean(lv);
+        } else if (expr.op == AssignOp::LogicalOrAssign) {
+            should_assign = !to_boolean(lv);
+        } else {
+            should_assign = lv.is_null() || lv.is_undefined();
+        }
+        if (!should_assign) return cur_val;
+        // Eval RHS and set property
+        auto rhs = eval_expr(*expr.value);
+        if (!rhs.is_ok()) return rhs;
+        if (!key_result.value().is_symbol()) {
+            std::string str_key = to_string_val(key_result.value());
+            RcObject* raw_obj = obj_val.as_object_raw();
+            if (raw_obj->object_kind() == ObjectKind::kOrdinary ||
+                raw_obj->object_kind() == ObjectKind::kArray) {
+                auto* js_obj = static_cast<JSObject*>(raw_obj);
+                auto set_res = js_obj->set_property_ex(str_key, rhs.value());
+                if (!set_res.is_ok()) {
+                    const std::string& msg = set_res.error().message();
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, strip_error_prefix(msg));
+                    return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                }
+            }
+        } else {
+            RcObject* raw_obj = obj_val.as_object_raw();
+            if (raw_obj->object_kind() == ObjectKind::kOrdinary ||
+                raw_obj->object_kind() == ObjectKind::kArray) {
+                auto* js_obj = static_cast<JSObject*>(raw_obj);
+                js_obj->set_property_by_symbol(key_result.value().as_symbol_id(), rhs.value());
+            }
+        }
+        return rhs;
+    }
+
     // Handle Symbol key assignment
     if (key_result.value().is_symbol()) {
         auto val_result2 = eval_expr(*expr.value);
@@ -6332,6 +6411,16 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
 
     JSFunction* saved_function = current_function_;
     current_function_ = fn.get();
+
+    // Base class constructor: initialize instance fields before body execution
+    if (fn->is_class_ctor() && !fn->is_derived_ctor() && fn->instance_fields() &&
+        !fn->instance_fields()->empty()) {
+        auto field_r = init_instance_fields(fn.get(), current_this_);
+        if (!field_r.is_ok()) {
+            current_function_ = saved_function;
+            return StmtResult::err(field_r.error());
+        }
+    }
 
     Value result_val = Value::undefined();
     for (const auto& stmt : *fn->body()) {
@@ -7203,6 +7292,11 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
             Value super_ret_id = super_r_id.completion().value;
             Value result_id = (super_ret_id.is_object() && !super_ret_id.is_null())
                 ? std::move(super_ret_id) : std::move(new_obj_id_val);
+            // Implicit derived ctor: initialize instance fields after super() returns
+            if (fn->instance_fields() && !fn->instance_fields()->empty()) {
+                auto field_r_id = init_instance_fields(fn.get(), result_id);
+                if (!field_r_id.is_ok()) return EvalResult::err(field_r_id.error());
+            }
             return EvalResult::ok(result_id);
         }
     }
@@ -7807,6 +7901,62 @@ EvalResult Interpreter::eval_template_literal(const TemplateLiteral& node) {
         }
     }
     return EvalResult::ok(Value::string(result));
+}
+
+EvalResult Interpreter::eval_tagged_template_expr(const TaggedTemplateExpression& expr) {
+    // Evaluate tag function (and receiver for method calls)
+    Value tag_fn;
+    Value receiver = Value::undefined();
+    if (auto* mem = std::get_if<MemberExpression>(&expr.tag->v)) {
+        auto obj_r = eval_expr(*mem->object);
+        if (!obj_r.is_ok()) return obj_r;
+        receiver = obj_r.value();
+        Value prop_key;
+        if (mem->computed) {
+            auto kr = eval_expr(*mem->property);
+            if (!kr.is_ok()) return kr;
+            prop_key = kr.value();
+        } else {
+            prop_key = Value::string(std::get<StringLiteral>(mem->property->v).value);
+        }
+        auto prop_r = eval_get_property_of(receiver, prop_key);
+        if (!prop_r.is_ok()) return prop_r;
+        tag_fn = prop_r.value();
+    } else {
+        auto tag_r = eval_expr(*expr.tag);
+        if (!tag_r.is_ok()) return tag_r;
+        tag_fn = tag_r.value();
+    }
+
+    const TemplateLiteral& tmpl = expr.tmpl;
+
+    // Build strings array
+    auto strings = RcPtr<JSObject>::make(ObjectKind::kArray);
+    gc_heap_.Register(strings.get());
+    strings->array_length_ = static_cast<uint32_t>(tmpl.quasis.size());
+    for (size_t i = 0; i < tmpl.quasis.size(); ++i) {
+        strings->elements_[static_cast<uint32_t>(i)] = Value::string(tmpl.quasis[i].cooked);
+    }
+
+    // Build raw array
+    auto raw_arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+    gc_heap_.Register(raw_arr.get());
+    raw_arr->array_length_ = static_cast<uint32_t>(tmpl.quasis.size());
+    for (size_t i = 0; i < tmpl.quasis.size(); ++i) {
+        raw_arr->elements_[static_cast<uint32_t>(i)] = Value::string(tmpl.quasis[i].raw);
+    }
+    strings->set_property("raw", Value::object(ObjectPtr(raw_arr)));
+
+    // Build args: [strings, ...expressions]
+    std::vector<Value> call_args;
+    call_args.push_back(Value::object(ObjectPtr(strings)));
+    for (const auto& e : tmpl.expressions) {
+        auto res = eval_expr(*e);
+        if (!res.is_ok()) return res;
+        call_args.push_back(res.value());
+    }
+
+    return call_function_val(tag_fn, receiver, call_args);
 }
 
 // ---- ++/-- update expressions ----
@@ -8430,6 +8580,7 @@ EvalResult Interpreter::eval_yield_expr(const YieldExpression& expr) {
 EvalResult Interpreter::eval_class_common(
     const std::optional<std::unique_ptr<ExprNode>>& super_class_opt,
     const std::vector<ClassMethod>& methods,
+    const std::vector<ClassField>& fields,
     const std::optional<std::string>& class_name) {
 
     bool has_super = super_class_opt.has_value();
@@ -8608,6 +8759,35 @@ EvalResult Interpreter::eval_class_common(
         ctor_fn->set_property(key, method_val);
     }
 
+    // 8. 处理 fields
+    // static fields：立即初始化到 ctor 本身
+    // instance fields：存入 ctor_fn 供构造时使用（ClassField 使用 shared_ptr，可安全复制）
+    auto instance_fields_vec = std::make_shared<std::vector<ClassField>>();
+    for (const auto& f : fields) {
+        if (f.is_static) {
+            std::string key;
+            if (f.computed) {
+                auto key_r = eval_expr(*f.key_expr);
+                if (!key_r.is_ok()) return key_r;
+                key = to_string_val(key_r.value());
+            } else {
+                key = f.key;
+            }
+            Value init_val = Value::undefined();
+            if (f.initializer != nullptr) {
+                auto init_r = eval_expr(*f.initializer);
+                if (!init_r.is_ok()) return init_r;
+                init_val = init_r.value();
+            }
+            ctor_fn->set_property(key, init_val);
+        } else {
+            instance_fields_vec->push_back(f);
+        }
+    }
+    if (!instance_fields_vec->empty()) {
+        ctor_fn->set_instance_fields(instance_fields_vec);
+    }
+
     return EvalResult::ok(ctor_fn_val);
 }
 
@@ -8618,19 +8798,19 @@ EvalResult Interpreter::eval_class_expr(const ClassExpression& expr) {
         gc_heap_.Register(class_env.get());
         class_env->define(*expr.name, VarKind::Const);
         ScopeGuard guard(*this, class_env, var_env_, current_this_);
-        auto result = eval_class_common(expr.super_class, expr.methods, expr.name);
+        auto result = eval_class_common(expr.super_class, expr.methods, expr.fields, expr.name);
         if (!result.is_ok()) return result;
         // Bind name to the class
         auto init_r = class_env->initialize(*expr.name, result.value());
         (void)init_r;
         return result;
     }
-    return eval_class_common(expr.super_class, expr.methods, expr.name);
+    return eval_class_common(expr.super_class, expr.methods, expr.fields, expr.name);
 }
 
 EvalResult Interpreter::eval_class_decl(const ClassDeclaration& stmt) {
     std::optional<std::string> class_name{stmt.name};
-    auto result = eval_class_common(stmt.super_class, stmt.methods, class_name);
+    auto result = eval_class_common(stmt.super_class, stmt.methods, stmt.fields, class_name);
     if (!result.is_ok()) return result;
     // Bind to current scope (like let declaration at declaration point)
     current_env_->define(stmt.name, VarKind::Let);
@@ -8638,6 +8818,36 @@ EvalResult Interpreter::eval_class_decl(const ClassDeclaration& stmt) {
     if (!init_r.is_ok()) {
         // Already defined (e.g., re-declaration): try set
         current_env_->set(stmt.name, result.value());
+    }
+    return EvalResult::ok(Value::undefined());
+}
+
+EvalResult Interpreter::init_instance_fields(JSFunction* ctor_fn, Value& this_val) {
+    const auto& fields = ctor_fn->instance_fields();
+    if (!fields) return EvalResult::ok(Value::undefined());
+    for (const auto& f : *fields) {
+        std::string key;
+        if (f.computed) {
+            auto key_r = eval_expr(*f.key_expr);
+            if (!key_r.is_ok()) return key_r;
+            key = to_string_val(key_r.value());
+        } else {
+            key = f.key;
+        }
+        Value init_val = Value::undefined();
+        if (f.initializer != nullptr) {
+            auto init_r = eval_expr(*f.initializer);
+            if (!init_r.is_ok()) return init_r;
+            init_val = init_r.value();
+        }
+        if (this_val.is_object() && this_val.as_object_raw() != nullptr) {
+            if (this_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                static_cast<JSFunction*>(this_val.as_object_raw())->set_property(key, init_val);
+            } else {
+                auto* obj = static_cast<JSObject*>(this_val.as_object_raw());
+                obj->set_property(key, init_val);
+            }
+        }
     }
     return EvalResult::ok(Value::undefined());
 }
@@ -8714,6 +8924,12 @@ EvalResult Interpreter::eval_super_call(const SuperCallExpression& expr) {
     current_this_ = new_this;
     last_new_this_ = new_this;  // also save for eval_new_expr to read after call_function returns
     derived_this_initialized_ = true;
+
+    // Derived class constructor: initialize instance fields after super() returns
+    if (active_fn->instance_fields() && !active_fn->instance_fields()->empty()) {
+        auto field_r = init_instance_fields(active_fn, current_this_);
+        if (!field_r.is_ok()) return field_r;
+    }
 
     return EvalResult::ok(Value::undefined());
 }

@@ -683,6 +683,10 @@ Token next_token(LexerState& state) {
 
         case '&':
             if (peek(1) == '&') {
+                if (peek(2) == '=') {
+                    state.pos += 3;
+                    return {TokenKind::AmpAmpEq, {start, 3}};
+                }
                 state.pos += 2;
                 return {TokenKind::AmpAmp, {start, 2}};
             }
@@ -695,6 +699,10 @@ Token next_token(LexerState& state) {
 
         case '|':
             if (peek(1) == '|') {
+                if (peek(2) == '=') {
+                    state.pos += 3;
+                    return {TokenKind::PipePipeEq, {start, 3}};
+                }
                 state.pos += 2;
                 return {TokenKind::PipePipe, {start, 2}};
             }

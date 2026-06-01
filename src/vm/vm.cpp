@@ -4269,6 +4269,35 @@ EvalResult VM::run(size_t exit_depth) {
             }
         }
 
+        // Base class constructor: run instance field initializer before executing body
+        if (!frame.fields_initialized && frame.current_fn &&
+            frame.current_fn->is_class_ctor() && !frame.current_fn->is_derived_ctor() &&
+            frame.current_fn->field_initializer()) {
+            frame.fields_initialized = true;
+            Value fi_this = frame.this_val;  // copy before potential realloc
+            auto fi_bc = frame.current_fn->field_initializer();
+            RcPtr<Environment> fi_outer = frame.current_fn->closure_env()
+                ? frame.current_fn->closure_env() : global_env_;
+            auto fi_fn = RcPtr<JSFunction>::make();
+            gc_heap_.Register(fi_fn.get());
+            fi_fn->set_bytecode(fi_bc);
+            fi_fn->set_closure_env(fi_outer);
+            size_t fi_depth = call_stack_.size();
+            auto fi_push = push_call_frame(fi_fn, fi_this, std::span<Value>{});
+            if (!fi_push.is_ok()) {
+                // push_call_frame failed; set pending_throw on ctor frame and continue
+                call_stack_.back().pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    strip_error_prefix(fi_push.error().message()));
+                continue;
+            }
+            EvalResult fi_res = run(fi_depth);
+            if (!fi_res.is_ok() && call_stack_.size() > exit_depth) {
+                call_stack_.back().pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    strip_error_prefix(fi_res.error().message()));
+            }
+            continue;  // re-fetch frame at top of while loop
+        }
+
         dispatch_begin:
 
         const BytecodeFunction* bc = frame.bytecode;
@@ -6254,6 +6283,28 @@ EvalResult VM::run(size_t exit_depth) {
                         implicit_frame.this_val = new_this_ic;
                         implicit_frame.new_instance = new_this_ic;
                         implicit_frame.derived_this_initialized = true;
+                        implicit_frame.fields_initialized = true;
+                        // Run field initializer on the new this
+                        if (fn->field_initializer()) {
+                            auto fi_bc_ic = fn->field_initializer();
+                            RcPtr<Environment> fi_outer_ic = fn->closure_env()
+                                ? fn->closure_env() : global_env_;
+                            auto fi_fn_ic = RcPtr<JSFunction>::make();
+                            gc_heap_.Register(fi_fn_ic.get());
+                            fi_fn_ic->set_bytecode(fi_bc_ic);
+                            fi_fn_ic->set_closure_env(fi_outer_ic);
+                            size_t fi_depth_ic = call_stack_.size();
+                            auto fi_push_ic = push_call_frame(fi_fn_ic, new_this_ic,
+                                std::span<Value>{});
+                            if (fi_push_ic.is_ok()) {
+                                EvalResult fi_res_ic = run(fi_depth_ic);
+                                if (!fi_res_ic.is_ok() && call_stack_.size() > exit_depth) {
+                                    call_stack_.back().pending_throw = make_error_value(
+                                        NativeErrorType::kTypeError,
+                                        strip_error_prefix(fi_res_ic.error().message()));
+                                }
+                            }
+                        }
                     }
                     // If super failed, the frame's pending_throw will handle it
                 }
@@ -6897,6 +6948,9 @@ EvalResult VM::run(size_t exit_depth) {
             if (super_fn) {
                 fn->set_fn_ctor_proto(super_fn);
             }
+            if (fn_bc->field_initializer) {
+                fn->set_field_initializer(fn_bc->field_initializer);
+            }
 
             // Create prototype object
             auto proto_obj = RcPtr<JSObject>::make();
@@ -6999,8 +7053,35 @@ EvalResult VM::run(size_t exit_depth) {
             cur_frame.this_val = new_this;
             cur_frame.new_instance = new_this;  // update new_instance so kReturn uses the correct object
             cur_frame.derived_this_initialized = true;
+            // Derived class constructor: run instance field initializer after super() returns
+            if (!cur_frame.fields_initialized && cur_frame.current_fn &&
+                cur_frame.current_fn->field_initializer()) {
+                cur_frame.fields_initialized = true;
+                Value fi_this2 = cur_frame.this_val;
+                auto fi_bc2 = cur_frame.current_fn->field_initializer();
+                RcPtr<Environment> fi_outer2 = cur_frame.current_fn->closure_env()
+                    ? cur_frame.current_fn->closure_env() : global_env_;
+                auto fi_fn2 = RcPtr<JSFunction>::make();
+                gc_heap_.Register(fi_fn2.get());
+                fi_fn2->set_bytecode(fi_bc2);
+                fi_fn2->set_closure_env(fi_outer2);
+                size_t fi_depth2 = call_stack_.size();
+                auto fi_push2 = push_call_frame(fi_fn2, fi_this2, std::span<Value>{});
+                if (!fi_push2.is_ok()) {
+                    // Re-fetch cur_frame after potential realloc
+                    call_stack_.back().pending_throw = make_error_value(NativeErrorType::kTypeError,
+                        strip_error_prefix(fi_push2.error().message()));
+                    continue;
+                }
+                EvalResult fi_res2 = run(fi_depth2);
+                if (!fi_res2.is_ok() && call_stack_.size() > exit_depth) {
+                    call_stack_.back().pending_throw = make_error_value(NativeErrorType::kTypeError,
+                        strip_error_prefix(fi_res2.error().message()));
+                    continue;
+                }
+            }
             // super() returns undefined
-            cur_frame.stack.push_back(Value::undefined());
+            call_stack_.back().stack.push_back(Value::undefined());
             break;
         }
 

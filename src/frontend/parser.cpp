@@ -140,6 +140,22 @@ static std::string decode_string(std::string_view raw) {
     return result;
 }
 
+// 计算模板字符串的 raw 文本：行结束规范化（CR/CRLF → LF），但不处理转义序列
+static std::string compute_template_raw(std::string_view raw_text) {
+    std::string result;
+    result.reserve(raw_text.size());
+    for (std::size_t i = 0; i < raw_text.size(); ++i) {
+        char c = raw_text[i];
+        if (c == '\r') {
+            result += '\n';
+            if (i + 1 < raw_text.size() && raw_text[i + 1] == '\n') ++i;
+        } else {
+            result += c;
+        }
+    }
+    return result;
+}
+
 // 解码模板字符串的 cooked 文本（不含起始/结束定界符的内容部分）
 // raw_text: 不含起始 ` 或 }、不含结束 ` 或 ${ 的原始内容
 // 返回 nullopt 表示存在非法转义（SyntaxError）
@@ -392,6 +408,7 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const ClassExpression& n) { return n.range; },
                               [](const SuperCallExpression& n) { return n.range; },
                               [](const SuperMemberExpression& n) { return n.range; },
+                              [](const TaggedTemplateExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -548,6 +565,9 @@ struct Parser {
             case TokenKind::LShiftEq:
             case TokenKind::RShiftEq:
             case TokenKind::URShiftEq:
+            case TokenKind::AmpAmpEq:
+            case TokenKind::PipePipeEq:
+            case TokenKind::QuestionQuestionEq:
                 return 2;
             case TokenKind::Question:
             case TokenKind::QuestionQuestion:
@@ -585,6 +605,8 @@ struct Parser {
             case TokenKind::Percent:
                 return 17;
             case TokenKind::LParen:
+            case TokenKind::TemplateNoSub:
+            case TokenKind::TemplateHead:
                 return 19;
             case TokenKind::PlusPlus:
             case TokenKind::MinusMinus:
@@ -906,6 +928,7 @@ struct Parser {
                 ce.name = std::move(cls_name);
                 ce.super_class = std::move(common_r.value().super_class);
                 ce.methods = std::move(common_r.value().methods);
+                ce.fields = std::move(common_r.value().fields);
                 ce.range = span(cls_start, cls_end);
                 return ParseResult<ExprNode>::Ok(ExprNode{std::move(ce)});
             }
@@ -1417,7 +1440,7 @@ struct Parser {
                     return ParseResult<ExprNode>::Err(
                         make_parse_error(source, tok, "invalid escape sequence in template literal"));
                 }
-                TemplateElement elem{std::move(cooked.value()), ""};
+                TemplateElement elem{std::move(cooked.value()), compute_template_raw(raw_text)};
                 std::vector<TemplateElement> quasis;
                 quasis.push_back(std::move(elem));
                 return ParseResult<ExprNode>::Ok(ExprNode{TemplateLiteral{
@@ -1439,7 +1462,7 @@ struct Parser {
                         return ParseResult<ExprNode>::Err(
                             make_parse_error(source, tok, "invalid escape sequence in template literal"));
                     }
-                    quasis.push_back(TemplateElement{std::move(cooked.value()), ""});
+                    quasis.push_back(TemplateElement{std::move(cooked.value()), compute_template_raw(raw_text)});
                 }
 
                 // 循环：解析表达式 + 下一段
@@ -1466,7 +1489,7 @@ struct Parser {
                                 make_parse_error(source, cur, "invalid escape sequence in template literal"));
                         }
                         uint32_t tpl_end = range_end(cur.range);
-                        quasis.push_back(TemplateElement{std::move(cooked.value()), ""});
+                        quasis.push_back(TemplateElement{std::move(cooked.value()), compute_template_raw(raw_text)});
                         advance();  // 消耗 TemplateTail
                         return ParseResult<ExprNode>::Ok(ExprNode{TemplateLiteral{
                             std::move(quasis), std::move(expressions),
@@ -1480,7 +1503,7 @@ struct Parser {
                             return ParseResult<ExprNode>::Err(
                                 make_parse_error(source, cur, "invalid escape sequence in template literal"));
                         }
-                        quasis.push_back(TemplateElement{std::move(cooked.value()), ""});
+                        quasis.push_back(TemplateElement{std::move(cooked.value()), compute_template_raw(raw_text)});
                         advance();  // 消耗 TemplateMiddle，为下一次循环准备
                         // 继续循环
                     } else {
@@ -1570,6 +1593,83 @@ struct Parser {
                     std::make_unique<ExprNode>(std::move(left)),
                     std::move(args),
                     span(call_start, call_end)}});
+        }
+
+        // Tagged template literal: tag`...`
+        if (kind == TokenKind::TemplateNoSub || kind == TokenKind::TemplateHead) {
+            uint32_t tag_start = expr_range(left).offset;
+            std::vector<TemplateElement> quasis;
+            std::vector<std::unique_ptr<ExprNode>> expressions;
+            SourceRange tmpl_range{};
+
+            if (kind == TokenKind::TemplateNoSub) {
+                std::string_view text = token_text(op_tok);
+                std::string_view raw_text = text.substr(1, text.size() - 2);
+                auto cooked = decode_template_cooked(raw_text);
+                if (!cooked.has_value()) {
+                    return ParseResult<ExprNode>::Err(
+                        make_parse_error(source, op_tok, "invalid escape sequence in template literal"));
+                }
+                quasis.push_back(TemplateElement{std::move(cooked.value()), compute_template_raw(raw_text)});
+                tmpl_range = op_tok.range;
+            } else {
+                // TemplateHead — parse rest of template
+                uint32_t tpl_start = op_tok.range.offset;
+                {
+                    std::string_view text = token_text(op_tok);
+                    std::string_view raw_text = text.substr(1, text.size() - 3);
+                    auto cooked = decode_template_cooked(raw_text);
+                    if (!cooked.has_value()) {
+                        return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, op_tok, "invalid escape sequence in template literal"));
+                    }
+                    quasis.push_back(TemplateElement{std::move(cooked.value()), compute_template_raw(raw_text)});
+                }
+                while (true) {
+                    auto expr_res = parse_expr(0);
+                    if (!expr_res.ok()) return expr_res;
+                    expressions.push_back(std::make_unique<ExprNode>(std::move(expr_res.value())));
+                    if (cur.kind != TokenKind::RBrace) {
+                        return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, cur, "expected '}' in template literal"));
+                    }
+                    advance_template_part();
+                    if (cur.kind == TokenKind::TemplateTail) {
+                        std::string_view text = token_text(cur);
+                        std::string_view raw_text = text.substr(1, text.size() - 2);
+                        auto cooked = decode_template_cooked(raw_text);
+                        if (!cooked.has_value()) {
+                            return ParseResult<ExprNode>::Err(
+                                make_parse_error(source, cur, "invalid escape sequence in template literal"));
+                        }
+                        uint32_t tpl_end = range_end(cur.range);
+                        quasis.push_back(TemplateElement{std::move(cooked.value()), compute_template_raw(raw_text)});
+                        advance();
+                        tmpl_range = span(tpl_start, tpl_end);
+                        break;
+                    } else if (cur.kind == TokenKind::TemplateMiddle) {
+                        std::string_view text = token_text(cur);
+                        std::string_view raw_text = text.substr(1, text.size() - 3);
+                        auto cooked = decode_template_cooked(raw_text);
+                        if (!cooked.has_value()) {
+                            return ParseResult<ExprNode>::Err(
+                                make_parse_error(source, cur, "invalid escape sequence in template literal"));
+                        }
+                        quasis.push_back(TemplateElement{std::move(cooked.value()), compute_template_raw(raw_text)});
+                        advance();
+                    } else {
+                        return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, cur, "unexpected token in template literal"));
+                    }
+                }
+            }
+            uint32_t tagged_end = range_end(tmpl_range);
+            SourceRange tagged_range = span(tag_start, tagged_end);
+            TemplateLiteral tmpl{std::move(quasis), std::move(expressions), tmpl_range};
+            return ParseResult<ExprNode>::Ok(ExprNode{TaggedTemplateExpression{
+                std::make_unique<ExprNode>(std::move(left)),
+                std::move(tmpl),
+                tagged_range}});
         }
 
         // 成员访问：obj.prop
@@ -1717,7 +1817,9 @@ struct Parser {
         if (kind == TokenKind::Eq || kind == TokenKind::PlusEq || kind == TokenKind::MinusEq ||
             kind == TokenKind::StarEq || kind == TokenKind::SlashEq || kind == TokenKind::PercentEq ||
             kind == TokenKind::AmpEq || kind == TokenKind::PipeEq || kind == TokenKind::CaretEq ||
-            kind == TokenKind::LShiftEq || kind == TokenKind::RShiftEq || kind == TokenKind::URShiftEq) {
+            kind == TokenKind::LShiftEq || kind == TokenKind::RShiftEq || kind == TokenKind::URShiftEq ||
+            kind == TokenKind::AmpAmpEq || kind == TokenKind::PipePipeEq ||
+            kind == TokenKind::QuestionQuestionEq) {
             // Optional chaining 不能作为赋值左值
             if (std::holds_alternative<OptionalChainExpression>(left.v)) {
                 return ParseResult<ExprNode>::Err(
@@ -1781,6 +1883,15 @@ struct Parser {
                     case TokenKind::URShiftEq:
                         aop = AssignOp::ShrAssign;
                         break;
+                    case TokenKind::AmpAmpEq:
+                        aop = AssignOp::LogicalAndAssign;
+                        break;
+                    case TokenKind::PipePipeEq:
+                        aop = AssignOp::LogicalOrAssign;
+                        break;
+                    case TokenKind::QuestionQuestionEq:
+                        aop = AssignOp::NullishAssign;
+                        break;
                     default:
                         aop = AssignOp::Assign;
                         break;
@@ -1790,7 +1901,8 @@ struct Parser {
                         aop, std::move(target), std::make_unique<ExprNode>(std::move(right.value())), asgn_r}});
             }
             if (std::holds_alternative<MemberExpression>(left.v)) {
-                if (kind != TokenKind::Eq) {
+                if (kind != TokenKind::Eq && kind != TokenKind::AmpAmpEq &&
+                    kind != TokenKind::PipePipeEq && kind != TokenKind::QuestionQuestionEq) {
                     return ParseResult<ExprNode>::Err(
                             make_parse_error(source, op_tok, "compound assignment to member not supported"));
                 }
@@ -1802,12 +1914,17 @@ struct Parser {
                 auto right = parse_expr(bp - 1);  // 右结合
                 if (!right.ok()) return right;
                 auto mae_r = span(left_start, range_end(expr_range(right.value())));
+                AssignOp mem_op = AssignOp::Assign;
+                if (kind == TokenKind::AmpAmpEq) mem_op = AssignOp::LogicalAndAssign;
+                else if (kind == TokenKind::PipePipeEq) mem_op = AssignOp::LogicalOrAssign;
+                else if (kind == TokenKind::QuestionQuestionEq) mem_op = AssignOp::NullishAssign;
                 return ParseResult<ExprNode>::Ok(ExprNode{MemberAssignmentExpression{
                         std::move(obj_ptr),
                         std::move(prop_ptr),
                         computed,
                         std::make_unique<ExprNode>(std::move(right.value())),
-                        mae_r}});
+                        mae_r,
+                        mem_op}});
             }
             return ParseResult<ExprNode>::Err(
                     make_parse_error(source, op_tok, "invalid left-hand side in assignment"));
@@ -2662,9 +2779,10 @@ struct Parser {
         return ParseResult<ClassKeyResult>::Ok(std::move(res));
     }
 
-    // 解析 class 体 { ... }，返回 ClassMethod 列表
+    // 解析 class 体 { ... }，返回 ClassMethod 列表，并填充 out_fields
     // cur 指向 {
-    ParseResult<std::vector<ClassMethod>> parse_class_body(uint32_t class_start) {
+    ParseResult<std::vector<ClassMethod>> parse_class_body(uint32_t class_start,
+                                                           std::vector<ClassField>& out_fields) {
         auto lb = expect(TokenKind::LBrace);
         if (!lb.ok()) return ParseResult<std::vector<ClassMethod>>::Err(lb.error());
 
@@ -2917,15 +3035,32 @@ struct Parser {
                 continue;
             }
 
-            // 普通方法（含 constructor）
+            // 普通方法（含 constructor）或字段声明
             auto key_res = parse_class_member_key();
             if (!key_res.ok())
                 return ParseResult<std::vector<ClassMethod>>::Err(key_res.error());
 
-            // 方法体（必须跟 (
+            // 字段声明：key 后跟 = 或 ; 或 } 或换行（不跟 (）
             if (cur.kind != TokenKind::LParen) {
-                return ParseResult<std::vector<ClassMethod>>::Err(
-                    make_parse_error(source, cur, "expected '(' in class method definition"));
+                ClassField f;
+                f.key = key_res.value().key;
+                f.computed = key_res.value().computed;
+                if (f.computed) {
+                    // unique_ptr → shared_ptr
+                    f.key_expr = std::shared_ptr<ExprNode>(std::move(key_res.value().key_expr));
+                }
+                f.is_static = is_static;
+                if (cur.kind == TokenKind::Eq) {
+                    advance();  // 消费 =
+                    auto init_r = parse_expr(2);  // 赋值表达式优先级
+                    if (!init_r.ok())
+                        return ParseResult<std::vector<ClassMethod>>::Err(init_r.error());
+                    f.initializer = std::make_shared<ExprNode>(std::move(init_r.value()));
+                }
+                // 消费可选分号或 ASI
+                if (cur.kind == TokenKind::Semicolon) advance();
+                out_fields.push_back(std::move(f));
+                continue;
             }
             std::optional<std::string> fn_rest_nm;
             auto params_nm = parse_function_params(fn_rest_nm);
@@ -2973,6 +3108,7 @@ struct Parser {
     struct ClassCommonResult {
         std::optional<std::unique_ptr<ExprNode>> super_class;
         std::vector<ClassMethod> methods;
+        std::vector<ClassField> fields;
         uint32_t end = 0;
     };
 
@@ -2988,7 +3124,7 @@ struct Parser {
             res.super_class = std::make_unique<ExprNode>(std::move(super_expr.value()));
         }
         // 解析 class body
-        auto body_r = parse_class_body(0);
+        auto body_r = parse_class_body(0, res.fields);
         if (!body_r.ok()) return ParseResult<ClassCommonResult>::Err(body_r.error());
         res.methods = std::move(body_r.value());
         res.end = cur.range.offset;
@@ -3854,6 +3990,7 @@ struct Parser {
                 cdecl.name = std::move(class_name);
                 cdecl.super_class = std::move(common_r.value().super_class);
                 cdecl.methods = std::move(common_r.value().methods);
+                cdecl.fields = std::move(common_r.value().fields);
                 cdecl.range = span(class_tok.range.offset, cls_end);
                 return ParseResult<StmtNode>::Ok(StmtNode{std::move(cdecl)});
             }

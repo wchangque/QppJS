@@ -84,6 +84,8 @@ enum class TokenKind {
     PercentEq,
     AmpAmp,
     PipePipe,
+    AmpAmpEq,  // &&=
+    PipePipeEq,  // ||=
     Bang,
     Amp,
     Pipe,

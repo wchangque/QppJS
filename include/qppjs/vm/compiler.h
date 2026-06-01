@@ -105,12 +105,15 @@ private:
     void compile_update_expr(const UpdateExpression& expr);
     void compile_import_call(const ImportCallExpression& expr);
     void compile_template_literal(const TemplateLiteral& expr);
+    void compile_tagged_template_expr(const TaggedTemplateExpression& expr);
     void compile_optional_chain(const OptionalChainExpression& expr, bool delete_mode = false);
     void compile_class_expr(const ClassExpression& expr);
     void compile_class_decl(const ClassDeclaration& stmt);
     void compile_class_common(const std::optional<std::unique_ptr<ExprNode>>& super_class,
                               const std::vector<ClassMethod>& methods,
+                              const std::vector<ClassField>& fields,
                               const std::optional<std::string>& class_name);
+    std::shared_ptr<BytecodeFunction> compile_field_initializer(const std::vector<ClassField>& fields);
 
     // Emit helpers
     void emit(Opcode op);

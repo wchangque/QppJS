@@ -800,3 +800,197 @@ TEST(TemplateLiteralParser, TL54_IllegalEscape7) {
     EXPECT_FALSE(result.ok());
     EXPECT_NE(result.error().message().find("invalid escape"), std::string::npos);
 }
+
+// ============================================================
+// Tagged Template Literal Tests (TTL-01 ~ TTL-10, Interp+VM)
+// ============================================================
+
+// TTL-01: basic tagged template, no interpolation
+TEST(TaggedTemplateLiteralInterp, TTL01_Basic_NoSub) {
+    auto v = interp_eval(
+        "function tag(strings) { return strings[0]; }"
+        "tag`hello`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "hello");
+}
+TEST(TaggedTemplateLiteralVM, TTL01_Basic_NoSub) {
+    auto v = vm_eval(
+        "function tag(strings) { return strings[0]; }"
+        "tag`hello`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "hello");
+}
+
+// TTL-02: tagged template with interpolation
+TEST(TaggedTemplateLiteralInterp, TTL02_WithInterp) {
+    auto v = interp_eval(
+        "let x = 42;"
+        "function tag(strings, val) { return strings[0] + val + strings[1]; }"
+        "tag`a ${x} b`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "a 42 b");
+}
+TEST(TaggedTemplateLiteralVM, TTL02_WithInterp) {
+    auto v = vm_eval(
+        "let x = 42;"
+        "function tag(strings, val) { return strings[0] + val + strings[1]; }"
+        "tag`a ${x} b`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "a 42 b");
+}
+
+// TTL-03: tag receives strings array and values
+TEST(TaggedTemplateLiteralInterp, TTL03_StringsAndValues) {
+    auto v = interp_eval(
+        "let result = '';"
+        "function tag(strings, a, b) {"
+        "  result = strings[0] + a + strings[1] + b + strings[2];"
+        "  return result;"
+        "}"
+        "tag`x=${1} y=${2}`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "x=1 y=2");
+}
+TEST(TaggedTemplateLiteralVM, TTL03_StringsAndValues) {
+    auto v = vm_eval(
+        "let result = '';"
+        "function tag(strings, a, b) {"
+        "  result = strings[0] + a + strings[1] + b + strings[2];"
+        "  return result;"
+        "}"
+        "tag`x=${1} y=${2}`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "x=1 y=2");
+}
+
+// TTL-04: strings.raw contains raw strings (unescaped)
+TEST(TaggedTemplateLiteralInterp, TTL04_StringsRaw) {
+    auto v = interp_eval(
+        "function tag(strings) { return strings.raw[0]; }"
+        "tag`\\n`"  // cooked = "\n", raw = "\\n" (two chars)
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "\\n");
+}
+TEST(TaggedTemplateLiteralVM, TTL04_StringsRaw) {
+    auto v = vm_eval(
+        "function tag(strings) { return strings.raw[0]; }"
+        "tag`\\n`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "\\n");
+}
+
+// TTL-05: strings.length === expressions.length + 1
+TEST(TaggedTemplateLiteralInterp, TTL05_StringsLength) {
+    auto v = interp_eval(
+        "function tag(strings, a, b) { return strings.length; }"
+        "tag`${1} and ${2}`"
+    );
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);  // ["", " and ", ""]
+}
+TEST(TaggedTemplateLiteralVM, TTL05_StringsLength) {
+    auto v = vm_eval(
+        "function tag(strings, a, b) { return strings.length; }"
+        "tag`${1} and ${2}`"
+    );
+    EXPECT_TRUE(v.is_number());
+    EXPECT_EQ(v.as_number(), 3.0);
+}
+
+// TTL-06: tag return value is the expression result
+TEST(TaggedTemplateLiteralInterp, TTL06_ReturnValue) {
+    auto v = interp_eval(
+        "function tag(strings) { return 'custom'; }"
+        "tag`ignored`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "custom");
+}
+TEST(TaggedTemplateLiteralVM, TTL06_ReturnValue) {
+    auto v = vm_eval(
+        "function tag(strings) { return 'custom'; }"
+        "tag`ignored`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "custom");
+}
+
+// TTL-07: tag can modify interpolation result
+TEST(TaggedTemplateLiteralInterp, TTL07_ModifyInterp) {
+    auto v = interp_eval(
+        "function tag(strings, val) { return strings[0] + val * 2 + strings[1]; }"
+        "tag`result: ${10}!`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "result: 20!");
+}
+TEST(TaggedTemplateLiteralVM, TTL07_ModifyInterp) {
+    auto v = vm_eval(
+        "function tag(strings, val) { return strings[0] + val * 2 + strings[1]; }"
+        "tag`result: ${10}!`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "result: 20!");
+}
+
+// TTL-08: multiple interpolations
+TEST(TaggedTemplateLiteralInterp, TTL08_MultipleInterp) {
+    auto v = interp_eval(
+        "function tag(s, a, b, c) { return s[0] + a + s[1] + b + s[2] + c + s[3]; }"
+        "tag`a${1}b${2}c${3}d`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "a1b2c3d");
+}
+TEST(TaggedTemplateLiteralVM, TTL08_MultipleInterp) {
+    auto v = vm_eval(
+        "function tag(s, a, b, c) { return s[0] + a + s[1] + b + s[2] + c + s[3]; }"
+        "tag`a${1}b${2}c${3}d`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "a1b2c3d");
+}
+
+// TTL-09: tag is method call (this binding correct)
+TEST(TaggedTemplateLiteralInterp, TTL09_MethodTag) {
+    auto v = interp_eval(
+        "let obj = { prefix: 'PRE', tag: function(strings) { return this.prefix + ':' + strings[0]; } };"
+        "obj.tag`hello`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "PRE:hello");
+}
+TEST(TaggedTemplateLiteralVM, TTL09_MethodTag) {
+    auto v = vm_eval(
+        "let obj = { prefix: 'PRE', tag: function(strings) { return this.prefix + ':' + strings[0]; } };"
+        "obj.tag`hello`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "PRE:hello");
+}
+
+// TTL-10: raw vs cooked content (basic validation)
+TEST(TaggedTemplateLiteralInterp, TTL10_RawVsCooked) {
+    auto v = interp_eval(
+        "function tag(strings) { return strings[0].length + ':' + strings.raw[0].length; }"
+        "tag`\\n`"  // cooked="\n" (length 1), raw="\\n" (length 2)
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1:2");
+}
+TEST(TaggedTemplateLiteralVM, TTL10_RawVsCooked) {
+    auto v = vm_eval(
+        "function tag(strings) { return strings[0].length + ':' + strings.raw[0].length; }"
+        "tag`\\n`"
+    );
+    EXPECT_TRUE(v.is_string());
+    EXPECT_EQ(v.as_string(), "1:2");
+}

@@ -63,6 +63,7 @@ struct CallFrame {
     // Class constructor state
     Value new_target_val = Value::undefined();  // new.target value for this frame
     bool derived_this_initialized = false;       // true after super() called in derived ctor
+    bool fields_initialized = false;             // true once instance fields have been applied
     RcPtr<JSFunction> current_fn_holder;         // keeps current function alive for GC safety
     JSFunction* current_fn = nullptr;            // non-owning pointer to current function (valid as long as current_fn_holder is held)
 };

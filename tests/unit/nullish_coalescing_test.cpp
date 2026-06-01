@@ -783,11 +783,10 @@ TEST(NullishCoalescing, NC40_DestructuringVsNullishVM) {
 // NC-41: ??= 占位测试 — 当前 QuestionQuestionEq 报 parse error（已知限制）
 // ============================================================
 
-TEST(NullishCoalescing, NC41_NullishAssignCurrentlyParseError) {
-    // ??= (QuestionQuestionEq) 尚未在 Parser 中实现赋值语义
-    // 预期当前阶段报 parse error（占位，待 ??= 实现后改为语义验证）
+TEST(NullishCoalescing, NC41_NullishAssignParsesAndWorks) {
+    // ??= (QuestionQuestionEq) 已在 logical assign 实现后支持
     // 拆分字符串避免编译器 trigraph 警告（??= 在 C++ 源码中是三字符序列）
-    EXPECT_TRUE(parse_fails("let a = null; a ??" "= 42"));
+    EXPECT_TRUE(parse_program("let a = null; a ??" "= 42").ok());
 }
 
 }  // namespace

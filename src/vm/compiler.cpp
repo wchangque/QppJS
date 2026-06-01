@@ -354,6 +354,10 @@ void Compiler::hoist_vars_scan_expr(const ExprNode& expr) {
                 for (const auto& arg : e.arguments) hoist_vars_scan_expr(*arg);
             },
             [](const SuperMemberExpression&) {},
+            [this](const TaggedTemplateExpression& e) {
+                hoist_vars_scan_expr(*e.tag);
+                for (const auto& ex : e.tmpl.expressions) hoist_vars_scan_expr(*ex);
+            },
         },
         expr.v);
 }
@@ -1080,6 +1084,7 @@ void Compiler::compile_expr(const ExprNode& expr) {
                     emit(Opcode::kYield);
                 }
             },
+            [this](const TaggedTemplateExpression& e) { compile_tagged_template_expr(e); },
         },
         expr.v);
 }
@@ -1218,6 +1223,34 @@ void Compiler::compile_assignment(const AssignmentExpression& expr) {
 
     if (expr.op == AssignOp::Assign) {
         compile_expr(*expr.value);
+    } else if (expr.op == AssignOp::LogicalAndAssign || expr.op == AssignOp::LogicalOrAssign ||
+               expr.op == AssignOp::NullishAssign) {
+        // Logical assignment short-circuit pattern:
+        //   kGetVar → kDup → kJumpIfXxx skip → kPop → [rhs] → kSetVar → skip:
+        //
+        // kJumpIfXxx pops the dup'd value.
+        // If taken (short-circuit): original lhs stays on stack as result.
+        // If not taken: kPop removes lhs, RHS compiled, kSetVar writes+pushes result.
+        emit(Opcode::kGetVar);
+        emit_u16(idx);
+        emit(Opcode::kDup);
+        Opcode jump_op;
+        if (expr.op == AssignOp::LogicalAndAssign) {
+            jump_op = Opcode::kJumpIfFalse;        // LHS falsy → short-circuit
+        } else if (expr.op == AssignOp::LogicalOrAssign) {
+            jump_op = Opcode::kJumpIfTrue;         // LHS truthy → short-circuit
+        } else {
+            jump_op = Opcode::kJumpIfNotNullish;   // LHS non-nullish → short-circuit
+        }
+        size_t skip_patch = emit_jump(jump_op);
+        // Not short-circuiting: pop lhs, eval RHS, write back
+        emit(Opcode::kPop);
+        compile_expr(*expr.value);
+        emit(Opcode::kSetVar);
+        emit_u16(idx);
+        // Patch jump to here (skip lands with lhs on stack, SetVar already pushed rhs)
+        patch_jump(skip_patch);
+        return;
     } else {
         // Compound assignment: read current value, compute, write back
         emit(Opcode::kGetVar);
@@ -1405,6 +1438,54 @@ void Compiler::compile_member_expr(const MemberExpression& expr) {
 }
 
 void Compiler::compile_member_assign(const MemberAssignmentExpression& expr) {
+    if (expr.op == AssignOp::LogicalAndAssign || expr.op == AssignOp::LogicalOrAssign ||
+        expr.op == AssignOp::NullishAssign) {
+        // Logical member assignment (short-circuit):
+        if (!expr.computed) {
+            // obj.prop &&= rhs pattern:
+            //   compile obj      → [obj]
+            //   kDup             → [obj, obj]
+            //   kGetProp         → [obj, prop_val]
+            //   kDup             → [obj, prop_val, prop_val_dup]
+            //   kJumpIfXxx skip  → pops prop_val_dup; if short-circuit: [obj, prop_val]
+            //   (not SC) kPop    → [obj]
+            //   (not SC) compile RHS → [obj, rhs]
+            //   (not SC) kSetProp → [rhs]
+            //   kJump end
+            //   skip: kSwap → kPop → [prop_val]
+            //   end:
+            const auto& prop_str = std::get<StringLiteral>(expr.property->v);
+            uint16_t pidx = add_name(prop_str.value);
+            compile_expr(*expr.object);
+            emit(Opcode::kDup);
+            emit(Opcode::kGetProp);
+            emit_u16(pidx);
+            emit(Opcode::kDup);
+            Opcode jump_op = (expr.op == AssignOp::LogicalAndAssign) ? Opcode::kJumpIfFalse
+                           : (expr.op == AssignOp::LogicalOrAssign)  ? Opcode::kJumpIfTrue
+                                                                      : Opcode::kJumpIfNotNullish;
+            size_t skip_patch = emit_jump(jump_op);
+            // Not short-circuiting:
+            emit(Opcode::kPop);
+            compile_expr(*expr.value);
+            emit(Opcode::kSetProp);
+            emit_u16(pidx);
+            size_t end_patch = emit_jump(Opcode::kJump);
+            // Short-circuit path:
+            patch_jump(skip_patch);
+            emit(Opcode::kSwap);
+            emit(Opcode::kPop);
+            patch_jump(end_patch);
+            return;
+        }
+        // Computed logical member assign: simplified, no short-circuit in VM
+        compile_expr(*expr.object);
+        compile_expr(*expr.value);
+        compile_expr(*expr.property);
+        emit(Opcode::kSetElem);
+        return;
+    }
+
     compile_expr(*expr.object);
     compile_expr(*expr.value);
     if (expr.computed) {
@@ -2238,6 +2319,85 @@ void Compiler::compile_template_literal(const TemplateLiteral& expr) {
     }
 }
 
+void Compiler::compile_tagged_template_expr(const TaggedTemplateExpression& expr) {
+    const TemplateLiteral& tmpl = expr.tmpl;
+
+    // kCallMethod(argc) expects stack: [receiver, callee, arg0, arg1, ...]
+    // For plain tag call: receiver=undefined, callee=tag
+    // For method call (tag is MemberExpression): receiver=obj, callee=method
+
+    if (auto* mem = std::get_if<MemberExpression>(&expr.tag->v)) {
+        // obj.method`...` — receiver=obj, callee=method
+        compile_expr(*mem->object);   // [obj]
+        emit(Opcode::kDup);           // [obj, obj]
+        if (mem->computed) {
+            compile_expr(*mem->property);
+            emit(Opcode::kGetElem);   // [obj, method]  (pops dup'd obj)
+        } else {
+            uint16_t pidx = add_name(std::get<StringLiteral>(mem->property->v).value);
+            emit(Opcode::kGetProp);
+            emit_u16(pidx);           // [obj, method]
+        }
+        // Stack: [obj(receiver), method(callee)]
+    } else {
+        // plain tag`...` — receiver=undefined
+        emit(Opcode::kLoadUndefined); // [undefined]
+        compile_expr(*expr.tag);      // [undefined, tag]
+    }
+    // Stack: [receiver, callee]
+
+    // Build strings array with .raw property:
+    //   kNewArray                     → [receiver, callee, strings_arr]
+    //   for each quasi: LoadString+ArrayAppend
+    //   kDup                          → [receiver, callee, strings_arr, strings_arr_dup]
+    //   kNewArray                     → [receiver, callee, strings_arr, strings_arr_dup, raw_arr]
+    //   for each quasi: LoadString+ArrayAppend
+    //   kSetProp "raw"                → pops (raw_arr, strings_arr_dup), sets .raw, pushes raw_arr
+    //                                 → [receiver, callee, strings_arr, raw_arr]
+    //   kPop                          → [receiver, callee, strings_arr]
+
+    emit(Opcode::kNewArray);
+    for (size_t i = 0; i < tmpl.quasis.size(); ++i) {
+        emit(Opcode::kDup);  // [strings_arr, strings_arr_dup]
+        uint16_t sidx = add_constant(Value::string(tmpl.quasis[i].cooked));
+        emit(Opcode::kLoadString);
+        emit_u16(sidx);
+        emit(Opcode::kArrayAppend);  // pops (str + dup), appends to arr
+    }
+    // [receiver, callee, strings_arr]
+    emit(Opcode::kDup);  // [receiver, callee, strings_arr, strings_arr_dup]
+
+    emit(Opcode::kNewArray);
+    for (size_t i = 0; i < tmpl.quasis.size(); ++i) {
+        emit(Opcode::kDup);  // [raw_arr, raw_arr_dup]
+        uint16_t ridx = add_constant(Value::string(tmpl.quasis[i].raw));
+        emit(Opcode::kLoadString);
+        emit_u16(ridx);
+        emit(Opcode::kArrayAppend);
+    }
+    // [receiver, callee, strings_arr, strings_arr_dup, raw_arr]
+    // kSetProp "raw": pops TOS(raw_arr) as val, pops TOS-1(strings_arr_dup) as obj,
+    //   sets obj.raw = val, pushes val(raw_arr)
+    // → [receiver, callee, strings_arr, raw_arr]
+    uint16_t raw_idx = add_name("raw");
+    emit(Opcode::kSetProp);
+    emit_u16(raw_idx);
+    // [receiver, callee, strings_arr, raw_arr(result of SetProp)]
+    emit(Opcode::kPop);
+    // [receiver, callee, strings_arr]
+
+    // Compile expressions
+    for (const auto& e : tmpl.expressions) {
+        compile_expr(*e);
+    }
+    // [receiver, callee, strings_arr, expr0, expr1, ...]
+
+    // argc = 1 (strings_arr) + expressions.size()
+    uint8_t argc = static_cast<uint8_t>(1 + tmpl.expressions.size());
+    emit(Opcode::kCallMethod);
+    emit_u8(argc);
+}
+
 void Compiler::compile_optional_chain(const OptionalChainExpression& expr, bool delete_mode) {
     std::vector<size_t> chain_end_patches;
 
@@ -2337,9 +2497,62 @@ void Compiler::compile_optional_chain(const OptionalChainExpression& expr, bool 
 // class 编译
 // ============================================================
 
+// Build a BytecodeFunction that initializes instance fields on 'this'.
+// For each field: kLoadThis → (val or kLoadUndefined) → kSetProp/kSetElem → kPop
+std::shared_ptr<BytecodeFunction> Compiler::compile_field_initializer(
+    const std::vector<ClassField>& fields) {
+    auto fi = std::make_shared<BytecodeFunction>();
+    fi->name = std::string("$__field_init__");
+    // Temporarily switch compiler context to fi
+    auto* outer = current_;
+    auto saved_name_index = std::move(name_index_);
+    auto saved_loop_env = std::move(loop_env_stack_);
+    auto saved_finally_info = std::move(finally_info_stack_);
+    name_index_.clear();
+    loop_env_stack_.clear();
+    finally_info_stack_.clear();
+    current_ = fi.get();
+
+    for (const auto& f : fields) {
+        if (f.is_static) continue;
+        if (f.computed) {
+            // stack: kLoadThis(obj) → init_or_undef(val) → key_expr(key) → kSetElem → kPop
+            emit(Opcode::kLoadThis);
+            if (f.initializer != nullptr) {
+                compile_expr(*f.initializer);
+            } else {
+                emit(Opcode::kLoadUndefined);
+            }
+            compile_expr(*f.key_expr);
+            emit(Opcode::kSetElem);
+            emit(Opcode::kPop);
+        } else {
+            // stack: kLoadThis(obj) → init_or_undef(val) → kSetProp(key) → kPop
+            emit(Opcode::kLoadThis);
+            if (f.initializer != nullptr) {
+                compile_expr(*f.initializer);
+            } else {
+                emit(Opcode::kLoadUndefined);
+            }
+            uint16_t key_idx = add_name(f.key);
+            emit(Opcode::kSetProp);
+            emit_u16(key_idx);
+            emit(Opcode::kPop);
+        }
+    }
+    emit(Opcode::kReturnUndefined);
+
+    current_ = outer;
+    name_index_ = std::move(saved_name_index);
+    loop_env_stack_ = std::move(saved_loop_env);
+    finally_info_stack_ = std::move(saved_finally_info);
+    return fi;
+}
+
 void Compiler::compile_class_common(
     const std::optional<std::unique_ptr<ExprNode>>& super_class,
     const std::vector<ClassMethod>& methods,
+    const std::vector<ClassField>& fields,
     const std::optional<std::string>& class_name) {
 
     bool has_super = super_class.has_value();
@@ -2361,6 +2574,16 @@ void Compiler::compile_class_common(
         }
     }
 
+    // 2b. 编译 instance field initializer（如有）
+    bool has_instance_fields = false;
+    for (const auto& f : fields) {
+        if (!f.is_static) { has_instance_fields = true; break; }
+    }
+    std::shared_ptr<BytecodeFunction> field_init_bc;
+    if (has_instance_fields) {
+        field_init_bc = compile_field_initializer(fields);
+    }
+
     // 3. 编译 constructor 函数体，产生 BytecodeFunction
     uint16_t fn_idx;
     if (ctor_method != nullptr) {
@@ -2368,28 +2591,22 @@ void Compiler::compile_class_common(
         auto child = compile_function(class_name, fe.params, *fe.body, false, fe.rest_param);
         child->is_class_ctor = true;
         child->is_derived_ctor = has_super;
+        if (field_init_bc) child->field_initializer = field_init_bc;
         fn_idx = add_function(std::move(child));
     } else if (has_super) {
-        // Derived class with implicit constructor: constructor(...args) { super(...args); }
-        // Synthesize: compile_function with rest param "$__class_impl_args__" and body:
-        //   super(...$__class_impl_args__)
-        // We'll emit the bytecode manually using a child compiler context.
-        // Approach: use SpreadAppend to build args from rest array, then SuperCall with spread.
-        // Since kSuperCall expects discrete args, we use kSpreadAppend:
-        //   GetVar $__class_impl_args__ → SpreadAppend → ... not quite
-        // Simplest working approach: emit implicit super call handling in VM's kMakeClass.
-        // Mark ctor with is_derived_ctor, empty bytecode. VM detects this and auto-forwards args.
         auto child = compile_function(class_name, {}, {}, false,
                                       std::optional<std::string>{"$__class_impl_args__"});
         child->is_class_ctor = true;
         child->is_derived_ctor = true;
         child->is_implicit_derived_ctor = true;
+        if (field_init_bc) child->field_initializer = field_init_bc;
         fn_idx = add_function(std::move(child));
     } else {
         // Base class with implicit constructor: empty body
         auto child = compile_function(class_name, {}, {}, false, std::nullopt);
         child->is_class_ctor = true;
         child->is_derived_ctor = false;
+        if (field_init_bc) child->field_initializer = field_init_bc;
         fn_idx = add_function(std::move(child));
     }
 
@@ -2533,6 +2750,35 @@ void Compiler::compile_class_common(
             emit(Opcode::kPop);
         }
     }
+
+    // 7. static fields: [ctor] → Dup → init_val → kSetProp/kSetElem → Pop → [ctor]
+    for (const auto& f : fields) {
+        if (!f.is_static) continue;
+        if (f.computed) {
+            // [ctor] → Dup → key_expr → init_or_undef → SetElem → Pop
+            emit(Opcode::kDup);
+            if (f.initializer != nullptr) {
+                compile_expr(*f.initializer);
+            } else {
+                emit(Opcode::kLoadUndefined);
+            }
+            compile_expr(*f.key_expr);
+            emit(Opcode::kSetElem);
+            emit(Opcode::kPop);
+        } else {
+            // [ctor] → Dup → init_or_undef → kSetProp key → Pop
+            emit(Opcode::kDup);
+            if (f.initializer != nullptr) {
+                compile_expr(*f.initializer);
+            } else {
+                emit(Opcode::kLoadUndefined);
+            }
+            uint16_t key_idx = add_name(f.key);
+            emit(Opcode::kSetProp);
+            emit_u16(key_idx);
+            emit(Opcode::kPop);
+        }
+    }
     // Stack: [ctor]
 }
 
@@ -2544,7 +2790,7 @@ void Compiler::compile_class_expr(const ClassExpression& expr) {
         uint16_t name_idx = add_name(*expr.name);
         emit(Opcode::kDefConst);
         emit_u16(name_idx);
-        compile_class_common(expr.super_class, expr.methods, expr.name);
+        compile_class_common(expr.super_class, expr.methods, expr.fields, expr.name);
         // Stack: [ctor]. Initialize the name binding (InitVar works for both let and const)
         emit(Opcode::kDup);
         emit(Opcode::kInitVar);
@@ -2553,7 +2799,7 @@ void Compiler::compile_class_expr(const ClassExpression& expr) {
         emit(Opcode::kPopScope);
         // Stack: [ctor]
     } else {
-        compile_class_common(expr.super_class, expr.methods, expr.name);
+        compile_class_common(expr.super_class, expr.methods, expr.fields, expr.name);
     }
 }
 
@@ -2562,7 +2808,7 @@ void Compiler::compile_class_decl(const ClassDeclaration& stmt) {
     uint16_t name_idx = add_name(stmt.name);
     emit(Opcode::kDefLet);
     emit_u16(name_idx);
-    compile_class_common(stmt.super_class, stmt.methods, std::optional<std::string>{stmt.name});
+    compile_class_common(stmt.super_class, stmt.methods, stmt.fields, std::optional<std::string>{stmt.name});
     // Stack: [ctor]
     emit(Opcode::kInitVar);
     emit_u16(name_idx);

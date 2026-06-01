@@ -39,6 +39,8 @@ void JSFunction::ClearRefs() {
         lexical_this_ = Value::undefined();
     }
     param_defs_.reset();
+    instance_fields_.reset();
+    field_initializer_.reset();
 }
 
 void JSFunction::set_property(const std::string& key, Value value) {

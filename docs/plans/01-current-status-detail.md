@@ -4,6 +4,28 @@
 
 ## 1. 已完成任务
 
+- [x] **ES2022 Class Public Instance Fields & Static Fields**（2026-06-01）：
+  - **AST**：新增 `ClassField`（key/key_expr/initializer/is_static/computed，`key_expr` 和 `initializer` 使用 `shared_ptr<ExprNode>` 支持跨 JSFunction 复制）；`ClassDeclaration/ClassExpression` 新增 `fields: vector<ClassField>` 字段。
+  - **Parser**：`parse_class_body` 新增 `out_fields` 输出参数；`ClassCommonResult` 新增 `fields` 字段；在 key 解析之后，若 cur 非 `(`，识别为字段声明（有 `=` 则 `parse_expr(2)` 解析初始化器，有 `;` 则消费）；调用点 `parse_class_common` 向 ClassExpression/ClassDeclaration 传递 fields。
+  - **JSFunction**：新增 `instance_fields_`（`shared_ptr<vector<ClassField>>`）用于 Interpreter 路径；新增 `field_initializer_`（`shared_ptr<BytecodeFunction>`）用于 VM 路径；`ClearRefs` 新增两者 reset()。
+  - **BytecodeFunction**：新增 `field_initializer`（`shared_ptr<BytecodeFunction>`）。
+  - **CallFrame（vm.h）**：新增 `fields_initialized: bool` 标志，防止 base class 重复初始化。
+  - **Interpreter**：`eval_class_common` 按 static/instance 分类处理 fields（static fields 直接 `set_property`，instance fields 存入 ctor 的 `instance_fields_`）；新增 `init_instance_fields(ctor_fn, this_val)` 辅助（遍历 fields 依次设置属性）；`call_function` base ctor 路径在 body 前调用 init；`eval_super_call` derived ctor 路径在 super() 后调用；`eval_new_expr` implicit_derived 路径补调用。
+  - **VM/Compiler**：`compile_field_initializer(fields)` 私有方法：切换 current_ 上下文，为每个 instance field emit `kLoadThis + init/kLoadUndefined + kSetProp/kSetElem + kPop + kReturnUndefined`；`compile_class_common` 在 ctor BytecodeFunction 中存储 field_initializer；static fields 在 kMakeClass 后 emit `kDup + init/kLoadUndefined + kSetProp/kSetElem + kPop`；`kMakeClass` handler 从 `fn_bc->field_initializer` 复制到 `fn->set_field_initializer()`；`run()` 循环顶部：base ctor frame（!fields_initialized && !is_derived_ctor && field_initializer）→ 创建临时 fi_fn（gc_heap_.Register）→ push_call_frame + run(fi_depth)；`kSuperCall` handler：derived ctor super() 返回后同样调用 field_initializer；`kNewCall` implicit_derived 路径补调用。
+  - **测试**：新增 `tests/unit/class_fields_test.cpp`（38 个测试：CF-01～CF-17 × Interp+VM + 2 Extra；覆盖基础实例字段、多字段顺序、无初始化器 undefined、this 引用、own property、独立实例、enumerable、初始化顺序、static 字段、derived class fields、super() 后初始化）。
+  - **已知限制**：括号逗号表达式 `(a, b)` 在字段初始化器中只返回最后一项（pre-existing parser bug，与本功能无关）；逗号表达式 side effects 不执行。
+  - 4441/4441 通过（coverage），0 LSan 泄漏（ClassFields × 38 + Class × 112 专项验证通过）。
+
+- [x] **Logical Assignment Operators (&&=, ||=, ??=) + Tagged Template Literals**（2026-06-01）：
+  - **Lexer**：新增 `AmpAmpEq`（`&&=`）和 `PipePipeEq`（`||=`）两个 token（`case '&'`/`case '|'` 各加三字符消歧）；`QuestionQuestionEq` 已有，parser 接入。
+  - **AST**：`AssignOp` 新增 `LogicalAndAssign/LogicalOrAssign/NullishAssign`；`MemberAssignmentExpression` 新增 `op: AssignOp` 字段（默认 Assign）；新增 `TaggedTemplateExpression{tag, tmpl, range}` 节点加入 ExprNode variant；`TemplateElement.raw` 字段同步填写（`compute_template_raw` 辅助函数）；ast_dump/token.cpp/expr_range 全部扩展。
+  - **Parser**：lbp 中 `AmpAmpEq/PipePipeEq/QuestionQuestionEq` = 2；lbp 中 `TemplateNoSub/TemplateHead` = 19（tagged template 优先级与函数调用同级）；led Identifier 路径和 MemberExpression 路径均支持三个 logical assign op；led 中 TemplateNoSub/TemplateHead 分支产生 TaggedTemplateExpression；nud 中 TemplateNoSub/TemplateHead 同步提取 raw 字段。
+  - **Interpreter**：`eval_assignment` 在 Assign/compound 之间插入 LogicalAndAssign/LogicalOrAssign/NullishAssign 分支（先读 LHS，短路则返回，否则 eval RHS + set）；`eval_member_assign` 新增 logical assign 路径（读 obj+key，short-circuit 判断，直接 set_property_ex）；`eval_tagged_template_expr`（MemberExpression tag 获取 receiver/method；构建 kArray strings/raw 数组；call_function_val）；interpreter.h 新增声明。
+  - **Compiler**：`compile_assignment` logical assign 路径（kGetVar + kDup + kJumpIfXxx + kPop + RHS + kSetVar + patch_jump）；`compile_member_assign` 非 computed 路径完整短路（kDup + kGetProp + kDup + kJumpIfXxx + kPop + RHS + kSetProp + kJump/kSwap/kPop）；computed 路径简化（不短路）；`compile_tagged_template_expr`（kCallMethod 布局，kDup+kArrayAppend 模式，kSetProp "raw"）；compiler.h 新增声明；hoist_vars_scan_expr 新增 TaggedTemplateExpression 分支。
+  - **测试修复**：NC41（NullishAssignCurrentlyParseError）→ NC41（NullishAssignParsesAndWorks）更新为验证 ??= 成功解析。
+  - **新增测试**：`tests/unit/logical_assign_test.cpp`（LA-01～LA-15 × Interp+VM + 3 Parser = 37 个测试）；`template_literal_test.cpp` 追加 TTL-01～TTL-10 × Interp+VM = 20 个测试。合计新增 57 个测试。
+  - **测试结果**：4403/4403 通过（coverage），0 LSan 泄漏（系统库假阳性已有 suppressions）。
+
 - [x] **JavaScript class 语法 Review 必修修复 M1-M6**（2026-06-01）：
   - **M1（kSetHomeObjectStatic）**：VM 中 `kSetHomeObjectStatic` 错误地调用 `fn3->set_home_object(nullptr)` 清空了 home_object_。由于架构限制（home_object_ 类型为 JSObject*，无法持有 JSFunction 类型的 ctor），改为 no-op。static super 在当前架构下仍然不可用（会抛 TypeError），但不再错误清空。
   - **M2（new.target 泄漏）**：`call_function` 非 new 调用路径未 save/restore `current_new_target_`，导致在 constructor 中调用普通函数时，普通函数能看到外层 ctor 的 new.target。修复：在非 native、非箭头函数路径引入 `NewTargetGuard`（RAII），非 new 调用时将 `current_new_target_` 设为 undefined，退出时自动恢复。箭头函数透传词法 new.target（保持 `!fn->is_arrow()` 条件）。

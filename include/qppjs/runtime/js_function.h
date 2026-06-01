@@ -102,6 +102,14 @@ public:
     const std::shared_ptr<std::vector<ParamDef>>& param_defs() const { return param_defs_; }
     void set_param_defs(std::shared_ptr<std::vector<ParamDef>> v) { param_defs_ = std::move(v); }
 
+    // Instance field definitions for class constructors (Interpreter path)
+    const std::shared_ptr<std::vector<ClassField>>& instance_fields() const { return instance_fields_; }
+    void set_instance_fields(std::shared_ptr<std::vector<ClassField>> v) { instance_fields_ = std::move(v); }
+
+    // Field initializer bytecode function for class constructors (VM path)
+    const std::shared_ptr<BytecodeFunction>& field_initializer() const { return field_initializer_; }
+    void set_field_initializer(std::shared_ptr<BytecodeFunction> v) { field_initializer_ = std::move(v); }
+
     // Static properties on the function object itself (e.g., Object.keys, Array.isArray).
     void set_property(const std::string& key, Value value);
     Value get_property(const std::string& key) const;
@@ -150,6 +158,12 @@ private:
 
     // 参数默认值定义（nullptr = native 函数或无默认值参数）
     std::shared_ptr<std::vector<ParamDef>> param_defs_;
+
+    // Instance field definitions (only set on class constructors, Interpreter path)
+    std::shared_ptr<std::vector<ClassField>> instance_fields_;
+
+    // Field initializer bytecode function for class constructors (VM path)
+    std::shared_ptr<BytecodeFunction> field_initializer_;
 };
 
 }  // namespace qppjs

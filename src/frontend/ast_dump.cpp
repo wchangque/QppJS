@@ -132,6 +132,12 @@ const char* assign_op_str(AssignOp op) {
             return ">>=";
         case AssignOp::ShrAssign:
             return ">>>=";
+        case AssignOp::LogicalAndAssign:
+            return "&&=";
+        case AssignOp::LogicalOrAssign:
+            return "||=";
+        case AssignOp::NullishAssign:
+            return "?\?=";
     }
     return "?";
 }
@@ -394,6 +400,11 @@ std::string dump_expr(const ExprNode& node, int indent) {
                        },
                        [&](const SuperMemberExpression& sm) {
                            result = prefix + "SuperMember(" + sm.property + ")\n";
+                       },
+                       [&](const TaggedTemplateExpression& tte) {
+                           result = prefix + "TaggedTemplateExpression\n";
+                           result += prefix + "  tag:\n";
+                           result += dump_expr(*tte.tag, indent + 2);
                        },
                },
                node.v);

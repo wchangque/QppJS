@@ -92,15 +92,20 @@ private:
     EvalResult eval_update_expr(const UpdateExpression& expr);
     EvalResult eval_import_call(const ImportCallExpression& expr);
     EvalResult eval_template_literal(const TemplateLiteral& expr);
+    EvalResult eval_tagged_template_expr(const TaggedTemplateExpression& expr);
     EvalResult eval_regex_literal(const RegexLiteral& expr);
     EvalResult eval_optional_chain(const OptionalChainExpression& expr);
     EvalResult eval_yield_expr(const YieldExpression& expr);
     // Class support
     EvalResult eval_class_common(const std::optional<std::unique_ptr<ExprNode>>& super_class,
                                  const std::vector<ClassMethod>& methods,
+                                 const std::vector<ClassField>& fields,
                                  const std::optional<std::string>& class_name);
     EvalResult eval_class_expr(const ClassExpression& expr);
     EvalResult eval_class_decl(const ClassDeclaration& stmt);
+
+    // Initialize instance fields on this_val; called at constructor entry (base) or after super() (derived)
+    EvalResult init_instance_fields(JSFunction* ctor_fn, Value& this_val);
     EvalResult eval_super_call(const SuperCallExpression& expr);
     EvalResult eval_super_member(const SuperMemberExpression& expr);
     // Helper: property access on a pre-evaluated object value

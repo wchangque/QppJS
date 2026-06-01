@@ -34,6 +34,8 @@ struct BytecodeFunction {
     // If the last statement is a simple identifier expression, its name is stored here
     // (used by VM::exec() to re-read the value after DrainAll)
     std::optional<std::string> last_expr_name;
+    // Instance field initializer function (only set for class constructors with instance fields)
+    std::shared_ptr<BytecodeFunction> field_initializer;
 };
 
 }  // namespace qppjs

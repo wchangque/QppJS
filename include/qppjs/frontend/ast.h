@@ -30,7 +30,8 @@ enum class BinaryOp {
 enum class LogicalOp { And, Or, Nullish };
 enum class AssignOp {
     Assign, AddAssign, SubAssign, MulAssign, DivAssign, ModAssign,
-    BitAndAssign, BitOrAssign, BitXorAssign, ShlAssign, SarAssign, ShrAssign
+    BitAndAssign, BitOrAssign, BitXorAssign, ShlAssign, SarAssign, ShrAssign,
+    LogicalAndAssign, LogicalOrAssign, NullishAssign
 };
 enum class VarKind { Var, Let, Const };
 
@@ -128,12 +129,14 @@ struct MemberExpression {
 };
 
 // 成员赋值 obj.prop = val 或 obj[expr] = val
+// op 默认为 Assign；LogicalAndAssign/LogicalOrAssign/NullishAssign 用于短路逻辑赋值
 struct MemberAssignmentExpression {
     std::unique_ptr<ExprNode> object;
     std::unique_ptr<ExprNode> property;
     bool computed;
     std::unique_ptr<ExprNode> value;
     SourceRange range;
+    AssignOp op = AssignOp::Assign;
 };
 
 // 函数参数定义：可含默认值
@@ -277,11 +280,22 @@ struct ClassMethod {
     bool computed = false;
 };
 
+// class 字段声明（实例字段或静态字段）
+// 使用 shared_ptr 以支持复制到 JSFunction::instance_fields_
+struct ClassField {
+    std::string key;                              // 非 computed 时有效
+    std::shared_ptr<ExprNode> key_expr;           // computed=true 时非空
+    std::shared_ptr<ExprNode> initializer;        // = expr，可为 nullptr（初始值 undefined）
+    bool is_static = false;
+    bool computed = false;
+};
+
 // class 声明语句 class Name [extends super] { body }
 struct ClassDeclaration {
     std::string name;
     std::optional<std::unique_ptr<ExprNode>> super_class;
     std::vector<ClassMethod> methods;
+    std::vector<ClassField> fields;
     SourceRange range;
 };
 
@@ -290,6 +304,7 @@ struct ClassExpression {
     std::optional<std::string> name;
     std::optional<std::unique_ptr<ExprNode>> super_class;
     std::vector<ClassMethod> methods;
+    std::vector<ClassField> fields;
     SourceRange range;
 };
 
@@ -320,6 +335,13 @@ struct OptionalChainExpression {
     SourceRange range;
 };
 
+// Tagged template literal: tag`str ${x} str`
+struct TaggedTemplateExpression {
+    std::unique_ptr<ExprNode> tag;
+    TemplateLiteral tmpl;
+    SourceRange range;
+};
+
 // ---- ExprNode 完整定义（必须在所有表达式 struct 定义之后）----
 
 struct ExprNode {
@@ -331,7 +353,8 @@ struct ExprNode {
                  MetaProperty, ImportCallExpression, RegexLiteral, TemplateLiteral,
                  ArrowFunctionExpression, ConditionalExpression, SpreadElement,
                  DestructuringAssignmentExpression, OptionalChainExpression,
-                 YieldExpression, ClassExpression, SuperCallExpression, SuperMemberExpression>
+                 YieldExpression, ClassExpression, SuperCallExpression, SuperMemberExpression,
+                 TaggedTemplateExpression>
             v;
 
     bool is_parenthesized = false;  // set by Parser when wrapped in ( )
