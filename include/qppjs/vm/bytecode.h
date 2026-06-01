@@ -22,6 +22,7 @@ struct BytecodeFunction {
     std::vector<uint16_t> function_decls;                       // names indices for function declarations
     bool is_named_expr = false;                                  // true for named function expressions
     bool is_async = false;                                       // true for async functions
+    bool is_async_generator = false;                             // true for async function* (async generator)
     bool is_arrow = false;                                       // true for arrow functions
     bool is_method = false;                                      // true for object literal method shorthand
     bool is_generator = false;                                   // true for generator functions (function*)

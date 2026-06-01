@@ -136,6 +136,10 @@ private:
     // Execute one iteration of generator body, returning {value, done} result object.
     EvalResult generator_resume(RcPtr<JSGeneratorObject> gen);
 
+    // Async generator: resume the generator body, resolving outer_promise when yield/done is reached.
+    // When await is encountered, sets up resume callback and returns (outer_promise stays pending).
+    void ag_resume(RcPtr<JSGeneratorObject> gen, RcPtr<JSPromise> outer_promise);
+
     // Hoist var declarations; var_target is the function-level env to receive var bindings.
     void hoist_vars(const std::vector<StmtNode>& stmts, Environment& var_target);
     void hoist_vars_stmt(const StmtNode& stmt, Environment& var_target);
@@ -155,6 +159,11 @@ private:
                                     std::shared_ptr<std::vector<StmtNode>> body,
                                     RcPtr<Environment> closure_env,
                                     std::optional<std::string> rest_param = std::nullopt);
+
+    Value make_async_generator_value(std::optional<std::string> name, const std::vector<ParamDef>& params,
+                                     std::shared_ptr<std::vector<StmtNode>> body,
+                                     RcPtr<Environment> closure_env,
+                                     std::optional<std::string> rest_param = std::nullopt);
 
     // Spread all elements of `iterable` into `out`. Returns true on success;
     // on failure, sets pending_throw_ and returns false.

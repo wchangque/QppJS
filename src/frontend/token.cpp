@@ -110,6 +110,10 @@ std::string_view token_kind_name(TokenKind kind) {
             return "Minus";
         case TokenKind::Star:
             return "Star";
+        case TokenKind::StarStar:
+            return "StarStar";
+        case TokenKind::StarStarEq:
+            return "StarStarEq";
         case TokenKind::Slash:
             return "Slash";
         case TokenKind::Percent:

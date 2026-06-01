@@ -113,6 +113,9 @@ private:
     // Also handles nested suspension (multiple awaits).
     void vm_handle_async_result(EvalResult body_result, RcPtr<JSPromise> outer_promise);
 
+    // Async generator resolve: wraps a sync generator result in outer_promise.
+    void vm_ag_resolve(EvalResult sync_result, RcPtr<JSPromise> outer_promise);
+
     // Generator helpers: resume a suspended generator frame
     EvalResult vm_generator_next(RcPtr<JSGeneratorObject> gen, Value resume_val);
     EvalResult vm_generator_return(RcPtr<JSGeneratorObject> gen, Value return_val);

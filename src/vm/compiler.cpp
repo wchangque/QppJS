@@ -472,7 +472,12 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
         if (afdecl_ptr) {
             auto child = compile_function(afdecl_ptr->name, afdecl_ptr->params, *afdecl_ptr->body,
                                           false, afdecl_ptr->rest_param);
-            child->is_async = true;
+            if (afdecl_ptr->is_generator) {
+                child->is_async_generator = true;
+                child->is_generator = true;  // so push_call_frame creates generator object
+            } else {
+                child->is_async = true;
+            }
             uint16_t fn_idx = add_function(std::move(child));
             emit(Opcode::kMakeFunction);
             emit_u16(fn_idx);
@@ -1167,6 +1172,7 @@ void Compiler::compile_binary(const BinaryExpression& expr) {
     case BinaryOp::Mul:     emit(Opcode::kMul);       break;
     case BinaryOp::Div:     emit(Opcode::kDiv);       break;
     case BinaryOp::Mod:     emit(Opcode::kMod);       break;
+    case BinaryOp::Pow:     emit(Opcode::kPow);       break;
     case BinaryOp::Lt:      emit(Opcode::kLt);        break;
     case BinaryOp::LtEq:    emit(Opcode::kLtEq);      break;
     case BinaryOp::Gt:      emit(Opcode::kGt);        break;
@@ -1262,6 +1268,7 @@ void Compiler::compile_assignment(const AssignmentExpression& expr) {
         case AssignOp::MulAssign:     emit(Opcode::kMul);    break;
         case AssignOp::DivAssign:     emit(Opcode::kDiv);    break;
         case AssignOp::ModAssign:     emit(Opcode::kMod);    break;
+        case AssignOp::PowAssign:     emit(Opcode::kPow);    break;
         case AssignOp::BitAndAssign:  emit(Opcode::kBitAnd); break;
         case AssignOp::BitOrAssign:   emit(Opcode::kBitOr);  break;
         case AssignOp::BitXorAssign:  emit(Opcode::kBitXor); break;
@@ -1486,6 +1493,51 @@ void Compiler::compile_member_assign(const MemberAssignmentExpression& expr) {
         return;
     }
 
+    // Arithmetic/bitwise compound member assignment: read-modify-write
+    if (expr.op != AssignOp::Assign) {
+        if (!expr.computed) {
+            // obj.prop op= rhs:
+            //   compile obj   → [obj]
+            //   kDup          → [obj, obj]
+            //   kGetProp      → [obj, current_val]
+            //   compile rhs   → [obj, current_val, rhs]
+            //   kOp           → [obj, new_val]
+            //   kSetProp      → [new_val]
+            const auto& prop_str2 = std::get<StringLiteral>(expr.property->v);
+            uint16_t pidx2 = add_name(prop_str2.value);
+            compile_expr(*expr.object);
+            emit(Opcode::kDup);
+            emit(Opcode::kGetProp);
+            emit_u16(pidx2);
+            compile_expr(*expr.value);
+            // Emit operation
+            switch (expr.op) {
+            case AssignOp::AddAssign:    emit(Opcode::kAdd);    break;
+            case AssignOp::SubAssign:    emit(Opcode::kSub);    break;
+            case AssignOp::MulAssign:    emit(Opcode::kMul);    break;
+            case AssignOp::DivAssign:    emit(Opcode::kDiv);    break;
+            case AssignOp::ModAssign:    emit(Opcode::kMod);    break;
+            case AssignOp::PowAssign:    emit(Opcode::kPow);    break;
+            case AssignOp::BitAndAssign: emit(Opcode::kBitAnd); break;
+            case AssignOp::BitOrAssign:  emit(Opcode::kBitOr);  break;
+            case AssignOp::BitXorAssign: emit(Opcode::kBitXor); break;
+            case AssignOp::ShlAssign:    emit(Opcode::kShl);    break;
+            case AssignOp::SarAssign:    emit(Opcode::kSar);    break;
+            case AssignOp::ShrAssign:    emit(Opcode::kShr);    break;
+            default: break;
+            }
+            emit(Opcode::kSetProp);
+            emit_u16(pidx2);
+        } else {
+            // Computed: obj[key] op= rhs (simplified: no true read-modify-write in current VM)
+            compile_expr(*expr.object);
+            compile_expr(*expr.value);
+            compile_expr(*expr.property);
+            emit(Opcode::kSetElem);
+        }
+        return;
+    }
+
     compile_expr(*expr.object);
     compile_expr(*expr.value);
     if (expr.computed) {
@@ -1511,9 +1563,14 @@ void Compiler::compile_function_expr(const FunctionExpression& expr) {
 
 void Compiler::compile_async_function_expr(const AsyncFunctionExpression& expr) {
     auto child = compile_function(expr.name, expr.params, *expr.body, false, expr.rest_param);
-    child->is_async = true;
-    // P2-D: named async function expressions need self-reference binding inside the body
-    child->is_named_expr = expr.name.has_value();
+    if (expr.is_generator) {
+        child->is_async_generator = true;
+        child->is_generator = true;  // so push_call_frame creates generator object
+    } else {
+        child->is_async = true;
+        // P2-D: named async function expressions need self-reference binding inside the body
+        child->is_named_expr = expr.name.has_value();
+    }
     uint16_t fn_idx = add_function(std::move(child));
     emit(Opcode::kMakeFunction);
     emit_u16(fn_idx);

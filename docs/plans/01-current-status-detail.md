@@ -4,6 +4,26 @@
 
 ## 1. 已完成任务
 
+- [x] **Exponentiation operator `**`/`**=` + async generator `async function*`**（2026-06-01）：
+  - **特性 A：`**` 和 `**=`（ES2016 exponentiation）**
+    - Token：新增 `StarStar`（`**`）和 `StarStarEq`（`**=`）；Lexer `case '*'` 三路消歧（`**=` > `**` > `*`）；token.cpp 新增对应 `to_string` 分支。
+    - AST：`BinaryOp::Pow`；`AssignOp::PowAssign`；ast_dump `"**"` / `"**="` 输出。
+    - Parser：`lbp(StarStar)=18`（高于乘法 lbp=17，右结合通过 `parse_expr(17)` 实现）；`lbp(StarStarEq)=2`（赋值优先级）；`led(StarStar)` 中检查 LHS 若为 `UnaryExpression` 且未被括号包围则 SyntaxError；Identifier/MemberExpression 赋值路径均支持 `StarStarEq → AssignOp::PowAssign`；MemberExpression 复合赋值路径扩展（原只支持 `=`/`&&=`/`||=`/`??=`，现扩展为支持所有算术/位复合赋值运算符）；`compile_member_assign` 新增 arithmetic compound path（read-modify-write：`kDup + kGetProp + compile_rhs + kOp + kSetProp`）。
+    - Opcode：`kPow(0)` 新指令。
+    - Interpreter：`BinaryOp::Pow → std::pow(a, b)`；`AssignOp::PowAssign`；`eval_member_assign` 新增 arithmetic compound 路径（read current via `eval_get_property_of`，apply op，write back）。
+    - VM：`kPow` handler（同 `kMul` 模式，Symbol TypeError）；`compile_assignment` `PowAssign → kPow`；`compile_member_assign` read-modify-write。
+    - 测试：更新 `tests/unit/lexer_test.cpp` `OperatorStarStarSplitsToStarStar`（从期待 `Star+Star` 改为期待 `StarStar` 单 token）；新增 `tests/unit/exponent_test.cpp`（EXP-01～EXP-11 × 23 个测试）。
+  - **特性 B：`async function*`（async generator，ES2018）**
+    - AST：`AsyncFunctionDeclaration`/`AsyncFunctionExpression` 新增 `is_generator = false` 字段。
+    - Parser：stmt 声明路径（`parse_stmt` Ident "async" 分支）和表达式路径（`nud(Ident)` "async function" 分支）均识别可选 `*`；设置 `in_generator_function_ = is_ag` 使 body 内 `yield` 合法；保存/恢复 `in_async_function_` 和 `in_generator_function_`。
+    - JSFunction：新增 `is_async_generator_` 字段 + getter/setter；BytecodeFunction 新增 `is_async_generator` 字段。
+    - Interpreter `make_async_generator_value`：native 包装，param 绑定后创建 `JSGeneratorObject`（设 `gen_body_/gen_env_/gen_this_val_`），`.next()/.return()/.throw()` 返回 Promise；`ag_resume`：在 async 上下文中驱动 generator body，处理 `kGeneratorYieldSentinel`（resolve Promise），`kAsyncSuspendSentinel`（设置 PerformThen resume/reject callback），完成/错误（resolve/reject done=true）；interpreter.h 新增 `ag_resume` 声明和 `make_async_generator_value` 声明。
+    - `hoist_vars_stmt` AsyncFunctionDeclaration 分支：`is_generator=true` 时调用 `make_async_generator_value`；`eval_async_function_expr` 分支：`is_generator=true` 时调用 `make_async_generator_value`。
+    - VM `kMakeFunction` 新增 `is_async_generator` 分支：设置 bytecode `is_generator=true`（使 `push_call_frame` 创建 generator object），native ag_wrapper：调用 `push_call_frame` 获取 gen_obj，覆写 `.next()` 为 Promise 返回（包含 await 检测：`vm_pending_inner_promise_` 存在时 PerformThen + 递归 resume，不存在时 `vm_ag_resolve`）；`vm_generator_resume` 扩展：`vm_async_suspended_` 时将 frame 存回 `gen->suspended_frame_`（而非 `vm_suspended_frame_`），返回 `ok(undefined)` 为 ag_wrapper 提示 await 挂起；`vm_ag_resolve`：sync result ok 时 Fulfill，error 时 Reject，调用 `vm_drain_job_queue`；vm.h 新增 `vm_ag_resolve` 声明。
+    - Compiler `afdecl_ptr` hoist 路径：`is_generator=true` 时设 `is_async_generator=true` 且 `is_generator=true`（缺 is_generator 会导致 push_call_frame 不创建 generator object）；`compile_async_function_expr`：同上。
+    - 测试：新增 `tests/unit/async_generator_test.cpp`（AG-01～AG-08 × 16 个测试，Interp+VM 对称；覆盖对象类型、`.next()` 返回 Promise、yield value/done、多次 yield、await 内部、return done:true）。
+  - 4480/4480 通过（coverage），0 LSan 泄漏。
+
 - [x] **ES2022 Class Public Instance Fields & Static Fields**（2026-06-01）：
   - **AST**：新增 `ClassField`（key/key_expr/initializer/is_static/computed，`key_expr` 和 `initializer` 使用 `shared_ptr<ExprNode>` 支持跨 JSFunction 复制）；`ClassDeclaration/ClassExpression` 新增 `fields: vector<ClassField>` 字段。
   - **Parser**：`parse_class_body` 新增 `out_fields` 输出参数；`ClassCommonResult` 新增 `fields` 字段；在 key 解析之后，若 cur 非 `(`，识别为字段声明（有 `=` 则 `parse_expr(2)` 解析初始化器，有 `;` 则消费）；调用点 `parse_class_common` 向 ClassExpression/ClassDeclaration 传递 fields。

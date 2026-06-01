@@ -7,7 +7,7 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 4441/4441 通过（coverage），0 LSan 泄漏（class fields 专项验证通过） |
+| 测试计数 | 4480/4480 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-06-01 |
 | 下一步 | 下一批 test262 候选目标（Map/Set / eval 等） |
 | test262 | language/expressions class fields 实现后约 23%（expressions 32.4% 基线） |
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **Exponentiation operator `**` / `**=` + async generator `async function*`**（2026-06-01）：(A) `**`/`**=`：Token 新增 `StarStar`/`StarStarEq`（Lexer 三路消歧 `case '*'`）；`BinaryOp::Pow`/`AssignOp::PowAssign`；Parser lbp(StarStar)=18（右结合，led 调用 parse_expr(17)），LHS 一元运算符检查（SyntaxError），`**=` lbp=2；MemberExpression 复合赋值扩展（支持所有算术/位运算符）；`compile_member_assign` read-modify-write 路径（kDup + kGetProp + op + kSetProp）；Opcode 新增 `kPow(0)`；Interpreter `BinaryOp::Pow`/`AssignOp::PowAssign`/成员复合赋值；VM `kPow` handler；更新旧 lexer_test（StarStar 现为单 token）。(B) `async function*`：`AsyncFunctionDeclaration`/`AsyncFunctionExpression` 新增 `is_generator` 字段；Parser 两路（stmt 声明/nud 表达式）识别 `* ` 后缀并设 `in_generator_function_=true`；JSFunction 新增 `is_async_generator_` flag；BytecodeFunction 新增 `is_async_generator`；Interpreter `make_async_generator_value`（native 包装，param 绑定 + JSGeneratorObject 创建，`.next()` 返回 Promise，`ag_resume` 处理 yield/await/completion）；`ag_resume`（同 run_async_body 逻辑，但整合 generator 挂起/恢复机制，`kAsyncSuspendSentinel` 时 PerformThen 设置 resume callback）；VM `kMakeFunction` `is_async_generator` 分支（`is_generator=true` 确保 `push_call_frame` 创建 generator object，`.next()` lambda 包 Promise，处理 `kAwait` via `vm_pending_inner_promise_`，`vm_ag_resolve` 辅助函数）；`vm_generator_resume` 扩展处理 `vm_async_suspended_`（await 挂起时将 frame 存回 gen->suspended_frame_）。新增 `tests/unit/exponent_test.cpp`（EXP-01～EXP-11 × 23 个测试）和 `tests/unit/async_generator_test.cpp`（AG-01～AG-08 × 16 个测试）。4480/4480 通过（coverage），0 LSan 泄漏。
 
 - [x] **ES2022 Class Public Instance Fields & Static Fields**（2026-06-01）：AST 新增 `ClassField`（key/key_expr/initializer/is_static/computed 字段，使用 `shared_ptr<ExprNode>` 支持复制）；`ClassDeclaration/ClassExpression` 新增 `fields` 字段；Parser `parse_class_body` 新增 fields 输出参数，在 key 后无 `(` 时解析为字段声明（`=` 初始化器或无初始化器）；JSFunction 新增 `instance_fields_`（`shared_ptr<vector<ClassField>>`）和 `field_initializer_`（`shared_ptr<BytecodeFunction>`）；BytecodeFunction 新增 `field_initializer`；CallFrame 新增 `fields_initialized` 标志；Interpreter: `eval_class_common` 分离 static fields（立即 `set_property`）和 instance fields（存入 ctor `instance_fields_`）；`init_instance_fields` 辅助函数；`call_function` 在 base ctor body 前调用 fields；`eval_super_call` 在 derived ctor super() 后调用 fields；`eval_new_expr` implicit_derived 路径补调用；VM: `compile_field_initializer` 将 instance fields 编译为独立 BytecodeFunction（kLoadThis + kSetProp/kSetElem 序列）；`compile_class_common` 将 static fields 在 kMakeClass 后内联 emit；`kMakeClass` handler 复制 `field_initializer` 到 JSFunction；`run()` 循环顶部对 base class ctor 调用 field_initializer（push_call_frame+run）；`kSuperCall` handler 对 derived ctor 调用 field_initializer；`kNewCall` implicit_derived 路径补调用；`ClearRefs` 新增 instance_fields_/field_initializer_ 清零。新增 `tests/unit/class_fields_test.cpp`（CF-01～CF-17 × Interp+VM + 2 Extra = 38 个测试）。4441/4441 通过（coverage），LSan 待确认。
 

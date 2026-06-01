@@ -3798,6 +3798,30 @@ void VM::vm_handle_async_result(EvalResult body_result, RcPtr<JSPromise> outer_p
 }
 
 // ============================================================
+// Async generator resolve helper
+// ============================================================
+
+void VM::vm_ag_resolve(EvalResult sync_result, RcPtr<JSPromise> outer_promise) {
+    if (sync_result.is_ok()) {
+        // Successful yield or completion: result is {value, done} object
+        outer_promise->Fulfill(sync_result.value(), job_queue_);
+    } else {
+        // Error from generator (throw or pending_throw)
+        Value err_val;
+        const std::string& msg = sync_result.error().message();
+        if ((msg == "__qppjs_pending_throw__" || msg.rfind("__qppjs_pending_throw__", 0) == 0) &&
+            native_pending_throw_.has_value()) {
+            err_val = std::move(*native_pending_throw_);
+            native_pending_throw_ = std::nullopt;
+        } else {
+            err_val = Value::string(msg);
+        }
+        outer_promise->Reject(std::move(err_val), job_queue_);
+    }
+    vm_drain_job_queue();
+}
+
+// ============================================================
 // Generator helpers
 // ============================================================
 
@@ -3822,6 +3846,19 @@ EvalResult VM::vm_generator_resume(RcPtr<JSGeneratorObject> gen) {
         vm_generator_yielded_ = false;
         gen->state_ = GeneratorState::kSuspendedYield;
         return run_result;  // already wrapped as {value, done: false}
+    }
+
+    if (vm_async_suspended_) {
+        // kAwait fired during an async generator body: the frame is in vm_suspended_frame_.
+        // Save it back into the generator so we can resume later.
+        vm_async_suspended_ = false;
+        gen->state_ = GeneratorState::kSuspendedYield;
+        gen->suspended_frame_ = std::make_unique<CallFrame>(std::move(*vm_suspended_frame_));
+        gen->suspended_frame_->owning_generator = gen.get();
+        vm_suspended_frame_.reset();
+        // Return a sentinel value indicating await suspension — the caller (vm_ag_resolve) handles this.
+        // Use a special negative-number sentinel to distinguish from normal yield.
+        return EvalResult::ok(Value::undefined());  // special: outer promise stays pending after setup
     }
 
     // Completion or error
@@ -5956,8 +5993,133 @@ EvalResult VM::run(size_t exit_depth) {
             fn->set_prototype_obj(proto_obj);
             gc_heap_.Register(fn.get());
             gc_heap_.Register(proto_obj.get());
+            // Wrap async generator functions (async function*)
+            if (fn_bc->is_async_generator) {
+                // fn_bc->is_generator=true, so inner_fn is already treated as generator
+                auto inner_fn = fn;
+                auto ag_wrapper = RcPtr<JSFunction>::make();
+                ag_wrapper->set_name(fn_bc->name);
+                ag_wrapper->set_property("__async_inner__", Value::object(ObjectPtr(inner_fn)));
+                ag_wrapper->set_is_async_generator(true);
+                ag_wrapper->set_native_fn([this, inner_fn](Value this_val,
+                        std::vector<Value> call_args, bool) mutable -> EvalResult {
+                    // push_call_frame with is_generator=true returns the generator object
+                    auto push_res = push_call_frame(inner_fn, std::move(this_val),
+                        std::span<Value>(call_args.data(), call_args.size()));
+                    if (!push_res.is_ok()) {
+                        return push_res;
+                    }
+                    // push_call_frame for generator returns the gen object via returned value
+                    // (it's pushed to stack? No - push_call_frame returns ok(gen_val) for generators)
+                    // Actually push_call_frame returns ok(gen_val) directly for generators
+                    Value gen_val = push_res.value();
+                    if (!gen_val.is_object()) {
+                        return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: async generator creation failed"));
+                    }
+                    RcObject* raw = gen_val.as_object_raw();
+                    if (raw->object_kind() != ObjectKind::kGenerator) {
+                        return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: async generator creation failed"));
+                    }
+                    auto gen_obj = RcPtr<JSGeneratorObject>(static_cast<JSGeneratorObject*>(raw));
+
+                    // Wrap .next() to return a Promise
+                    {
+                        auto next_fn = RcPtr<JSFunction>::make();
+                        gc_heap_.Register(next_fn.get());
+                        next_fn->set_name(std::string("next"));
+                        next_fn->set_property("length", Value::number(1));
+                        next_fn->set_native_fn([this, gen_obj](Value /*this_val*/, std::vector<Value> args, bool) mutable -> EvalResult {
+                            auto outer_promise = RcPtr<JSPromise>::make();
+                            gc_heap_.Register(outer_promise.get());
+                            Value outer_val = Value::object(ObjectPtr(outer_promise));
+                            Value resume_val = args.empty() ? Value::undefined() : args[0];
+                            auto sync_result = vm_generator_next(gen_obj, std::move(resume_val));
+                            // Handle await suspension: vm_pending_inner_promise_ is set by kAwait
+                            if (vm_pending_inner_promise_.has_value()) {
+                                auto inner_promise = std::move(*vm_pending_inner_promise_);
+                                vm_pending_inner_promise_ = std::nullopt;
+                                // Resume when inner promise resolves: call gen.next() with the value
+                                auto resume_fn = RcPtr<JSFunction>::make();
+                                gc_heap_.Register(resume_fn.get());
+                                resume_fn->set_native_fn([this, gen_obj, outer_promise]
+                                        (Value /*tv*/, std::vector<Value> rargs, bool) mutable -> EvalResult {
+                                    Value resolved_val = rargs.empty() ? Value::undefined() : rargs[0];
+                                    auto next2 = vm_generator_next(gen_obj, std::move(resolved_val));
+                                    if (vm_pending_inner_promise_.has_value()) {
+                                        // Another await: not fully supported in VM recursive resume
+                                        vm_pending_inner_promise_ = std::nullopt;
+                                        outer_promise->Reject(
+                                            make_error_value(NativeErrorType::kTypeError,
+                                                "multiple awaits in async generator not supported in VM"),
+                                            job_queue_);
+                                    } else {
+                                        vm_ag_resolve(next2, outer_promise);
+                                    }
+                                    return EvalResult::ok(Value::undefined());
+                                });
+                                auto reject_fn = RcPtr<JSFunction>::make();
+                                gc_heap_.Register(reject_fn.get());
+                                reject_fn->set_native_fn([this, gen_obj, outer_promise]
+                                        (Value /*tv*/, std::vector<Value> rargs, bool) mutable -> EvalResult {
+                                    Value reason = rargs.empty() ? Value::undefined() : rargs[0];
+                                    auto next3 = vm_generator_throw(gen_obj, std::move(reason));
+                                    vm_ag_resolve(next3, outer_promise);
+                                    return EvalResult::ok(Value::undefined());
+                                });
+                                JSPromise::PerformThen(inner_promise,
+                                    Value::object(ObjectPtr(resume_fn)),
+                                    Value::object(ObjectPtr(reject_fn)),
+                                    job_queue_);
+                                vm_drain_job_queue();
+                            } else {
+                                vm_ag_resolve(sync_result, outer_promise);
+                            }
+                            return EvalResult::ok(outer_val);
+                        });
+                        gen_obj->set_property("next", Value::object(ObjectPtr(next_fn)));
+                    }
+                    // Wrap .return() to return a Promise
+                    {
+                        auto ret_fn = RcPtr<JSFunction>::make();
+                        gc_heap_.Register(ret_fn.get());
+                        ret_fn->set_name(std::string("return"));
+                        ret_fn->set_property("length", Value::number(1));
+                        ret_fn->set_native_fn([this, gen_obj](Value /*this_val*/, std::vector<Value> args, bool) mutable -> EvalResult {
+                            auto outer_promise = RcPtr<JSPromise>::make();
+                            gc_heap_.Register(outer_promise.get());
+                            Value outer_val = Value::object(ObjectPtr(outer_promise));
+                            Value ret_val = args.empty() ? Value::undefined() : args[0];
+                            auto sync_result = vm_generator_return(gen_obj, std::move(ret_val));
+                            vm_ag_resolve(sync_result, outer_promise);
+                            return EvalResult::ok(outer_val);
+                        });
+                        gen_obj->set_property("return", Value::object(ObjectPtr(ret_fn)));
+                    }
+                    // Wrap .throw() to return a Promise
+                    {
+                        auto throw_fn = RcPtr<JSFunction>::make();
+                        gc_heap_.Register(throw_fn.get());
+                        throw_fn->set_name(std::string("throw"));
+                        throw_fn->set_property("length", Value::number(1));
+                        throw_fn->set_native_fn([this, gen_obj](Value /*this_val*/, std::vector<Value> args, bool) mutable -> EvalResult {
+                            auto outer_promise = RcPtr<JSPromise>::make();
+                            gc_heap_.Register(outer_promise.get());
+                            Value outer_val = Value::object(ObjectPtr(outer_promise));
+                            Value throw_val = args.empty() ? Value::undefined() : args[0];
+                            auto sync_result = vm_generator_throw(gen_obj, std::move(throw_val));
+                            vm_ag_resolve(sync_result, outer_promise);
+                            return EvalResult::ok(outer_val);
+                        });
+                        gen_obj->set_property("throw", Value::object(ObjectPtr(throw_fn)));
+                    }
+
+                    return EvalResult::ok(gen_val);
+                });
+                gc_heap_.Register(ag_wrapper.get());
+                stack.push_back(Value::object(ObjectPtr(ag_wrapper)));
+                // Skip the normal path
             // Wrap async functions: create a NativeFn that creates outer_promise and runs bytecode
-            if (fn_bc->is_async) {
+            } else if (fn_bc->is_async) {
                 auto inner_fn = fn;  // the bytecode function
                 auto async_wrapper = RcPtr<JSFunction>::make();
                 async_wrapper->set_name(fn_bc->name);
@@ -6449,6 +6611,20 @@ EvalResult VM::run(size_t exit_depth) {
             auto ln = to_number(lv); if (!ln.is_ok()) return ln;
             auto rn = to_number(rv); if (!rn.is_ok()) return rn;
             stack.push_back(Value::number(std::fmod(ln.value().as_number(), rn.value().as_number())));
+            break;
+        }
+
+        case Opcode::kPow: {
+            Value rv = std::move(stack.back()); stack.pop_back();
+            Value lv = std::move(stack.back()); stack.pop_back();
+            if (lv.is_symbol() || rv.is_symbol()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot convert a Symbol value to a number");
+                continue;
+            }
+            auto ln = to_number(lv); if (!ln.is_ok()) return ln;
+            auto rn = to_number(rv); if (!rn.is_ok()) return rn;
+            stack.push_back(Value::number(std::pow(ln.value().as_number(), rn.value().as_number())));
             break;
         }
 

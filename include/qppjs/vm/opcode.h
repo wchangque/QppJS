@@ -46,6 +46,7 @@ namespace qppjs {
     X(Mul, 0)                           \
     X(Div, 0)                           \
     X(Mod, 0)                           \
+    X(Pow, 0)                           \
     /* Unary */                         \
     X(Neg, 0)                           \
     X(Pos, 0)                           \

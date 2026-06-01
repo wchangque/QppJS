@@ -618,6 +618,14 @@ Token next_token(LexerState& state) {
             return {TokenKind::Minus, {start, 1}};
 
         case '*':
+            if (peek(1) == '*') {
+                if (peek(2) == '=') {
+                    state.pos += 3;
+                    return {TokenKind::StarStarEq, {start, 3}};
+                }
+                state.pos += 2;
+                return {TokenKind::StarStar, {start, 2}};
+            }
             if (peek(1) == '=') {
                 state.pos += 2;
                 return {TokenKind::StarEq, {start, 2}};

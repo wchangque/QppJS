@@ -76,6 +76,10 @@ public:
     bool is_generator() const { return is_generator_; }
     void set_is_generator(bool v) { is_generator_ = v; }
 
+    // Async generator function flag (async function*)
+    bool is_async_generator() const { return is_async_generator_; }
+    void set_is_async_generator(bool v) { is_async_generator_ = v; }
+
     // Class constructor flags
     bool is_class_ctor() const { return is_class_ctor_; }
     bool is_derived_ctor() const { return is_derived_ctor_; }
@@ -143,6 +147,7 @@ private:
 
     // Generator function data
     bool is_generator_ = false;
+    bool is_async_generator_ = false;
 
     // Class constructor data
     bool is_class_ctor_ = false;

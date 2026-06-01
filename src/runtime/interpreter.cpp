@@ -3681,8 +3681,14 @@ void Interpreter::hoist_vars_stmt(const StmtNode& stmt, Environment& var_target)
         // mirroring the VM's behavior of emitting kMakeFunction+kSetVar at function entry.
         const auto& afdecl = std::get<AsyncFunctionDeclaration>(stmt.v);
         var_target.define_function(afdecl.name);
-        Value async_fn_val = make_async_function_value(afdecl.name, afdecl.params, afdecl.body, current_env_,
-                                                        afdecl.rest_param);
+        Value async_fn_val;
+        if (afdecl.is_generator) {
+            async_fn_val = make_async_generator_value(afdecl.name, afdecl.params, afdecl.body, current_env_,
+                                                       afdecl.rest_param);
+        } else {
+            async_fn_val = make_async_function_value(afdecl.name, afdecl.params, afdecl.body, current_env_,
+                                                      afdecl.rest_param);
+        }
         var_target.set(afdecl.name, async_fn_val);
     } else if (std::holds_alternative<ForStatement>(stmt.v)) {
         const auto& for_stmt = std::get<ForStatement>(stmt.v);
@@ -5107,6 +5113,17 @@ EvalResult Interpreter::eval_binary(const BinaryExpression& expr) {
         }
         return EvalResult::ok(Value::number(std::fmod(ln.value().as_number(), rn.value().as_number())));
     }
+    case BinaryOp::Pow: {
+        auto ln = to_number(lv);
+        if (!ln.is_ok()) {
+            return ln;
+        }
+        auto rn = to_number(rv);
+        if (!rn.is_ok()) {
+            return rn;
+        }
+        return EvalResult::ok(Value::number(std::pow(ln.value().as_number(), rn.value().as_number())));
+    }
     case BinaryOp::Lt: {
         // Both strings: lexicographic comparison (ECMAScript §13.11 AbstractRelationalComparison)
         if (lv.is_string() && rv.is_string()) {
@@ -5488,6 +5505,18 @@ EvalResult Interpreter::eval_assignment(const AssignmentExpression& expr) {
             return rn;
         }
         new_val = Value::number(std::fmod(ln.value().as_number(), rn.value().as_number()));
+        break;
+    }
+    case AssignOp::PowAssign: {
+        auto ln = to_number(current_result.value());
+        auto rn = to_number(rhs.value());
+        if (!ln.is_ok()) {
+            return ln;
+        }
+        if (!rn.is_ok()) {
+            return rn;
+        }
+        new_val = Value::number(std::pow(ln.value().as_number(), rn.value().as_number()));
         break;
     }
     case AssignOp::BitAndAssign: {
@@ -6126,6 +6155,116 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
     }
 
     std::string key = to_string_val(key_result.value());
+
+    // Arithmetic compound assignment: read-modify-write
+    if (expr.op != AssignOp::Assign) {
+        auto cur_val = eval_get_property_of(obj_val, Value::string(key));
+        if (!cur_val.is_ok()) return cur_val;
+        auto rhs = eval_expr(*expr.value);
+        if (!rhs.is_ok()) return rhs;
+        Value new_v;
+        // Reuse arithmetic: call eval_binary_op equivalent inline
+        auto apply_arith = [&](auto op_fn) -> EvalResult {
+            auto ln = to_number(cur_val.value());
+            if (!ln.is_ok()) return ln;
+            auto rn = to_number(rhs.value());
+            if (!rn.is_ok()) return rn;
+            new_v = Value::number(op_fn(ln.value().as_number(), rn.value().as_number()));
+            return EvalResult::ok(new_v);
+        };
+        EvalResult op_res = EvalResult::ok(Value::undefined());
+        switch (expr.op) {
+            case AssignOp::AddAssign: {
+                // String concatenation or numeric
+                if (cur_val.value().is_string() || rhs.value().is_string()) {
+                    std::string s = to_string_val(cur_val.value()) + to_string_val(rhs.value());
+                    new_v = Value::string(s);
+                    op_res = EvalResult::ok(new_v);
+                } else {
+                    op_res = apply_arith([](double a, double b) { return a + b; });
+                }
+                break;
+            }
+            case AssignOp::SubAssign:
+                op_res = apply_arith([](double a, double b) { return a - b; });
+                break;
+            case AssignOp::MulAssign:
+                op_res = apply_arith([](double a, double b) { return a * b; });
+                break;
+            case AssignOp::DivAssign:
+                op_res = apply_arith([](double a, double b) { return a / b; });
+                break;
+            case AssignOp::ModAssign:
+                op_res = apply_arith([](double a, double b) { return std::fmod(a, b); });
+                break;
+            case AssignOp::PowAssign:
+                op_res = apply_arith([](double a, double b) { return std::pow(a, b); });
+                break;
+            case AssignOp::BitAndAssign: {
+                auto ln = to_number(cur_val.value()); if (!ln.is_ok()) return ln;
+                auto rn = to_number(rhs.value()); if (!rn.is_ok()) return rn;
+                new_v = Value::number(static_cast<double>(to_int32_bits(ln.value().as_number()) & to_int32_bits(rn.value().as_number())));
+                op_res = EvalResult::ok(new_v);
+                break;
+            }
+            case AssignOp::BitOrAssign: {
+                auto ln = to_number(cur_val.value()); if (!ln.is_ok()) return ln;
+                auto rn = to_number(rhs.value()); if (!rn.is_ok()) return rn;
+                new_v = Value::number(static_cast<double>(to_int32_bits(ln.value().as_number()) | to_int32_bits(rn.value().as_number())));
+                op_res = EvalResult::ok(new_v);
+                break;
+            }
+            case AssignOp::BitXorAssign: {
+                auto ln = to_number(cur_val.value()); if (!ln.is_ok()) return ln;
+                auto rn = to_number(rhs.value()); if (!rn.is_ok()) return rn;
+                new_v = Value::number(static_cast<double>(to_int32_bits(ln.value().as_number()) ^ to_int32_bits(rn.value().as_number())));
+                op_res = EvalResult::ok(new_v);
+                break;
+            }
+            case AssignOp::ShlAssign: {
+                auto ln = to_number(cur_val.value()); if (!ln.is_ok()) return ln;
+                auto rn = to_number(rhs.value()); if (!rn.is_ok()) return rn;
+                uint32_t sh = to_uint32_bits(rn.value().as_number()) & 0x1F;
+                new_v = Value::number(static_cast<double>(to_int32_bits(ln.value().as_number()) << sh));
+                op_res = EvalResult::ok(new_v);
+                break;
+            }
+            case AssignOp::SarAssign: {
+                auto ln = to_number(cur_val.value()); if (!ln.is_ok()) return ln;
+                auto rn = to_number(rhs.value()); if (!rn.is_ok()) return rn;
+                uint32_t sh = to_uint32_bits(rn.value().as_number()) & 0x1F;
+                new_v = Value::number(static_cast<double>(to_int32_bits(ln.value().as_number()) >> sh));
+                op_res = EvalResult::ok(new_v);
+                break;
+            }
+            case AssignOp::ShrAssign: {
+                auto ln = to_number(cur_val.value()); if (!ln.is_ok()) return ln;
+                auto rn = to_number(rhs.value()); if (!rn.is_ok()) return rn;
+                uint32_t sh = to_uint32_bits(rn.value().as_number()) & 0x1F;
+                new_v = Value::number(static_cast<double>(to_uint32_bits(ln.value().as_number()) >> sh));
+                op_res = EvalResult::ok(new_v);
+                break;
+            }
+            default:
+                break;
+        }
+        if (!op_res.is_ok()) return op_res;
+        // Write back
+        RcObject* raw_wb = obj_val.as_object_raw();
+        if (raw_wb->object_kind() == ObjectKind::kOrdinary ||
+            raw_wb->object_kind() == ObjectKind::kArray) {
+            auto* js_wb = static_cast<JSObject*>(raw_wb);
+            auto set_res = js_wb->set_property_ex(key, new_v);
+            if (!set_res.is_ok()) {
+                const std::string& msg = set_res.error().message();
+                NativeErrorType err_type = NativeErrorType::kTypeError;
+                if (msg.rfind("RangeError:", 0) == 0) err_type = NativeErrorType::kRangeError;
+                pending_throw_ = make_error_value(err_type, strip_error_prefix(msg));
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+        }
+        return EvalResult::ok(new_v);
+    }
 
     auto val_result = eval_expr(*expr.value);
     if (!val_result.is_ok()) {
@@ -8145,6 +8284,354 @@ Value Interpreter::make_async_function_value(std::optional<std::string> name,
     return Value::object(ObjectPtr(fn));
 }
 
+// ============================================================
+// ag_resume: async generator body runner
+// Resumes the generator body with async support (handles both yield and await).
+// Resolves outer_promise when yield or completion; suspends when await is hit.
+// ============================================================
+
+void Interpreter::ag_resume(RcPtr<JSGeneratorObject> gen, RcPtr<JSPromise> outer_promise) {
+    auto& body = *gen->gen_body_;
+
+    // Save interpreter state
+    RcPtr<Environment> saved_env = current_env_;
+    RcPtr<Environment> saved_var_env = var_env_;
+    Value saved_this = current_this_;
+    JSPromise* saved_async_promise = current_async_promise_;
+    bool saved_in_async = in_async_body_;
+
+    // Switch to generator's environment and enable async context
+    current_env_ = gen->gen_env_;
+    var_env_ = gen->gen_env_;
+    current_this_ = gen->gen_this_val_;
+    current_async_promise_ = outer_promise.get();
+    in_async_body_ = true;
+
+    // Hoist vars on first execution
+    if (!gen->vars_hoisted_) {
+        hoist_vars(body, *gen->gen_env_);
+        gen->vars_hoisted_ = true;
+    }
+
+    gen->state_ = GeneratorState::kExecuting;
+
+    // Restore delegate iterator
+    current_yield_delegate_iter_ = std::move(gen->yield_delegate_iter_);
+    current_yield_delegate_next_ = std::move(gen->yield_delegate_next_);
+
+    auto restore_state = [&]() {
+        current_env_ = saved_env;
+        var_env_ = saved_var_env;
+        current_this_ = saved_this;
+        current_async_promise_ = saved_async_promise;
+        in_async_body_ = saved_in_async;
+        in_generator_resume_mode_ = false;
+        pending_generator_resume_value_ = std::nullopt;
+        in_generator_throw_mode_ = false;
+        pending_generator_throw_value_ = std::nullopt;
+        gen->yield_delegate_iter_ = std::move(current_yield_delegate_iter_);
+        gen->yield_delegate_next_ = std::move(current_yield_delegate_next_);
+        current_yield_delegate_iter_ = Value::undefined();
+        current_yield_delegate_next_ = Value::undefined();
+    };
+
+    for (size_t i = gen->suspended_stmt_index_; i < body.size(); ++i) {
+        auto stmt_result = eval_stmt(body[i]);
+        if (!stmt_result.is_ok()) {
+            const std::string& em = stmt_result.error().message();
+
+            if (em == kGeneratorYieldSentinel) {
+                // yield expr: resolve outer_promise with {value, done:false}
+                gen->state_ = GeneratorState::kSuspendedYield;
+                gen->suspended_stmt_index_ = i;
+                Value yield_val = pending_generator_yield_value_.has_value()
+                    ? std::move(*pending_generator_yield_value_) : Value::undefined();
+                pending_generator_yield_value_ = std::nullopt;
+                restore_state();
+                auto result_obj = RcPtr<JSObject>::make();
+                gc_heap_.Register(result_obj.get());
+                result_obj->set_proto(object_prototype_);
+                result_obj->set_property("value", std::move(yield_val));
+                result_obj->set_property("done", Value::boolean(false));
+                outer_promise->Fulfill(Value::object(ObjectPtr(result_obj)), job_queue_);
+                return;
+            }
+
+            if (em == kAsyncSuspendSentinel) {
+                // await expr: save state, set up resume when inner promise resolves
+                gen->state_ = GeneratorState::kSuspendedYield;  // reuse SuspendedYield state
+                gen->suspended_stmt_index_ = i;
+                restore_state();
+
+                if (!pending_inner_promise_.has_value()) {
+                    outer_promise->Reject(
+                        make_error_value(NativeErrorType::kTypeError, "internal: missing inner promise"),
+                        job_queue_);
+                    return;
+                }
+                auto inner_promise = std::move(*pending_inner_promise_);
+                pending_inner_promise_ = std::nullopt;
+
+                // resume_fn: called when inner promise fulfills
+                auto resume_fn = RcPtr<JSFunction>::make();
+                gc_heap_.Register(resume_fn.get());
+                resume_fn->set_native_fn([this, gen, outer_promise]
+                        (Value /*this_val*/, std::vector<Value> args, bool) mutable -> EvalResult {
+                    Value resolved_val = args.empty() ? Value::undefined() : args[0];
+                    pending_await_result_ = std::move(resolved_val);
+                    in_generator_resume_mode_ = false;
+                    gen->state_ = GeneratorState::kSuspendedStart;  // allow resume
+                    ag_resume(gen, outer_promise);
+                    return EvalResult::ok(Value::undefined());
+                });
+
+                // reject_fn: called when inner promise rejects
+                auto reject_fn = RcPtr<JSFunction>::make();
+                gc_heap_.Register(reject_fn.get());
+                reject_fn->set_native_fn([this, gen, outer_promise]
+                        (Value /*this_val*/, std::vector<Value> args, bool) mutable -> EvalResult {
+                    Value reason = args.empty() ? Value::undefined() : args[0];
+                    pending_throw_ = std::move(reason);
+                    in_generator_throw_mode_ = true;
+                    gen->state_ = GeneratorState::kSuspendedStart;
+                    ag_resume(gen, outer_promise);
+                    return EvalResult::ok(Value::undefined());
+                });
+
+                JSPromise::PerformThen(
+                    inner_promise,
+                    Value::object(ObjectPtr(resume_fn)),
+                    Value::object(ObjectPtr(reject_fn)),
+                    job_queue_);
+                drain_job_queue();
+                return;
+            }
+
+            // Other error: mark completed, reject outer_promise
+            gen->state_ = GeneratorState::kCompleted;
+            Value err_val;
+            if (em == kPendingThrowSentinel && pending_throw_.has_value()) {
+                err_val = std::move(*pending_throw_);
+                pending_throw_ = std::nullopt;
+            } else {
+                err_val = Value::string(em);
+            }
+            restore_state();
+            outer_promise->Reject(std::move(err_val), job_queue_);
+            return;
+        }
+
+        const Completion& c = stmt_result.completion();
+        if (c.is_return()) {
+            gen->state_ = GeneratorState::kCompleted;
+            Value ret_val = c.value;
+            restore_state();
+            auto result_obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(result_obj.get());
+            result_obj->set_proto(object_prototype_);
+            result_obj->set_property("value", std::move(ret_val));
+            result_obj->set_property("done", Value::boolean(true));
+            outer_promise->Fulfill(Value::object(ObjectPtr(result_obj)), job_queue_);
+            return;
+        }
+        if (c.is_throw()) {
+            gen->state_ = GeneratorState::kCompleted;
+            Value thrown = c.value;
+            restore_state();
+            outer_promise->Reject(std::move(thrown), job_queue_);
+            return;
+        }
+    }
+
+    // Body completed normally
+    gen->state_ = GeneratorState::kCompleted;
+    restore_state();
+    auto result_obj = RcPtr<JSObject>::make();
+    gc_heap_.Register(result_obj.get());
+    result_obj->set_proto(object_prototype_);
+    result_obj->set_property("value", Value::undefined());
+    result_obj->set_property("done", Value::boolean(true));
+    outer_promise->Fulfill(Value::object(ObjectPtr(result_obj)), job_queue_);
+}
+
+// ============================================================
+// make_async_generator_value
+// ============================================================
+
+Value Interpreter::make_async_generator_value(std::optional<std::string> name,
+                                               const std::vector<ParamDef>& params,
+                                               std::shared_ptr<std::vector<StmtNode>> body,
+                                               RcPtr<Environment> closure_env,
+                                               std::optional<std::string> rest_param) {
+    uint32_t length_count = static_cast<uint32_t>(params.size());
+    for (uint32_t i = 0; i < static_cast<uint32_t>(params.size()); ++i) {
+        if (params[i].default_init != nullptr) { length_count = i; break; }
+    }
+
+    auto fn = RcPtr<JSFunction>::make();
+    fn->set_name(name);
+    fn->set_property("length", Value::number(static_cast<double>(length_count)));
+    fn->set_is_async_generator(true);
+
+    auto param_defs_captured = std::make_shared<std::vector<ParamDef>>(params);
+
+    fn->set_native_fn([this, body, param_defs_captured, closure_env, rest_param]
+            (Value this_val_arg, std::vector<Value> call_args, bool) mutable -> EvalResult {
+        // Set up function environment
+        RcPtr<Environment> outer_env = closure_env ? closure_env : global_env_;
+        auto fn_env = RcPtr<Environment>::make(outer_env);
+        gc_heap_.Register(fn_env.get());
+
+        // Bind parameters
+        {
+            RcPtr<Environment> old_env = current_env_;
+            RcPtr<Environment> old_var_env = var_env_;
+            current_env_ = fn_env;
+            var_env_ = fn_env;
+            const auto& defs = *param_defs_captured;
+            for (size_t i = 0; i < defs.size(); ++i) {
+                Value arg_val = (i < call_args.size()) ? call_args[i] : Value::undefined();
+                if (arg_val.is_undefined() && defs[i].default_init != nullptr) {
+                    auto default_r = eval_expr(*defs[i].default_init);
+                    if (!default_r.is_ok()) {
+                        current_env_ = old_env;
+                        var_env_ = old_var_env;
+                        if (pending_throw_.has_value()) pending_throw_ = std::nullopt;
+                        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                          "Error in default param");
+                        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                    }
+                    arg_val = default_r.value();
+                }
+                fn_env->define(defs[i].name, VarKind::Var);
+                fn_env->initialize(defs[i].name, std::move(arg_val));
+            }
+            current_env_ = old_env;
+            var_env_ = old_var_env;
+        }
+
+        // Bind rest parameter
+        if (rest_param.has_value()) {
+            auto rest_arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+            gc_heap_.Register(rest_arr.get());
+            rest_arr->set_proto(array_prototype_);
+            size_t rest_start = param_defs_captured->size();
+            for (size_t i = rest_start; i < call_args.size(); ++i) {
+                rest_arr->elements_[static_cast<uint32_t>(i - rest_start)] = call_args[i];
+            }
+            rest_arr->array_length_ = static_cast<uint32_t>(
+                call_args.size() > rest_start ? call_args.size() - rest_start : 0);
+            fn_env->define(rest_param.value(), VarKind::Var);
+            fn_env->initialize(rest_param.value(), Value::object(ObjectPtr(rest_arr)));
+        }
+
+        // Create the generator object (NOT executing the body yet)
+        auto gen_obj = RcPtr<JSGeneratorObject>::make();
+        gc_heap_.Register(gen_obj.get());
+        gen_obj->set_proto(generator_prototype_);
+        gen_obj->state_ = GeneratorState::kSuspendedStart;
+        gen_obj->gen_body_ = body;
+        gen_obj->gen_env_ = fn_env;
+        gen_obj->gen_this_val_ = this_val_arg;
+        gen_obj->suspended_stmt_index_ = 0;
+        gen_obj->vars_hoisted_ = false;
+
+        Value gen_val = Value::object(ObjectPtr(gen_obj));
+
+        // Set up .next() — returns Promise
+        {
+            auto next_fn = RcPtr<JSFunction>::make();
+            gc_heap_.Register(next_fn.get());
+            next_fn->set_name(std::string("next"));
+            next_fn->set_property("length", Value::number(1));
+            next_fn->set_native_fn([this, gen_obj](Value /*this_val*/, std::vector<Value> args, bool) mutable -> EvalResult {
+                if (gen_obj->state_ == GeneratorState::kCompleted) {
+                    // Already done: return resolved Promise with {value:undefined, done:true}
+                    auto result_obj = RcPtr<JSObject>::make();
+                    gc_heap_.Register(result_obj.get());
+                    result_obj->set_proto(object_prototype_);
+                    result_obj->set_property("value", Value::undefined());
+                    result_obj->set_property("done", Value::boolean(true));
+                    auto done_promise = RcPtr<JSPromise>::make();
+                    gc_heap_.Register(done_promise.get());
+                    done_promise->Fulfill(Value::object(ObjectPtr(result_obj)), job_queue_);
+                    drain_job_queue();
+                    return EvalResult::ok(Value::object(ObjectPtr(done_promise)));
+                }
+                // Set up resume value if provided
+                Value resume_val = args.empty() ? Value::undefined() : args[0];
+                if (gen_obj->state_ == GeneratorState::kSuspendedYield) {
+                    in_generator_resume_mode_ = true;
+                    pending_generator_resume_value_ = std::move(resume_val);
+                }
+                // Create outer Promise
+                auto outer_promise = RcPtr<JSPromise>::make();
+                gc_heap_.Register(outer_promise.get());
+                // Resume the async generator body
+                ag_resume(gen_obj, outer_promise);
+                drain_job_queue();
+                return EvalResult::ok(Value::object(ObjectPtr(outer_promise)));
+            });
+            gen_obj->set_property("next", Value::object(ObjectPtr(next_fn)));
+        }
+
+        // Set up .return() — returns Promise
+        {
+            auto ret_fn = RcPtr<JSFunction>::make();
+            gc_heap_.Register(ret_fn.get());
+            ret_fn->set_name(std::string("return"));
+            ret_fn->set_property("length", Value::number(1));
+            ret_fn->set_native_fn([this, gen_obj](Value /*this_val*/, std::vector<Value> args, bool) mutable -> EvalResult {
+                Value ret_val = args.empty() ? Value::undefined() : args[0];
+                gen_obj->state_ = GeneratorState::kCompleted;
+                auto result_obj = RcPtr<JSObject>::make();
+                gc_heap_.Register(result_obj.get());
+                result_obj->set_proto(object_prototype_);
+                result_obj->set_property("value", std::move(ret_val));
+                result_obj->set_property("done", Value::boolean(true));
+                auto ret_promise = RcPtr<JSPromise>::make();
+                gc_heap_.Register(ret_promise.get());
+                ret_promise->Fulfill(Value::object(ObjectPtr(result_obj)), job_queue_);
+                drain_job_queue();
+                return EvalResult::ok(Value::object(ObjectPtr(ret_promise)));
+            });
+            gen_obj->set_property("return", Value::object(ObjectPtr(ret_fn)));
+        }
+
+        // Set up .throw() — returns Promise
+        {
+            auto throw_fn = RcPtr<JSFunction>::make();
+            gc_heap_.Register(throw_fn.get());
+            throw_fn->set_name(std::string("throw"));
+            throw_fn->set_property("length", Value::number(1));
+            throw_fn->set_native_fn([this, gen_obj](Value /*this_val*/, std::vector<Value> args, bool) mutable -> EvalResult {
+                Value throw_val = args.empty() ? Value::undefined() : args[0];
+                if (gen_obj->state_ == GeneratorState::kCompleted) {
+                    auto throw_promise = RcPtr<JSPromise>::make();
+                    gc_heap_.Register(throw_promise.get());
+                    throw_promise->Reject(std::move(throw_val), job_queue_);
+                    drain_job_queue();
+                    return EvalResult::ok(Value::object(ObjectPtr(throw_promise)));
+                }
+                // Inject throw into generator
+                in_generator_throw_mode_ = true;
+                pending_generator_throw_value_ = std::move(throw_val);
+                auto outer_promise = RcPtr<JSPromise>::make();
+                gc_heap_.Register(outer_promise.get());
+                ag_resume(gen_obj, outer_promise);
+                drain_job_queue();
+                return EvalResult::ok(Value::object(ObjectPtr(outer_promise)));
+            });
+            gen_obj->set_property("throw", Value::object(ObjectPtr(throw_fn)));
+        }
+
+        return EvalResult::ok(gen_val);
+    });
+
+    gc_heap_.Register(fn.get());
+    return Value::object(ObjectPtr(fn));
+}
+
 void Interpreter::run_async_body(std::shared_ptr<std::vector<StmtNode>> body, size_t stmt_index,
                                  RcPtr<Environment> fn_env, Value this_val,
                                  RcPtr<JSPromise> outer_promise) {
@@ -8287,6 +8774,10 @@ void Interpreter::run_async_body(std::shared_ptr<std::vector<StmtNode>> body, si
 }
 
 EvalResult Interpreter::eval_async_function_expr(const AsyncFunctionExpression& expr) {
+    if (expr.is_generator) {
+        return EvalResult::ok(make_async_generator_value(
+            expr.name, expr.params, expr.body, current_env_, expr.rest_param));
+    }
     return EvalResult::ok(make_async_function_value(
         expr.name, expr.params, expr.body, current_env_, expr.rest_param));
 }

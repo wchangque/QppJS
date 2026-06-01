@@ -58,6 +58,8 @@ const char* binary_op_str(BinaryOp op) {
             return "/";
         case BinaryOp::Mod:
             return "%";
+        case BinaryOp::Pow:
+            return "**";
         case BinaryOp::Lt:
             return "<";
         case BinaryOp::Gt:
@@ -120,6 +122,8 @@ const char* assign_op_str(AssignOp op) {
             return "/=";
         case AssignOp::ModAssign:
             return "%=";
+        case AssignOp::PowAssign:
+            return "**=";
         case AssignOp::BitAndAssign:
             return "&=";
         case AssignOp::BitOrAssign:

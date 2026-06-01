@@ -66,6 +66,8 @@ enum class TokenKind {
     Plus,
     Minus,
     Star,
+    StarStar,    // **
+    StarStarEq,  // **=
     Slash,
     Percent,
     Lt,

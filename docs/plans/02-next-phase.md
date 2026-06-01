@@ -42,6 +42,7 @@
 22. ~~**JavaScript class 语法基础 + Review 必修修复 M1-M6 [T262-P6]** — 已完成（2026-06-01，112 个测试，4344/4344 通过，0 LSan 泄漏）~~
 23. ~~**Logical Assignment Operators (&&=, ||=, ??=) + Tagged Template Literals** — 已完成（2026-06-01，57 个新测试（LA-01～LA-15 × Interp+VM + TTL-01～TTL-10 × Interp+VM + 3 Parser），4403/4403 通过，0 LSan 泄漏）~~
 24. ~~**ES2022 Class Public Instance Fields & Static Fields** — 已完成（2026-06-01，38 个新测试（CF-01～CF-17 × Interp+VM + 2 Extra），4441/4441 通过，0 LSan 泄漏）~~
+25. ~~**Exponentiation `**`/`**=` + async generator `async function*`** — 已完成（2026-06-01，23+16=39 个新测试，4480/4480 通过，0 LSan 泄漏）~~
 
 ## 3. 进入前提
 

@@ -24,12 +24,12 @@ overloaded(Ts...) -> overloaded<Ts...>;
 enum class UnaryOp { Minus, Plus, Bang, Typeof, Void, Delete, BitNot };
 enum class UpdateOp { Inc, Dec };
 enum class BinaryOp {
-    Add, Sub, Mul, Div, Mod, Lt, Gt, LtEq, GtEq, EqEq, NotEq, EqEqEq, NotEqEq, Instanceof, In,
+    Add, Sub, Mul, Div, Mod, Pow, Lt, Gt, LtEq, GtEq, EqEq, NotEq, EqEqEq, NotEqEq, Instanceof, In,
     BitAnd, BitOr, BitXor, Shl, Sar, Shr
 };
 enum class LogicalOp { And, Or, Nullish };
 enum class AssignOp {
-    Assign, AddAssign, SubAssign, MulAssign, DivAssign, ModAssign,
+    Assign, AddAssign, SubAssign, MulAssign, DivAssign, ModAssign, PowAssign,
     BitAndAssign, BitOrAssign, BitXorAssign, ShlAssign, SarAssign, ShrAssign,
     LogicalAndAssign, LogicalOrAssign, NullishAssign
 };
@@ -240,12 +240,15 @@ struct ConditionalExpression {
 };
 
 // async 函数表达式 async function [name](params) { body }
+// async 函数表达式 async function [name](params) { body }
+// is_generator=true 表示 async function* 表达式
 struct AsyncFunctionExpression {
     std::optional<std::string> name;
     std::vector<ParamDef> params;
     std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body;
     SourceRange range;
+    bool is_generator = false;  // true for async function* expressions
 };
 
 // 调用表达式 callee(args)
@@ -472,12 +475,14 @@ struct FunctionDeclaration {
 };
 
 // async 函数声明语句 async function name(params) { body }
+// is_generator=true 表示 async function*
 struct AsyncFunctionDeclaration {
     std::string name;
     std::vector<ParamDef> params;
     std::optional<std::string> rest_param;  // ...rest，nullopt 表示无 rest
     std::shared_ptr<std::vector<StmtNode>> body;
     SourceRange range;
+    bool is_generator = false;  // true for async function* declarations
 };
 
 struct ThrowStatement {

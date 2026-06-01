@@ -1052,11 +1052,12 @@ TEST(LexerTest, OperatorGtGtEqSplitsToGtGtEq) {
 }
 
 TEST(LexerTest, OperatorStarStarSplitsToStarStar) {
-    // '**' 幂运算，当前未定义，应切分为 Star + Star
+    // '**' 幂运算，tokenize 为单个 StarStar token
     auto tokens = collect_tokens("**");
-    ASSERT_EQ(tokens.size(), 3u);
-    EXPECT_EQ(tokens[0].kind, TokenKind::Star);
-    EXPECT_EQ(tokens[1].kind, TokenKind::Star);
+    ASSERT_EQ(tokens.size(), 2u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::StarStar);
+    EXPECT_EQ(tokens[0].range.length, 2u);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Eof);
 }
 
 TEST(LexerTest, OperatorQuestionQuestionSplits) {

@@ -600,6 +600,10 @@ struct Parser {
             case TokenKind::Plus:
             case TokenKind::Minus:
                 return 15;
+            case TokenKind::StarStar:
+                return 18;  // ** 高于 * / %，右结合
+            case TokenKind::StarStarEq:
+                return 2;   // **= 与其他赋值运算符同级
             case TokenKind::Star:
             case TokenKind::Slash:
             case TokenKind::Percent:
@@ -645,6 +649,8 @@ struct Parser {
                 // 条件：tok 文本为 "async"，且 cur 为 KwFunction，且 tok 与 cur 之间无换行
                 if (tok_text == "async" && cur.kind == TokenKind::KwFunction && !got_lf) {
                     advance();  // 消费 function
+                    bool is_ag = (cur.kind == TokenKind::Star);
+                    if (is_ag) advance();  // 消费 *
                     std::optional<std::string> fn_name;
                     if (cur.kind == TokenKind::Ident) {
                         fn_name = std::string(token_text(cur));
@@ -654,16 +660,21 @@ struct Parser {
                     auto params_result = parse_function_params(fn_rest1);
                     if (!params_result.ok()) return ParseResult<ExprNode>::Err(params_result.error());
                     bool saved_in_async = in_async_function_;
+                    bool saved_in_gen = in_generator_function_;
                     in_async_function_ = true;
+                    in_generator_function_ = is_ag;
                     auto body_result = parse_function_body();
                     in_async_function_ = saved_in_async;
+                    in_generator_function_ = saved_in_gen;
                     if (!body_result.ok()) return ParseResult<ExprNode>::Err(body_result.error());
                     uint32_t fn_end = range_end(body_result.value().second);
                     auto body_ptr = std::make_shared<std::vector<StmtNode>>(
                         std::move(body_result.value().first));
-                    return ParseResult<ExprNode>::Ok(ExprNode{AsyncFunctionExpression{
+                    AsyncFunctionExpression afe{
                         std::move(fn_name), std::move(params_result.value()), std::move(fn_rest1),
-                        std::move(body_ptr), span(tok.range.offset, fn_end)}});
+                        std::move(body_ptr), span(tok.range.offset, fn_end)};
+                    afe.is_generator = is_ag;
+                    return ParseResult<ExprNode>::Ok(ExprNode{std::move(afe)});
                 }
                 // await expr — 在 async 函数体内或模块顶层有效
                 if (tok_text == "await" && !got_lf && (in_async_function_ || in_module_)) {
@@ -1816,6 +1827,7 @@ struct Parser {
         // 赋值：右结合，检查左侧是 Identifier 或 MemberExpression 或解构模式
         if (kind == TokenKind::Eq || kind == TokenKind::PlusEq || kind == TokenKind::MinusEq ||
             kind == TokenKind::StarEq || kind == TokenKind::SlashEq || kind == TokenKind::PercentEq ||
+            kind == TokenKind::StarStarEq ||
             kind == TokenKind::AmpEq || kind == TokenKind::PipeEq || kind == TokenKind::CaretEq ||
             kind == TokenKind::LShiftEq || kind == TokenKind::RShiftEq || kind == TokenKind::URShiftEq ||
             kind == TokenKind::AmpAmpEq || kind == TokenKind::PipePipeEq ||
@@ -1865,6 +1877,9 @@ struct Parser {
                     case TokenKind::PercentEq:
                         aop = AssignOp::ModAssign;
                         break;
+                    case TokenKind::StarStarEq:
+                        aop = AssignOp::PowAssign;
+                        break;
                     case TokenKind::AmpEq:
                         aop = AssignOp::BitAndAssign;
                         break;
@@ -1902,7 +1917,13 @@ struct Parser {
             }
             if (std::holds_alternative<MemberExpression>(left.v)) {
                 if (kind != TokenKind::Eq && kind != TokenKind::AmpAmpEq &&
-                    kind != TokenKind::PipePipeEq && kind != TokenKind::QuestionQuestionEq) {
+                    kind != TokenKind::PipePipeEq && kind != TokenKind::QuestionQuestionEq &&
+                    kind != TokenKind::PlusEq && kind != TokenKind::MinusEq &&
+                    kind != TokenKind::StarEq && kind != TokenKind::SlashEq &&
+                    kind != TokenKind::PercentEq && kind != TokenKind::StarStarEq &&
+                    kind != TokenKind::AmpEq && kind != TokenKind::PipeEq &&
+                    kind != TokenKind::CaretEq && kind != TokenKind::LShiftEq &&
+                    kind != TokenKind::RShiftEq && kind != TokenKind::URShiftEq) {
                     return ParseResult<ExprNode>::Err(
                             make_parse_error(source, op_tok, "compound assignment to member not supported"));
                 }
@@ -1918,6 +1939,18 @@ struct Parser {
                 if (kind == TokenKind::AmpAmpEq) mem_op = AssignOp::LogicalAndAssign;
                 else if (kind == TokenKind::PipePipeEq) mem_op = AssignOp::LogicalOrAssign;
                 else if (kind == TokenKind::QuestionQuestionEq) mem_op = AssignOp::NullishAssign;
+                else if (kind == TokenKind::PlusEq) mem_op = AssignOp::AddAssign;
+                else if (kind == TokenKind::MinusEq) mem_op = AssignOp::SubAssign;
+                else if (kind == TokenKind::StarEq) mem_op = AssignOp::MulAssign;
+                else if (kind == TokenKind::SlashEq) mem_op = AssignOp::DivAssign;
+                else if (kind == TokenKind::PercentEq) mem_op = AssignOp::ModAssign;
+                else if (kind == TokenKind::StarStarEq) mem_op = AssignOp::PowAssign;
+                else if (kind == TokenKind::AmpEq) mem_op = AssignOp::BitAndAssign;
+                else if (kind == TokenKind::PipeEq) mem_op = AssignOp::BitOrAssign;
+                else if (kind == TokenKind::CaretEq) mem_op = AssignOp::BitXorAssign;
+                else if (kind == TokenKind::LShiftEq) mem_op = AssignOp::ShlAssign;
+                else if (kind == TokenKind::RShiftEq) mem_op = AssignOp::SarAssign;
+                else if (kind == TokenKind::URShiftEq) mem_op = AssignOp::ShrAssign;
                 return ParseResult<ExprNode>::Ok(ExprNode{MemberAssignmentExpression{
                         std::move(obj_ptr),
                         std::move(prop_ptr),
@@ -1992,6 +2025,23 @@ struct Parser {
             auto bin_r = span(expr_range(left).offset, range_end(expr_range(right.value())));
             return ParseResult<ExprNode>::Ok(
                 ExprNode{BinaryExpression{BinaryOp::In, std::make_unique<ExprNode>(std::move(left)),
+                                          std::make_unique<ExprNode>(std::move(right.value())), bin_r}});
+        }
+
+        // ** 幂运算符：右结合，且 LHS 不能是一元表达式（无括号）
+        if (kind == TokenKind::StarStar) {
+            // SyntaxError: -x ** y 等无括号一元前缀直接作为 LHS
+            if (std::holds_alternative<UnaryExpression>(left.v) && !left.is_parenthesized) {
+                return ParseResult<ExprNode>::Err(
+                    make_parse_error(source, op_tok,
+                        "SyntaxError: unary operator before '**' requires parentheses"));
+            }
+            // 右结合：右操作数用 parse_expr(bp - 1) = parse_expr(17)
+            auto right = parse_expr(bp - 1);
+            if (!right.ok()) return right;
+            auto bin_r = span(expr_range(left).offset, range_end(expr_range(right.value())));
+            return ParseResult<ExprNode>::Ok(
+                ExprNode{BinaryExpression{BinaryOp::Pow, std::make_unique<ExprNode>(std::move(left)),
                                           std::make_unique<ExprNode>(std::move(right.value())), bin_r}});
         }
 
@@ -4011,6 +4061,8 @@ struct Parser {
                     advance();  // 消费 async
                     if (cur.kind == TokenKind::KwFunction && !got_lf) {
                         advance();  // 消费 function
+                        bool is_ag_stmt = (cur.kind == TokenKind::Star);
+                        if (is_ag_stmt) advance();  // 消费 *
                         if (cur.kind != TokenKind::Ident) {
                             return ParseResult<StmtNode>::Err(
                                 make_parse_error(source, cur, "expected function name after 'async function'"));
@@ -4021,16 +4073,21 @@ struct Parser {
                         auto params_result = parse_function_params(fn_rest7);
                         if (!params_result.ok()) return ParseResult<StmtNode>::Err(params_result.error());
                         bool saved_in_async2 = in_async_function_;
+                        bool saved_in_gen_s = in_generator_function_;
                         in_async_function_ = true;
+                        in_generator_function_ = is_ag_stmt;
                         auto body_result = parse_function_body();
                         in_async_function_ = saved_in_async2;
+                        in_generator_function_ = saved_in_gen_s;
                         if (!body_result.ok()) return ParseResult<StmtNode>::Err(body_result.error());
                         uint32_t fn_end = range_end(body_result.value().second);
                         auto body_ptr = std::make_shared<std::vector<StmtNode>>(
                             std::move(body_result.value().first));
-                        return ParseResult<StmtNode>::Ok(StmtNode{AsyncFunctionDeclaration{
+                        AsyncFunctionDeclaration afdecl{
                             std::move(fn_name), std::move(params_result.value()), std::move(fn_rest7),
-                            std::move(body_ptr), span(async_tok.range.offset, fn_end)}});
+                            std::move(body_ptr), span(async_tok.range.offset, fn_end)};
+                        afdecl.is_generator = is_ag_stmt;
+                        return ParseResult<StmtNode>::Ok(StmtNode{std::move(afdecl)});
                     }
                     // async 后面不是 function：回退，把 async_tok 当普通标识符处理
                     // 将 async_tok 作为表达式 nud 处理
