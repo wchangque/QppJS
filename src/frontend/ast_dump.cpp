@@ -384,6 +384,17 @@ std::string dump_expr(const ExprNode& node, int indent) {
                                result += dump_expr(*ye.argument, indent + 2);
                            }
                        },
+                       [&](const ClassExpression& ce) {
+                           result = prefix + "ClassExpression";
+                           if (ce.name) result += "(" + *ce.name + ")";
+                           result += "\n";
+                       },
+                       [&](const SuperCallExpression& sc) {
+                           result = prefix + "SuperCall\n";
+                       },
+                       [&](const SuperMemberExpression& sm) {
+                           result = prefix + "SuperMember(" + sm.property + ")\n";
+                       },
                },
                node.v);
 
@@ -587,6 +598,9 @@ std::string dump_stmt(const StmtNode& node, int indent) {
                            std::string kind_str = dd.kind == VarKind::Var ? "var"
                                                 : dd.kind == VarKind::Let ? "let" : "const";
                            result = prefix + "DestructuringDeclaration " + kind_str + "\n";
+                       },
+                       [&](const ClassDeclaration& cd) {
+                           result = prefix + "ClassDeclaration(" + cd.name + ")\n";
                        },
                },
                node.v);

@@ -389,6 +389,9 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const DestructuringAssignmentExpression& n) { return n.range; },
                               [](const OptionalChainExpression& n) { return n.range; },
                               [](const YieldExpression& n) { return n.range; },
+                              [](const ClassExpression& n) { return n.range; },
+                              [](const SuperCallExpression& n) { return n.range; },
+                              [](const SuperMemberExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -416,6 +419,7 @@ static SourceRange stmt_range(const StmtNode& s) {
                               [](const ExportNamedDeclaration& n) { return n.range; },
                               [](const ExportDefaultDeclaration& n) { return n.range; },
                               [](const DestructuringDeclaration& n) { return n.range; },
+                              [](const ClassDeclaration& n) { return n.range; },
                       },
                       s.v);
 }
@@ -700,7 +704,7 @@ struct Parser {
                             make_parse_error(source, tok, "'import.meta' is only valid in modules"));
                     }
                     advance();  // 消费 'meta'
-                    return ParseResult<ExprNode>::Ok(ExprNode{MetaProperty{span(tok.range.offset, range_end(cur.range))}});
+                    return ParseResult<ExprNode>::Ok(ExprNode{MetaProperty{MetaPropertyKind::kImportMeta, span(tok.range.offset, range_end(cur.range))}});
                 }
                 std::string name{tok_text};
                 return ParseResult<ExprNode>::Ok(ExprNode{Identifier{std::move(name), tok.range}});
@@ -887,9 +891,99 @@ struct Parser {
                 return ParseResult<ExprNode>::Ok(ExprNode{UpdateExpression{
                     uop, std::make_unique<ExprNode>(std::move(operand.value())), true, r}});
             }
+            case TokenKind::KwClass: {
+                // class 表达式 class [Name] [extends super] { body }
+                uint32_t cls_start = tok.range.offset;
+                std::optional<std::string> cls_name;
+                if (cur.kind == TokenKind::Ident) {
+                    cls_name = std::string(token_text(cur));
+                    advance();
+                }
+                auto common_r = parse_class_common();
+                if (!common_r.ok()) return ParseResult<ExprNode>::Err(common_r.error());
+                uint32_t cls_end = common_r.value().end;
+                ClassExpression ce;
+                ce.name = std::move(cls_name);
+                ce.super_class = std::move(common_r.value().super_class);
+                ce.methods = std::move(common_r.value().methods);
+                ce.range = span(cls_start, cls_end);
+                return ParseResult<ExprNode>::Ok(ExprNode{std::move(ce)});
+            }
+            case TokenKind::KwSuper: {
+                // super(...) 或 super.method 或 super[key]
+                uint32_t super_start = tok.range.offset;
+                if (cur.kind == TokenKind::LParen) {
+                    // super(...args) — super call
+                    advance();  // 消费 (
+                    std::vector<std::unique_ptr<ExprNode>> args;
+                    while (cur.kind != TokenKind::RParen && cur.kind != TokenKind::Eof) {
+                        if (cur.kind == TokenKind::DotDotDot) {
+                            uint32_t spread_start = cur.range.offset;
+                            advance();  // 消费 ...
+                            auto arg = parse_expr(2);
+                            if (!arg.ok()) return arg;
+                            uint32_t spread_end = range_end(expr_range(arg.value()));
+                            args.push_back(std::make_unique<ExprNode>(ExprNode{SpreadElement{
+                                std::make_unique<ExprNode>(std::move(arg.value())),
+                                span(spread_start, spread_end)}}));
+                        } else {
+                            auto arg = parse_expr(2);
+                            if (!arg.ok()) return arg;
+                            args.push_back(std::make_unique<ExprNode>(std::move(arg.value())));
+                        }
+                        if (cur.kind == TokenKind::Comma) advance(); else break;
+                    }
+                    auto rp = expect(TokenKind::RParen);
+                    if (!rp.ok()) return ParseResult<ExprNode>::Err(rp.error());
+                    uint32_t super_end = range_end(rp.value().range);
+                    return ParseResult<ExprNode>::Ok(ExprNode{SuperCallExpression{
+                        std::move(args), span(super_start, super_end)}});
+                }
+                if (cur.kind == TokenKind::Dot) {
+                    advance();  // 消费 .
+                    std::string prop;
+                    if (cur.kind == TokenKind::Ident || is_keyword(cur.kind)) {
+                        prop = std::string(token_text(cur));
+                        advance();
+                    } else {
+                        return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, cur, "expected property name after 'super.'"));
+                    }
+                    uint32_t super_end = range_end(cur.range);
+                    return ParseResult<ExprNode>::Ok(ExprNode{SuperMemberExpression{
+                        std::move(prop), nullptr, false, span(super_start, super_end)}});
+                }
+                if (cur.kind == TokenKind::LBracket) {
+                    advance();  // 消费 [
+                    auto key = parse_expr(1);
+                    if (!key.ok()) return key;
+                    auto rb = expect(TokenKind::RBracket);
+                    if (!rb.ok()) return ParseResult<ExprNode>::Err(rb.error());
+                    uint32_t super_end = range_end(rb.value().range);
+                    return ParseResult<ExprNode>::Ok(ExprNode{SuperMemberExpression{
+                        "", std::make_unique<ExprNode>(std::move(key.value())),
+                        true, span(super_start, super_end)}});
+                }
+                return ParseResult<ExprNode>::Err(
+                    make_parse_error(source, tok, "unexpected 'super'"));
+            }
             case TokenKind::KwNew: {
-                // new callee(args)
                 uint32_t new_start = tok.range.offset;
+                // new.target meta-property
+                if (cur.kind == TokenKind::Dot) {
+                    Token dot_tok = cur;
+                    advance();  // 消费 .
+                    if (cur.kind == TokenKind::Ident && token_text(cur) == "target") {
+                        uint32_t end = range_end(cur.range);
+                        advance();  // 消费 target
+                        return ParseResult<ExprNode>::Ok(ExprNode{MetaProperty{
+                            MetaPropertyKind::kNewTarget, span(new_start, end)}});
+                    }
+                    // Not new.target; this is a parse error (e.g. new.foo)
+                    return ParseResult<ExprNode>::Err(
+                        make_parse_error(source, dot_tok, "expected 'target' after 'new.'"));
+                }
+                // new callee(args)
                 // Parse callee at higher precedence (member access allowed, but not call)
                 // Use lbp(Dot)=18 as min_bp to allow member access but stop before call
                 auto callee = parse_expr(20);  // stop before LParen (lbp=19) and ++/--(lbp=20), allow Dot/LBracket (lbp=21)
@@ -2523,6 +2617,384 @@ struct Parser {
                 StmtNode{ExpressionStatement{std::move(expr.value()), span(start.range.offset, es_end)}});
     }
 
+    // ---- class 解析辅助函数 ----
+
+    // 解析单个 class 成员 key（静态或计算键）
+    // 返回 (key_string, key_expr_or_null, is_computed)
+    // cur 指向 key token 开始
+    // 成功后 cur 指向 (
+    struct ClassKeyResult {
+        std::string key;
+        std::unique_ptr<ExprNode> key_expr;
+        bool computed = false;
+        uint32_t start = 0;
+    };
+
+    ParseResult<ClassKeyResult> parse_class_member_key() {
+        ClassKeyResult res;
+        res.start = cur.range.offset;
+        if (cur.kind == TokenKind::LBracket) {
+            // computed key [expr]
+            advance();  // 消费 [
+            auto ke = parse_expr(1);
+            if (!ke.ok()) return ParseResult<ClassKeyResult>::Err(ke.error());
+            auto rb = expect(TokenKind::RBracket);
+            if (!rb.ok()) return ParseResult<ClassKeyResult>::Err(rb.error());
+            res.computed = true;
+            res.key_expr = std::make_unique<ExprNode>(std::move(ke.value()));
+        } else if (cur.kind == TokenKind::Ident || cur.kind == TokenKind::String) {
+            if (cur.kind == TokenKind::String) {
+                res.key = decode_string(token_text(cur));
+            } else {
+                res.key = std::string(token_text(cur));
+            }
+            advance();
+        } else if (cur.kind == TokenKind::Number) {
+            res.key = number_to_property_key(parse_number_text(token_text(cur)));
+            advance();
+        } else if (is_keyword(cur.kind)) {
+            res.key = std::string(token_text(cur));
+            advance();
+        } else {
+            return ParseResult<ClassKeyResult>::Err(
+                make_parse_error(source, cur, "expected class member name"));
+        }
+        return ParseResult<ClassKeyResult>::Ok(std::move(res));
+    }
+
+    // 解析 class 体 { ... }，返回 ClassMethod 列表
+    // cur 指向 {
+    ParseResult<std::vector<ClassMethod>> parse_class_body(uint32_t class_start) {
+        auto lb = expect(TokenKind::LBrace);
+        if (!lb.ok()) return ParseResult<std::vector<ClassMethod>>::Err(lb.error());
+
+        std::vector<ClassMethod> methods;
+        while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
+            // 跳过分号
+            if (cur.kind == TokenKind::Semicolon) { advance(); continue; }
+
+            uint32_t member_start = cur.range.offset;
+            bool is_static = false;
+
+            // static 关键字
+            if (cur.kind == TokenKind::Ident && token_text(cur) == "static") {
+                advance();
+                // 若后面是 { 则是 static block（不支持），若是 ( : , } 则 static 是方法名
+                if (cur.kind == TokenKind::LParen || cur.kind == TokenKind::Colon ||
+                    cur.kind == TokenKind::Comma || cur.kind == TokenKind::RBrace ||
+                    cur.kind == TokenKind::Semicolon) {
+                    // static 作为方法名（罕见，但合法）
+                    // 走 is_static=false, key="static" 路径
+                    // 需要回到 static_tok 状态：构造 ClassMethod 直接处理
+                    ClassKeyResult key_res;
+                    key_res.key = "static";
+                    key_res.start = member_start;
+                    // 处理为普通方法
+                    // 要解析方法体
+                    if (cur.kind == TokenKind::LParen) {
+                        std::optional<std::string> fn_rest_s;
+                        auto params_s = parse_function_params(fn_rest_s);
+                        if (!params_s.ok())
+                            return ParseResult<std::vector<ClassMethod>>::Err(params_s.error());
+                        bool saved_gen_s = in_generator_function_;
+                        bool saved_async_s = in_async_function_;
+                        in_generator_function_ = false;
+                        in_async_function_ = false;
+                        auto body_s = parse_function_body();
+                        in_generator_function_ = saved_gen_s;
+                        in_async_function_ = saved_async_s;
+                        if (!body_s.ok())
+                            return ParseResult<std::vector<ClassMethod>>::Err(body_s.error());
+                        uint32_t prop_end = range_end(body_s.value().second);
+                        auto body_ptr = std::make_shared<std::vector<StmtNode>>(
+                            std::move(body_s.value().first));
+                        ClassMethod m;
+                        m.key = "static";
+                        m.method_kind = MethodKind::kMethod;
+                        m.is_static = false;
+                        m.fn_expr = std::make_unique<ExprNode>(ExprNode{FunctionExpression{
+                            std::optional<std::string>{"static"},
+                            std::move(params_s.value()), std::move(fn_rest_s),
+                            std::move(body_ptr), span(member_start, prop_end)}});
+                        methods.push_back(std::move(m));
+                        if (cur.kind == TokenKind::Semicolon) advance();
+                        continue;
+                    }
+                } else {
+                    is_static = true;
+                }
+            }
+
+            // get/set accessor
+            if (cur.kind == TokenKind::Ident &&
+                (token_text(cur) == "get" || token_text(cur) == "set")) {
+                std::string mod{token_text(cur)};
+                Token mod_tok = cur;
+                advance();
+                if (cur.kind != TokenKind::LParen && cur.kind != TokenKind::Comma &&
+                    cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Semicolon) {
+                    // 真正的 getter/setter
+                    auto key_res = parse_class_member_key();
+                    if (!key_res.ok())
+                        return ParseResult<std::vector<ClassMethod>>::Err(key_res.error());
+                    std::optional<std::string> fn_rest_ac;
+                    auto params_ac = parse_function_params(fn_rest_ac);
+                    if (!params_ac.ok())
+                        return ParseResult<std::vector<ClassMethod>>::Err(params_ac.error());
+                    bool saved_gen_ac = in_generator_function_;
+                    bool saved_async_ac = in_async_function_;
+                    in_generator_function_ = false;
+                    in_async_function_ = false;
+                    auto body_ac = parse_function_body();
+                    in_generator_function_ = saved_gen_ac;
+                    in_async_function_ = saved_async_ac;
+                    if (!body_ac.ok())
+                        return ParseResult<std::vector<ClassMethod>>::Err(body_ac.error());
+                    uint32_t prop_end = range_end(body_ac.value().second);
+                    auto body_ptr = std::make_shared<std::vector<StmtNode>>(
+                        std::move(body_ac.value().first));
+                    MethodKind mk = (mod == "get") ? MethodKind::kGetter : MethodKind::kSetter;
+                    ClassMethod m;
+                    m.key = key_res.value().key;
+                    m.computed = key_res.value().computed;
+                    if (m.computed) m.key_expr = std::move(key_res.value().key_expr);
+                    m.method_kind = mk;
+                    m.is_static = is_static;
+                    m.fn_expr = std::make_unique<ExprNode>(ExprNode{FunctionExpression{
+                        m.computed ? std::optional<std::string>{} : std::optional<std::string>{m.key},
+                        std::move(params_ac.value()), std::move(fn_rest_ac),
+                        std::move(body_ptr), span(member_start, prop_end)}});
+                    methods.push_back(std::move(m));
+                    if (cur.kind == TokenKind::Semicolon) advance();
+                    continue;
+                }
+                // get/set 作为方法名（回退处理）
+                // cur 已 advance 到 get/set 之后，需要把它当 key
+                // 重新构造 key_res
+                ClassKeyResult key_res2;
+                key_res2.key = mod;
+                key_res2.start = mod_tok.range.offset;
+                // 解析方法体
+                std::optional<std::string> fn_rest_m;
+                auto params_m = parse_function_params(fn_rest_m);
+                if (!params_m.ok())
+                    return ParseResult<std::vector<ClassMethod>>::Err(params_m.error());
+                bool saved_gen_m = in_generator_function_;
+                bool saved_async_m = in_async_function_;
+                in_generator_function_ = false;
+                in_async_function_ = false;
+                auto body_m = parse_function_body();
+                in_generator_function_ = saved_gen_m;
+                in_async_function_ = saved_async_m;
+                if (!body_m.ok())
+                    return ParseResult<std::vector<ClassMethod>>::Err(body_m.error());
+                uint32_t prop_end = range_end(body_m.value().second);
+                auto body_ptr = std::make_shared<std::vector<StmtNode>>(
+                    std::move(body_m.value().first));
+                ClassMethod m;
+                m.key = key_res2.key;
+                m.method_kind = MethodKind::kMethod;
+                m.is_static = is_static;
+                m.fn_expr = std::make_unique<ExprNode>(ExprNode{FunctionExpression{
+                    std::optional<std::string>{m.key},
+                    std::move(params_m.value()), std::move(fn_rest_m),
+                    std::move(body_ptr), span(member_start, prop_end)}});
+                methods.push_back(std::move(m));
+                if (cur.kind == TokenKind::Semicolon) advance();
+                continue;
+            }
+
+            // async method
+            if (cur.kind == TokenKind::Ident && token_text(cur) == "async" && !got_lf) {
+                advance();  // 消费 async
+                if (cur.kind != TokenKind::LParen && cur.kind != TokenKind::Comma &&
+                    cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Semicolon) {
+                    bool is_gen = (cur.kind == TokenKind::Star);
+                    if (is_gen) advance();
+                    auto key_res = parse_class_member_key();
+                    if (!key_res.ok())
+                        return ParseResult<std::vector<ClassMethod>>::Err(key_res.error());
+                    std::optional<std::string> fn_rest_am;
+                    auto params_am = parse_function_params(fn_rest_am);
+                    if (!params_am.ok())
+                        return ParseResult<std::vector<ClassMethod>>::Err(params_am.error());
+                    bool saved_gen_am = in_generator_function_;
+                    bool saved_async_am = in_async_function_;
+                    in_generator_function_ = is_gen;
+                    in_async_function_ = true;
+                    auto body_am = parse_function_body();
+                    in_generator_function_ = saved_gen_am;
+                    in_async_function_ = saved_async_am;
+                    if (!body_am.ok())
+                        return ParseResult<std::vector<ClassMethod>>::Err(body_am.error());
+                    uint32_t prop_end = range_end(body_am.value().second);
+                    auto body_ptr = std::make_shared<std::vector<StmtNode>>(
+                        std::move(body_am.value().first));
+                    ClassMethod m;
+                    m.key = key_res.value().key;
+                    m.computed = key_res.value().computed;
+                    if (m.computed) m.key_expr = std::move(key_res.value().key_expr);
+                    m.method_kind = MethodKind::kAsyncMethod;
+                    m.is_static = is_static;
+                    m.fn_expr = std::make_unique<ExprNode>(ExprNode{AsyncFunctionExpression{
+                        m.computed ? std::optional<std::string>{} : std::optional<std::string>{m.key},
+                        std::move(params_am.value()), std::move(fn_rest_am),
+                        std::move(body_ptr), span(member_start, prop_end)}});
+                    methods.push_back(std::move(m));
+                    if (cur.kind == TokenKind::Semicolon) advance();
+                    continue;
+                }
+                // async 作为方法名（回退）
+                // 已消费 async，把 "async" 当做 key
+                std::optional<std::string> fn_rest_na;
+                auto params_na = parse_function_params(fn_rest_na);
+                if (!params_na.ok())
+                    return ParseResult<std::vector<ClassMethod>>::Err(params_na.error());
+                bool saved_gen_na = in_generator_function_;
+                bool saved_async_na = in_async_function_;
+                in_generator_function_ = false;
+                in_async_function_ = false;
+                auto body_na = parse_function_body();
+                in_generator_function_ = saved_gen_na;
+                in_async_function_ = saved_async_na;
+                if (!body_na.ok())
+                    return ParseResult<std::vector<ClassMethod>>::Err(body_na.error());
+                uint32_t prop_end = range_end(body_na.value().second);
+                auto body_ptr = std::make_shared<std::vector<StmtNode>>(
+                    std::move(body_na.value().first));
+                ClassMethod m;
+                m.key = "async";
+                m.method_kind = MethodKind::kMethod;
+                m.is_static = is_static;
+                m.fn_expr = std::make_unique<ExprNode>(ExprNode{FunctionExpression{
+                    std::optional<std::string>{"async"},
+                    std::move(params_na.value()), std::move(fn_rest_na),
+                    std::move(body_ptr), span(member_start, prop_end)}});
+                methods.push_back(std::move(m));
+                if (cur.kind == TokenKind::Semicolon) advance();
+                continue;
+            }
+
+            // generator method *key() {}
+            if (cur.kind == TokenKind::Star) {
+                advance();  // 消费 *
+                auto key_res = parse_class_member_key();
+                if (!key_res.ok())
+                    return ParseResult<std::vector<ClassMethod>>::Err(key_res.error());
+                std::optional<std::string> fn_rest_gm;
+                auto params_gm = parse_function_params(fn_rest_gm);
+                if (!params_gm.ok())
+                    return ParseResult<std::vector<ClassMethod>>::Err(params_gm.error());
+                bool saved_gen_gm = in_generator_function_;
+                bool saved_async_gm = in_async_function_;
+                in_generator_function_ = true;
+                in_async_function_ = false;
+                auto body_gm = parse_function_body();
+                in_generator_function_ = saved_gen_gm;
+                in_async_function_ = saved_async_gm;
+                if (!body_gm.ok())
+                    return ParseResult<std::vector<ClassMethod>>::Err(body_gm.error());
+                uint32_t prop_end = range_end(body_gm.value().second);
+                auto body_ptr = std::make_shared<std::vector<StmtNode>>(
+                    std::move(body_gm.value().first));
+                ClassMethod m;
+                m.key = key_res.value().key;
+                m.computed = key_res.value().computed;
+                if (m.computed) m.key_expr = std::move(key_res.value().key_expr);
+                m.method_kind = MethodKind::kGenerator;
+                m.is_static = is_static;
+                m.fn_expr = std::make_unique<ExprNode>(ExprNode{FunctionExpression{
+                    m.computed ? std::optional<std::string>{} : std::optional<std::string>{m.key},
+                    std::move(params_gm.value()), std::move(fn_rest_gm),
+                    std::move(body_ptr), span(member_start, prop_end)}});
+                m.fn_expr->v = [&]() -> decltype(m.fn_expr->v) {
+                    auto& fe = std::get<FunctionExpression>(m.fn_expr->v);
+                    fe.is_generator = true;
+                    return std::move(m.fn_expr->v);
+                }();
+                methods.push_back(std::move(m));
+                if (cur.kind == TokenKind::Semicolon) advance();
+                continue;
+            }
+
+            // 普通方法（含 constructor）
+            auto key_res = parse_class_member_key();
+            if (!key_res.ok())
+                return ParseResult<std::vector<ClassMethod>>::Err(key_res.error());
+
+            // 方法体（必须跟 (
+            if (cur.kind != TokenKind::LParen) {
+                return ParseResult<std::vector<ClassMethod>>::Err(
+                    make_parse_error(source, cur, "expected '(' in class method definition"));
+            }
+            std::optional<std::string> fn_rest_nm;
+            auto params_nm = parse_function_params(fn_rest_nm);
+            if (!params_nm.ok())
+                return ParseResult<std::vector<ClassMethod>>::Err(params_nm.error());
+            bool saved_gen_nm = in_generator_function_;
+            bool saved_async_nm = in_async_function_;
+            in_generator_function_ = false;
+            in_async_function_ = false;
+            auto body_nm = parse_function_body();
+            in_generator_function_ = saved_gen_nm;
+            in_async_function_ = saved_async_nm;
+            if (!body_nm.ok())
+                return ParseResult<std::vector<ClassMethod>>::Err(body_nm.error());
+            uint32_t prop_end = range_end(body_nm.value().second);
+            auto body_ptr = std::make_shared<std::vector<StmtNode>>(
+                std::move(body_nm.value().first));
+            ClassMethod m;
+            m.key = key_res.value().key;
+            m.computed = key_res.value().computed;
+            if (m.computed) m.key_expr = std::move(key_res.value().key_expr);
+            // constructor 用 kData 标记（method_kind kData = constructor 入口）
+            bool is_ctor = (!m.computed && m.key == "constructor" && !is_static);
+            m.method_kind = is_ctor ? MethodKind::kData : MethodKind::kMethod;
+            m.is_static = is_static;
+            m.fn_expr = std::make_unique<ExprNode>(ExprNode{FunctionExpression{
+                m.computed ? std::optional<std::string>{} : std::optional<std::string>{m.key},
+                std::move(params_nm.value()), std::move(fn_rest_nm),
+                std::move(body_ptr), span(member_start, prop_end)}});
+            methods.push_back(std::move(m));
+            if (cur.kind == TokenKind::Semicolon) advance();
+        }
+
+        auto rb = expect(TokenKind::RBrace);
+        if (!rb.ok()) return ParseResult<std::vector<ClassMethod>>::Err(rb.error());
+
+        return ParseResult<std::vector<ClassMethod>>::Ok(std::move(methods));
+    }
+
+    // 解析 class 声明或表达式的公共部分（extends + body）
+    // class_start: class 关键字起始位置
+    // name: 可选类名（已消费）
+    // 返回 ClassExpression（以 StmtNode 路径时调用者将其转为 ClassDeclaration）
+    // cur 指向 extends 或 {
+    struct ClassCommonResult {
+        std::optional<std::unique_ptr<ExprNode>> super_class;
+        std::vector<ClassMethod> methods;
+        uint32_t end = 0;
+    };
+
+    ParseResult<ClassCommonResult> parse_class_common() {
+        ClassCommonResult res;
+        // extends 子句
+        if (cur.kind == TokenKind::KwExtends) {
+            advance();  // 消费 extends
+            // 解析父类表达式（优先级 20，不包含逗号和赋值）
+            auto super_expr = parse_expr(19);
+            if (!super_expr.ok())
+                return ParseResult<ClassCommonResult>::Err(super_expr.error());
+            res.super_class = std::make_unique<ExprNode>(std::move(super_expr.value()));
+        }
+        // 解析 class body
+        auto body_r = parse_class_body(0);
+        if (!body_r.ok()) return ParseResult<ClassCommonResult>::Err(body_r.error());
+        res.methods = std::move(body_r.value());
+        res.end = cur.range.offset;
+        return ParseResult<ClassCommonResult>::Ok(std::move(res));
+    }
+
     ParseResult<StmtNode> parse_function_decl_stmt() {
         // cur 是 KwFunction
         Token kw = cur;
@@ -3365,6 +3837,26 @@ struct Parser {
                 return parse_return_stmt();
             case TokenKind::KwFunction:
                 return parse_function_decl_stmt();
+            case TokenKind::KwClass: {
+                // class 声明 class Name [extends super] { ... }
+                Token class_tok = cur;
+                advance();  // 消费 class
+                if (cur.kind != TokenKind::Ident) {
+                    return ParseResult<StmtNode>::Err(
+                        make_parse_error(source, cur, "expected class name"));
+                }
+                std::string class_name{token_text(cur)};
+                advance();
+                auto common_r = parse_class_common();
+                if (!common_r.ok()) return ParseResult<StmtNode>::Err(common_r.error());
+                uint32_t cls_end = common_r.value().end;
+                ClassDeclaration cdecl;
+                cdecl.name = std::move(class_name);
+                cdecl.super_class = std::move(common_r.value().super_class);
+                cdecl.methods = std::move(common_r.value().methods);
+                cdecl.range = span(class_tok.range.offset, cls_end);
+                return ParseResult<StmtNode>::Ok(StmtNode{std::move(cdecl)});
+            }
             case TokenKind::KwThrow:
                 return parse_throw_stmt();
             case TokenKind::KwTry:

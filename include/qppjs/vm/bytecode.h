@@ -25,6 +25,9 @@ struct BytecodeFunction {
     bool is_arrow = false;                                       // true for arrow functions
     bool is_method = false;                                      // true for object literal method shorthand
     bool is_generator = false;                                   // true for generator functions (function*)
+    bool is_class_ctor = false;                                  // true for class constructor
+    bool is_derived_ctor = false;                                // true for derived class constructor
+    bool is_implicit_derived_ctor = false;                       // true for implicit derived ctor (auto super)
     std::optional<std::string> rest_param;                       // rest parameter name (...args)
     std::shared_ptr<std::vector<ParamDef>> param_defs;           // parameter default value definitions
     uint16_t length_count = 0;                                   // number of params before first default

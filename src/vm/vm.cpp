@@ -2005,12 +2005,36 @@ void VM::init_global_env() {
         return EvalResult::ok(args[0]);
     });
 
+    // Build Object.getPrototypeOf
+    auto get_proto_vm_fn = RcPtr<JSFunction>::make();
+    get_proto_vm_fn->set_name(std::string("getPrototypeOf"));
+    get_proto_vm_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_object()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Object.getPrototypeOf called on non-object");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        RcObject* raw = args[0].as_object_raw();
+        if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+            auto* obj = static_cast<JSObject*>(raw);
+            if (obj->proto()) return EvalResult::ok(Value::object(ObjectPtr(obj->proto())));
+            return EvalResult::ok(Value::null());
+        }
+        if (raw->object_kind() == ObjectKind::kFunction) {
+            if (function_prototype_) return EvalResult::ok(Value::object(ObjectPtr(function_prototype_)));
+            return EvalResult::ok(Value::null());
+        }
+        return EvalResult::ok(Value::null());
+    });
+    gc_heap_.Register(get_proto_vm_fn.get());
+
     object_constructor_->set_property("keys", Value::object(ObjectPtr(keys_fn)));
     object_constructor_->set_property("assign", Value::object(ObjectPtr(assign_fn)));
     object_constructor_->set_property("create", Value::object(ObjectPtr(create_fn)));
     object_constructor_->set_property("defineProperty", Value::object(ObjectPtr(define_property_fn)));
     object_constructor_->set_property("getOwnPropertyDescriptor", Value::object(ObjectPtr(get_own_prop_desc_fn)));
     object_constructor_->set_property("preventExtensions", Value::object(ObjectPtr(prevent_extensions_fn)));
+    object_constructor_->set_property("getPrototypeOf", Value::object(ObjectPtr(get_proto_vm_fn)));
 
     global_env_->define_initialized("Object");
     global_env_->set("Object", Value::object(ObjectPtr(object_constructor_)));
@@ -3937,6 +3961,8 @@ EvalResult VM::exec(std::shared_ptr<BytecodeFunction> bytecode) {
             add_obj(cf.env.get());
             add_val(cf.this_val);
             add_val(cf.new_instance);
+            add_val(cf.new_target_val);
+            if (cf.current_fn_holder) add_obj(cf.current_fn_holder.get());
             for (const auto& v : cf.stack) add_val(v);
             if (cf.pending_throw.has_value()) add_val(*cf.pending_throw);
             if (cf.caught_exception.has_value()) add_val(*cf.caught_exception);
@@ -4087,6 +4113,8 @@ EvalResult VM::push_call_frame(RcPtr<JSFunction> fn, Value this_val, std::span<V
     frame.is_new_call = is_new;
     if (is_new) frame.new_instance = std::move(new_instance);
     frame.current_module = fn->defining_module();
+    frame.current_fn_holder = fn;  // keep function alive via RcPtr
+    frame.current_fn = fn.get();   // raw pointer for fast access
 
     // Generator function: create generator object without executing the body
     if (bc->is_generator) {
@@ -4304,6 +4332,13 @@ EvalResult VM::run(size_t exit_depth) {
         }
 
         case Opcode::kLoadThis:
+            // Derived constructor: accessing 'this' before super() throws ReferenceError
+            if (frame.current_fn && frame.current_fn->is_derived_ctor() &&
+                !frame.derived_this_initialized) {
+                frame.pending_throw = make_error_value(NativeErrorType::kReferenceError,
+                    "Must call super constructor in derived class before accessing 'this'");
+                continue;
+            }
             stack.push_back(frame.this_val);
             break;
 
@@ -5379,7 +5414,7 @@ EvalResult VM::run(size_t exit_depth) {
                     "Cannot set property '" + name + "' on non-object");
                 continue;
             }
-            // Handle JSFunction specially (e.g., Fn.prototype = ...)
+            // Handle JSFunction specially (e.g., Fn.prototype = ..., static methods)
             RcObject* raw_set = obj_val.as_object_raw();
             if (raw_set->object_kind() == ObjectKind::kFunction) {
                 auto* fn = static_cast<JSFunction*>(raw_set);
@@ -5388,8 +5423,10 @@ EvalResult VM::run(size_t exit_depth) {
                     if (proto_raw && proto_raw->object_kind() == ObjectKind::kOrdinary) {
                         fn->set_prototype_obj(RcPtr<JSObject>(static_cast<JSObject*>(proto_raw)));
                     }
+                } else {
+                    // Store as own property (e.g., static class methods)
+                    fn->set_property(name, val);
                 }
-                // Other properties on functions are silently ignored for now
                 stack.push_back(std::move(val));
                 break;
             }
@@ -5975,6 +6012,13 @@ EvalResult VM::run(size_t exit_depth) {
                 continue;
             }
             auto fn = RcPtr<JSFunction>(static_cast<JSFunction*>(call_raw));
+            // Class constructor cannot be called without 'new'
+            if (fn->is_class_ctor()) {
+                std::string fn_name = fn->name().has_value() ? *fn->name() : "class";
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Class constructor " + fn_name + " cannot be invoked without 'new'");
+                continue;
+            }
             if (fn->is_native()) {
                 auto res = fn->native_fn()(Value::undefined(), std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/false);
                 if (!res.is_ok()) {
@@ -6040,6 +6084,13 @@ EvalResult VM::run(size_t exit_depth) {
                 continue;
             }
             auto fn = RcPtr<JSFunction>(static_cast<JSFunction*>(callm_raw));
+            // Class constructor cannot be called without 'new'
+            if (fn->is_class_ctor()) {
+                std::string fn_name = fn->name().has_value() ? *fn->name() : "class";
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "Class constructor " + fn_name + " cannot be invoked without 'new'");
+                continue;
+            }
             if (fn->is_native()) {
                 auto res = fn->native_fn()(receiver, std::vector<Value>(args.begin(), args.end()), /*is_new_call=*/false);
                 if (!res.is_ok()) {
@@ -6153,6 +6204,11 @@ EvalResult VM::run(size_t exit_depth) {
             Value instance_val = Value::object(ObjectPtr(instance));
             Value instance_copy = instance_val;  // keep a copy for do_new logic
 
+            // Class constructor: check for direct call without new (already handled above)
+            // Check for implicit derived ctor: need to call super with all args
+            const auto& ctor_bc_ptr = fn->bytecode();
+            bool is_implicit_derived = ctor_bc_ptr && ctor_bc_ptr->is_implicit_derived_ctor;
+
             auto push_res = push_call_frame(fn, instance_val, args,
                                             /*is_new=*/true, std::move(instance_copy));
             if (!push_res.is_ok()) {
@@ -6162,6 +6218,46 @@ EvalResult VM::run(size_t exit_depth) {
                 frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
                 continue;
             }
+            // Set new.target on the new frame to be the constructor function
+            call_stack_.back().new_target_val = ctor_val;
+
+            // Implicit derived ctor: auto-call super with all args before executing body
+            if (is_implicit_derived && fn->fn_ctor_proto()) {
+                // Get the rest args array (bound as $__class_impl_args__)
+                // It's already bound in the frame's env. Pop all args from the rest param.
+                std::vector<Value> super_args_vec(args.begin(), args.end());
+                JSFunction* super_ctor_ic = fn->fn_ctor_proto();
+                RcPtr<JSFunction> super_fn_ic(super_ctor_ic);
+                // Create new_obj with new_target prototype
+                RcPtr<JSObject> nt_proto_ic;
+                if (ctor_val.is_object() && ctor_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                    nt_proto_ic = static_cast<JSFunction*>(ctor_val.as_object_raw())->prototype_obj();
+                }
+                auto new_obj_ic = RcPtr<JSObject>::make();
+                gc_heap_.Register(new_obj_ic.get());
+                if (nt_proto_ic) new_obj_ic->set_proto(nt_proto_ic);
+                else new_obj_ic->set_proto(object_prototype_);
+                Value new_obj_ic_val = Value::object(ObjectPtr(new_obj_ic));
+
+                auto push_super_ic = push_call_frame(super_fn_ic, new_obj_ic_val,
+                    std::span<Value>(super_args_vec.data(), super_args_vec.size()), false);
+                if (push_super_ic.is_ok()) {
+                    call_stack_.back().new_target_val = ctor_val;
+                    size_t super_exit_ic = call_stack_.size() - 1;
+                    EvalResult super_res_ic = run(super_exit_ic);
+                    if (super_res_ic.is_ok()) {
+                        Value super_ret_ic = super_res_ic.value();
+                        Value new_this_ic = (super_ret_ic.is_object() && !super_ret_ic.is_null())
+                            ? std::move(super_ret_ic) : std::move(new_obj_ic_val);
+                        // Update the implicit ctor frame's this_val and new_instance
+                        auto& implicit_frame = call_stack_.back();
+                        implicit_frame.this_val = new_this_ic;
+                        implicit_frame.new_instance = new_this_ic;
+                        implicit_frame.derived_this_initialized = true;
+                    }
+                    // If super failed, the frame's pending_throw will handle it
+                }
+            }
             break;
         }
 
@@ -6169,6 +6265,15 @@ EvalResult VM::run(size_t exit_depth) {
             Value ret = std::move(stack.back());
             stack.pop_back();
             bool is_new = frame.is_new_call;
+            // M4: derived ctor returning non-object without calling super() → ReferenceError
+            if (is_new && frame.current_fn && frame.current_fn->is_derived_ctor() &&
+                !frame.derived_this_initialized && !(ret.is_object() && !ret.is_null())) {
+                frame.pending_throw = make_error_value(NativeErrorType::kReferenceError,
+                    "Must call super constructor in derived class before returning from derived constructor");
+                // put ret back and let pending_throw handler deal with it
+                stack.push_back(std::move(ret));
+                continue;
+            }
             Value instance = is_new ? std::move(frame.new_instance) : Value::undefined();
             call_stack_.pop_back();
             call_depth_--;
@@ -6191,6 +6296,13 @@ EvalResult VM::run(size_t exit_depth) {
 
         case Opcode::kReturnUndefined: {
             bool is_new = frame.is_new_call;
+            // M4: derived ctor returning undefined without calling super() → ReferenceError
+            if (is_new && frame.current_fn && frame.current_fn->is_derived_ctor() &&
+                !frame.derived_this_initialized) {
+                frame.pending_throw = make_error_value(NativeErrorType::kReferenceError,
+                    "Must call super constructor in derived class before returning from derived constructor");
+                continue;
+            }
             Value instance = is_new ? std::move(frame.new_instance) : Value::undefined();
             call_stack_.pop_back();
             call_depth_--;
@@ -6732,6 +6844,367 @@ EvalResult VM::run(size_t exit_depth) {
             } else {
                 stack.push_back(Value::undefined());
             }
+            break;
+        }
+
+        case Opcode::kGetNewTarget: {
+            // new.target: push the new_target_val stored in the current CallFrame
+            stack.push_back(frame.new_target_val);
+            break;
+        }
+
+        case Opcode::kMakeClass: {
+            // Stack: [super_or_undef]
+            // fn_idx: constructor BytecodeFunction index
+            uint16_t fn_idx = read_u16(bc, pc);
+            const auto& fn_bc = bc->functions[fn_idx];
+
+            Value super_val = std::move(stack.back());
+            stack.pop_back();
+
+            // Validate super class if provided
+            JSFunction* super_fn = nullptr;
+            RcPtr<JSObject> super_proto;
+            bool vm_extends_null = false;  // M3: class C extends null {}
+            if (!super_val.is_undefined()) {
+                if (super_val.is_null()) {
+                    // M3: extends null — proto gets null prototype, no super ctor
+                    vm_extends_null = true;
+                } else if (!super_val.is_object() ||
+                    super_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                    frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                        "Class extends value is not a constructor or null");
+                    continue;
+                } else {
+                    super_fn = static_cast<JSFunction*>(super_val.as_object_raw());
+                    super_proto = super_fn->prototype_obj();
+                }
+            }
+
+            // Create ctor function
+            auto fn = RcPtr<JSFunction>::make();
+            fn->set_name(fn_bc->name);
+            fn->set_params(fn_bc->params);
+            fn->set_rest_param(fn_bc->rest_param);
+            fn->set_property("length", Value::number(static_cast<double>(fn_bc->length_count)));
+            fn->set_property("name", Value::string(fn_bc->name.value_or("")));
+            if (fn_bc->param_defs) fn->set_param_defs(fn_bc->param_defs);
+            fn->set_bytecode(fn_bc);
+            fn->set_closure_env(env);
+            fn->set_is_class_ctor(true);
+            // M3: extends null → treat as base class (no super ctor to call)
+            fn->set_is_derived_ctor(fn_bc->is_derived_ctor && !vm_extends_null);
+            if (super_fn) {
+                fn->set_fn_ctor_proto(super_fn);
+            }
+
+            // Create prototype object
+            auto proto_obj = RcPtr<JSObject>::make();
+            if (vm_extends_null) {
+                // M3: extends null → C.prototype.[[Prototype]] = null (empty RcPtr)
+                proto_obj->set_proto(RcPtr<JSObject>{});
+            } else if (super_proto) {
+                proto_obj->set_proto(super_proto);
+            } else {
+                proto_obj->set_proto(object_prototype_);
+            }
+            proto_obj->set_constructor_property(fn.get());
+            fn->set_prototype_obj(proto_obj);
+
+            gc_heap_.Register(fn.get());
+            gc_heap_.Register(proto_obj.get());
+            stack.push_back(Value::object(ObjectPtr(fn)));
+            break;
+        }
+
+        case Opcode::kSuperCall: {
+            // super(...args) — call parent class constructor
+            uint8_t argc = read_u8(bc, pc);
+            constexpr int kSmallArgBuf2 = 8;
+            Value small_buf2[kSmallArgBuf2];
+            std::vector<Value> large_buf2;
+            Value* arg_data2;
+            if (argc <= kSmallArgBuf2) {
+                for (int i = argc - 1; i >= 0; --i)
+                    small_buf2[i] = std::move(stack[stack.size() - argc + i]);
+                stack.resize(stack.size() - argc);
+                arg_data2 = small_buf2;
+            } else {
+                large_buf2.resize(argc);
+                for (int i = argc - 1; i >= 0; --i)
+                    large_buf2[i] = std::move(stack[stack.size() - argc + i]);
+                stack.resize(stack.size() - argc);
+                arg_data2 = large_buf2.data();
+            }
+            std::span<Value> super_args(arg_data2, argc);
+
+            // Get current function from frame
+            JSFunction* active_fn = frame.current_fn;
+            if (!active_fn) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "super() called outside a constructor");
+                continue;
+            }
+            JSFunction* super_ctor = active_fn->fn_ctor_proto();
+            if (!super_ctor) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "super() called in a non-derived constructor");
+                continue;
+            }
+
+            // new.target prototype to create the instance
+            Value new_target = frame.new_target_val;
+            RcPtr<JSObject> new_proto;
+            if (new_target.is_object() &&
+                new_target.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                auto* nt_fn = static_cast<JSFunction*>(new_target.as_object_raw());
+                new_proto = nt_fn->prototype_obj();
+            }
+
+            auto new_obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(new_obj.get());
+            if (new_proto) {
+                new_obj->set_proto(new_proto);
+            } else {
+                new_obj->set_proto(object_prototype_);
+            }
+            Value new_obj_val = Value::object(ObjectPtr(new_obj));
+
+            // Call super_ctor with new_obj as 'this'
+            RcPtr<JSFunction> super_fn_rc(super_ctor);
+            auto push_super = push_call_frame(super_fn_rc, new_obj_val, super_args, false);
+            if (!push_super.is_ok()) {
+                const std::string& msg = push_super.error().message();
+                NativeErrorType err_type = NativeErrorType::kTypeError;
+                frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                continue;
+            }
+            // Pass new_target down to super ctor
+            call_stack_.back().new_target_val = new_target;
+
+            size_t super_exit_depth = call_stack_.size() - 1;
+            EvalResult super_result = run(super_exit_depth);
+
+            // Refresh frame reference after run()
+            auto& cur_frame = call_stack_.back();
+            if (!super_result.is_ok()) {
+                cur_frame.pending_throw = Value::string(super_result.error().message());
+                continue;
+            }
+            Value super_ret = super_result.value();
+            // If super returned an object, use it; otherwise use new_obj
+            Value new_this = (super_ret.is_object() && !super_ret.is_null())
+                ? std::move(super_ret)
+                : std::move(new_obj_val);
+            cur_frame.this_val = new_this;
+            cur_frame.new_instance = new_this;  // update new_instance so kReturn uses the correct object
+            cur_frame.derived_this_initialized = true;
+            // super() returns undefined
+            cur_frame.stack.push_back(Value::undefined());
+            break;
+        }
+
+        case Opcode::kSuperGetProp: {
+            uint16_t name_idx = read_u16(bc, pc);
+            const std::string& prop_name = bc->names[name_idx];
+            JSFunction* cur_fn = frame.current_fn;
+            if (!cur_fn || !cur_fn->home_object()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "super property access outside method");
+                continue;
+            }
+            JSObject* home = cur_fn->home_object();
+            // M5: walk prototype chain starting from H.__proto__, call accessor getter if found
+            RcObject* proto_raw = home->proto().get();
+            Value result_val = Value::undefined();
+            bool accessor_error = false;
+            while (proto_raw) {
+                if (proto_raw->object_kind() == ObjectKind::kOrdinary ||
+                    proto_raw->object_kind() == ObjectKind::kArray) {
+                    auto* proto_obj = static_cast<JSObject*>(proto_raw);
+                    const auto* entry = proto_obj->get_own_entry(prop_name);
+                    if (entry) {
+                        if ((entry->flags & kPropIsAccessor) && !entry->getter.is_undefined()) {
+                            // Call getter with current this (frame.this_val) as receiver
+                            Value getter_copy = entry->getter;
+                            if (!getter_copy.is_object() ||
+                                getter_copy.as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                                break;
+                            }
+                            auto* getter_fn = static_cast<JSFunction*>(getter_copy.as_object_raw());
+                            auto getter_fn_rc = RcPtr<JSFunction>(getter_fn);
+                            size_t getter_exit = call_stack_.size();
+                            auto push_res2 = push_call_frame(getter_fn_rc, frame.this_val, std::span<Value>{});
+                            if (!push_res2.is_ok()) {
+                                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                                    "super getter call failed");
+                                accessor_error = true;
+                                break;
+                            }
+                            if (!push_res2.value().is_undefined()) {
+                                result_val = push_res2.value();
+                            } else {
+                                auto getter_res = run(getter_exit);
+                                if (!getter_res.is_ok()) {
+                                    frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                                        "super getter threw");
+                                    accessor_error = true;
+                                    break;
+                                }
+                                result_val = getter_res.value();
+                            }
+                        } else {
+                            result_val = entry->value;
+                        }
+                        break;
+                    }
+                    proto_raw = proto_obj->proto().get();
+                } else {
+                    break;
+                }
+            }
+            if (accessor_error) continue;
+            stack.push_back(std::move(result_val));
+            break;
+        }
+
+        case Opcode::kSuperGetElem: {
+            Value key = std::move(stack.back());
+            stack.pop_back();
+            std::string key_str = to_string_val(key);
+            JSFunction* cur_fn2 = frame.current_fn;
+            if (!cur_fn2 || !cur_fn2->home_object()) {
+                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                    "super property access outside method");
+                continue;
+            }
+            JSObject* home2 = cur_fn2->home_object();
+            // M5: walk prototype chain starting from H.__proto__, call accessor getter if found
+            RcObject* proto_raw2 = home2->proto().get();
+            Value result_val2 = Value::undefined();
+            bool accessor_error2 = false;
+            while (proto_raw2) {
+                if (proto_raw2->object_kind() == ObjectKind::kOrdinary ||
+                    proto_raw2->object_kind() == ObjectKind::kArray) {
+                    auto* proto_obj2 = static_cast<JSObject*>(proto_raw2);
+                    const auto* entry2 = proto_obj2->get_own_entry(key_str);
+                    if (entry2) {
+                        if ((entry2->flags & kPropIsAccessor) && !entry2->getter.is_undefined()) {
+                            Value getter_copy2 = entry2->getter;
+                            if (!getter_copy2.is_object() ||
+                                getter_copy2.as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                                break;
+                            }
+                            auto* getter_fn2 = static_cast<JSFunction*>(getter_copy2.as_object_raw());
+                            auto getter_fn_rc2 = RcPtr<JSFunction>(getter_fn2);
+                            size_t getter_exit2 = call_stack_.size();
+                            auto push_res3 = push_call_frame(getter_fn_rc2, frame.this_val, std::span<Value>{});
+                            if (!push_res3.is_ok()) {
+                                frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                                    "super getter call failed");
+                                accessor_error2 = true;
+                                break;
+                            }
+                            if (!push_res3.value().is_undefined()) {
+                                result_val2 = push_res3.value();
+                            } else {
+                                auto getter_res2 = run(getter_exit2);
+                                if (!getter_res2.is_ok()) {
+                                    frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
+                                        "super getter threw");
+                                    accessor_error2 = true;
+                                    break;
+                                }
+                                result_val2 = getter_res2.value();
+                            }
+                        } else {
+                            result_val2 = entry2->value;
+                        }
+                        break;
+                    }
+                    proto_raw2 = proto_obj2->proto().get();
+                } else {
+                    break;
+                }
+            }
+            if (accessor_error2) continue;
+            stack.push_back(std::move(result_val2));
+            break;
+        }
+
+        case Opcode::kDefineClassMethod: {
+            // Stack: [obj, fn] — define non-enumerable method on obj, push fn back
+            uint16_t idx = read_u16(bc, pc);
+            const std::string& name = bc->names[idx];
+            Value fn_val = std::move(stack.back());
+            stack.pop_back();
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            if (obj_val.is_object()) {
+                RcObject* raw = obj_val.as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary ||
+                    raw->object_kind() == ObjectKind::kArray) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    PropDesc desc;
+                    desc.value = fn_val;
+                    desc.writable = true;
+                    desc.enumerable = false;
+                    desc.configurable = true;
+                    obj->define_property(name, desc);
+                }
+            }
+            stack.push_back(std::move(fn_val));
+            break;
+        }
+
+        case Opcode::kDefineComputedClassMethod: {
+            // Stack: [obj, key, fn] — define non-enumerable method on obj with computed key
+            Value fn_val = std::move(stack.back());
+            stack.pop_back();
+            Value key_val = std::move(stack.back());
+            stack.pop_back();
+            Value obj_val = std::move(stack.back());
+            stack.pop_back();
+            std::string key_str = to_string_val(key_val);
+            if (obj_val.is_object()) {
+                RcObject* raw = obj_val.as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary ||
+                    raw->object_kind() == ObjectKind::kArray) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    PropDesc desc;
+                    desc.value = fn_val;
+                    desc.writable = true;
+                    desc.enumerable = false;
+                    desc.configurable = true;
+                    obj->define_property(key_str, desc);
+                }
+            }
+            stack.push_back(std::move(fn_val));
+            break;
+        }
+
+        case Opcode::kSetHomeObject: {
+            // Stack: [..., obj, fn]  — sets fn->home_object = obj, stack unchanged
+            if (stack.size() < 2) break;
+            Value& fn_val2 = stack[stack.size() - 1];
+            Value& obj_val2 = stack[stack.size() - 2];
+            if (fn_val2.is_object() && fn_val2.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                auto* fn2 = static_cast<JSFunction*>(fn_val2.as_object_raw());
+                if (obj_val2.is_object()) {
+                    RcObject* obj_raw2 = obj_val2.as_object_raw();
+                    if (obj_raw2->object_kind() == ObjectKind::kOrdinary ||
+                        obj_raw2->object_kind() == ObjectKind::kArray) {
+                        fn2->set_home_object(static_cast<JSObject*>(obj_raw2));
+                    }
+                }
+            }
+            break;
+        }
+
+        case Opcode::kSetHomeObjectStatic: {
+            // Stack: [..., ctor, fn]  — no-op for now.
+            // static super requires home_object = ctor (JSFunction), but home_object_ is JSObject*.
+            // Until the architecture is extended, static super will throw TypeError at runtime.
             break;
         }
 
@@ -7429,6 +7902,8 @@ EvalResult VM::exec_module(const std::string& entry_path) {
             add_obj(cf.env.get());
             add_val(cf.this_val);
             add_val(cf.new_instance);
+            add_val(cf.new_target_val);
+            if (cf.current_fn_holder) add_obj(cf.current_fn_holder.get());
             for (const auto& v : cf.stack) add_val(v);
             if (cf.pending_throw.has_value()) add_val(*cf.pending_throw);
             if (cf.caught_exception.has_value()) add_val(*cf.caught_exception);

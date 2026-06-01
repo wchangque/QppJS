@@ -58,7 +58,13 @@ struct CallFrame {
     // Generator: owning generator object (non-owning raw pointer, GC managed).
     // Set when this frame belongs to an executing generator body.
     // JSGeneratorObject is forward-declared here; vm.cpp includes js_generator.h.
-    struct JSGeneratorObject* owning_generator = nullptr;
+    class JSGeneratorObject* owning_generator = nullptr;
+
+    // Class constructor state
+    Value new_target_val = Value::undefined();  // new.target value for this frame
+    bool derived_this_initialized = false;       // true after super() called in derived ctor
+    RcPtr<JSFunction> current_fn_holder;         // keeps current function alive for GC safety
+    JSFunction* current_fn = nullptr;            // non-owning pointer to current function (valid as long as current_fn_holder is held)
 };
 
 class VM {

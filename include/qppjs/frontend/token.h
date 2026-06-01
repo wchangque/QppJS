@@ -41,6 +41,9 @@ enum class TokenKind {
     KwInstanceof,
     KwImport,
     KwExport,
+    KwClass,
+    KwExtends,
+    KwSuper,
 
     // 标点
     LParen,

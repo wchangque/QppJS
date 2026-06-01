@@ -95,6 +95,14 @@ private:
     EvalResult eval_regex_literal(const RegexLiteral& expr);
     EvalResult eval_optional_chain(const OptionalChainExpression& expr);
     EvalResult eval_yield_expr(const YieldExpression& expr);
+    // Class support
+    EvalResult eval_class_common(const std::optional<std::unique_ptr<ExprNode>>& super_class,
+                                 const std::vector<ClassMethod>& methods,
+                                 const std::optional<std::string>& class_name);
+    EvalResult eval_class_expr(const ClassExpression& expr);
+    EvalResult eval_class_decl(const ClassDeclaration& stmt);
+    EvalResult eval_super_call(const SuperCallExpression& expr);
+    EvalResult eval_super_member(const SuperMemberExpression& expr);
     // Helper: property access on a pre-evaluated object value
     EvalResult eval_get_property_of(const Value& obj, const Value& key_val);
 
@@ -223,6 +231,11 @@ private:
     static constexpr int kMaxCallDepth = 500;
     ModuleRecord* current_module_ = nullptr;  // 当前正在执行的模块（非拥有指针）
     JSFunction* current_function_ = nullptr;  // 当前正在执行的函数（非拥有指针，用于 import.meta 词法绑定）
+
+    // Class constructor state: new.target and derived-this-initialized tracking
+    Value current_new_target_ = Value::undefined();  // new.target value
+    bool derived_this_initialized_ = false;           // true after super() called in derived ctor
+    Value last_new_this_ = Value::undefined();        // set by eval_super_call, read by eval_new_expr
 
     // Error prototype cache: indexed by NativeErrorType
     std::array<RcPtr<JSObject>, static_cast<size_t>(NativeErrorType::kCount)> error_protos_;

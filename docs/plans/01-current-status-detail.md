@@ -4,6 +4,32 @@
 
 ## 1. 已完成任务
 
+- [x] **JavaScript class 语法 Review 必修修复 M1-M6**（2026-06-01）：
+  - **M1（kSetHomeObjectStatic）**：VM 中 `kSetHomeObjectStatic` 错误地调用 `fn3->set_home_object(nullptr)` 清空了 home_object_。由于架构限制（home_object_ 类型为 JSObject*，无法持有 JSFunction 类型的 ctor），改为 no-op。static super 在当前架构下仍然不可用（会抛 TypeError），但不再错误清空。
+  - **M2（new.target 泄漏）**：`call_function` 非 new 调用路径未 save/restore `current_new_target_`，导致在 constructor 中调用普通函数时，普通函数能看到外层 ctor 的 new.target。修复：在非 native、非箭头函数路径引入 `NewTargetGuard`（RAII），非 new 调用时将 `current_new_target_` 设为 undefined，退出时自动恢复。箭头函数透传词法 new.target（保持 `!fn->is_arrow()` 条件）。
+  - **M3（extends null）**：Interpreter `eval_class_common` 和 VM `kMakeClass` 检测 `super_val.is_null()`，标记 `extends_null=true`：proto 的原型设为空 `RcPtr<JSObject>{}`（null 原型）；implicit ctor 退化为 base 风格（不调用 super）；`is_derived_ctor = false`（treat as base，避免 super() 必须调用的强制检查）。
+  - **M4（derived ctor missing super）**：Interpreter `eval_new_expr`：在 `call_function` 返回后、恢复 `derived_this_initialized_` 之前，检查 `derived_super_called`；若 is_derived_ctor 且未调用 super，抛 ReferenceError。VM `kReturn`/`kReturnUndefined`：在 pop frame 之前检查 `is_new && is_derived_ctor && !derived_this_initialized`，非对象 return 时 `frame.pending_throw = ReferenceError`。
+  - **M5（super.x accessor）**：Interpreter `eval_super_member` 改为遍历原型链，检查 `kPropIsAccessor` 标志，若是 accessor 则调用 getter（receiver = `current_this_`）。VM `kSuperGetProp`/`kSuperGetElem` 同样遍历原型链，检查 accessor，嵌套 `run(getter_exit)` 调用 getter 函数。
+  - **M6（class generator method）**：Interpreter `eval_class_common` 中，实例方法和 static 方法的 FunctionExpression 路径，在 `make_function_value` 之后检查 `fe.is_generator`，若为 true 则调用 `fn->set_is_generator(true)`。
+  - **测试**：CL-51 测试从"当前行为不崩溃"改为期望 `interp_throws`/`vm_throws`；新增 CL-52（M2 new.target 不泄漏）、CL-53（M3 extends null 不 TypeError）、CL-54（M5 super accessor getter）、CL-55（M6 class generator method）各 Interp+VM 对称，共 8 个新测试。
+  - **测试结果**：4346/4346 通过（coverage），4344/4344（ASAN），0 LSan 泄漏。
+  - **S1/S2 跳过**：class 方法/static 方法 enumerable=false 问题需要新增 opcode，超出最小改动范围，暂不修复。
+
+- [x] **JavaScript class 语法基础**（2026-06-01）：
+  - **AST**：新增 `ClassDeclaration`（StmtNode variant）、`ClassExpression`（ExprNode variant）、`ClassMethod`、`SuperCallExpression`（ExprNode variant）、`SuperMemberExpression`（ExprNode variant）；`MetaProperty` 新增 `MetaPropertyKind` 枚举区分 kImportMeta/kNewTarget。
+  - **Token**：新增 `KwClass`/`KwExtends`/`KwSuper` 三个关键字，`is_keyword` 范围扩展，lexer.cpp 注册。
+  - **JSFunction**：新增 `is_class_ctor_`/`is_derived_ctor_`/`home_object_`/`fn_ctor_proto_` 字段（后两者均为裸弱指针，不参与 RC）及对应 getter/setter。
+  - **BytecodeFunction**：新增 `is_class_ctor`/`is_derived_ctor`/`is_implicit_derived_ctor` 标志。
+  - **CallFrame (VM)**：新增 `new_target_val`/`derived_this_initialized`/`current_fn_holder`（RcPtr，GC 安全）/`current_fn`（裸指针，快速访问）；GC 根节点收集扩展（两处 CallFrame 遍历均补入）。
+  - **Opcode**：新增 `MakeClass(2)` / `GetNewTarget(0)` / `SuperCall(1)` / `SuperGetProp(2)` / `SuperGetElem(0)` / `SetHomeObject(0)` / `SetHomeObjectStatic(0)` / `DefineClassMethod(2)` / `DefineComputedClassMethod(0)` 共 9 条。
+  - **Parser**：`parse_class_body` 辅助函数完整支持 constructor/普通方法/getter/setter/async 方法/generator 方法/computed key/static；`parse_class_common` 处理 extends + body；`nud(KwClass)` 产生 ClassExpression；`parse_stmt` `case KwClass` 产生 ClassDeclaration；`nud(KwSuper)` 三路径（`super()`/`super.prop`/`super[key]`）；`nud(KwNew)` 新增 `new.target` 检测；AST `expr_range`/`stmt_range` 扩展。
+  - **Interpreter**：`eval_class_expr`/`eval_class_decl`/`eval_class_common`（prototype 建立、方法挂载 enumerable=false、home_object 设置、super chain 链接）/`eval_super_call`（super() 语义）/`eval_super_member`（super.prop）；`eval_call_expr` 新增 `super_method_call` 分支；`eval_new_expr` 扩展 new.target/derived ctor/implicit derived ctor 处理；`eval_identifier("this")` 派生类未调 super 前访问 this 抛 ReferenceError；`call_function` 新增 is_class_ctor 直调守卫；MetaProperty kNewTarget 分支。
+  - **VM**：`kMakeClass`/`kSuperCall`/`kSuperGetProp`/`kSuperGetElem`/`kSetHomeObject`/`kSetHomeObjectStatic`/`kDefineClassMethod`/`kDefineComputedClassMethod`/`kGetNewTarget` 处理；`kNewCall` 传播 new.target + implicit derived ctor 自动 super；`kLoadThis` 派生类检查；`kCall`/`kCallMethod` class ctor 直调守卫；`kSetProp` 扩展函数对象 own property 写入（static 方法支持）；`push_call_frame` 设置 `current_fn_holder`/`current_fn`。
+  - **Compiler**：`compile_class_expr`/`compile_class_decl`/`compile_class_common`（MakeClass + 方法挂载序列）；`compile_call_expr` 新增 SuperMemberExpression 分支；`hoist_vars_scan_expr` 新增三个变体节点。
+  - **Object**：新增 `Object.getPrototypeOf` (Interp+VM 对称)。
+  - **GC Bug 修复**：`CallFrame.current_fn_holder (RcPtr)` + GC 根注册修复了 `ArrowFunctionVM.AF22_TripleNestedArrowThis` heap-use-after-free 回归。
+  - **测试**：新增 `tests/unit/class_test.cpp`（CL-01～CL-22 × Interp+VM，44 个测试，覆盖 class 声明/表达式/prototype 方法 enumerable=false/static 方法/getter-setter/直调 TypeError/constructor 参数/new.target/无 constructor/computed key/命名表达式自引用/extends 原型链/super() 调用/super.method()/this 绑定/派生 ReferenceError/super 传参/constructor 返回对象/多层 new.target/隐式 super/instanceof）。4278/4278 通过（coverage），0 LSan 泄漏。
+
 - [x] **`?.` optional chaining [T262-P4] + Testing Agent 边界补测**（2026-05-27）：
   - **AST**：`OptionalChainExpression` 节点加入 `ExprNode` variant，内含 `PropLink{optional,name}` / `ElemLink{optional,key_expr}` / `CallLink{optional,args}` 三种 `ChainLink` variant 及 `std::vector<ChainLink> links`。
   - **Lexer**：`QuestionDot` token 已在 T262-P3 中引入，本轮无需修改。
@@ -948,3 +974,96 @@
 
 ### 测试结果
 - `./scripts/coverage.sh --quiet`：4232/4232 通过，0 LSan 泄漏
+
+---
+
+## JavaScript class 语法基础 + Review 必修修复 M1-M6（2026-06-01）
+
+### 目标
+实现 JavaScript class 语法的完整基础语义（class declaration/expression，constructor，prototype methods，extends，super()，static，getter/setter），并修复 Review 必修问题 M1-M6，覆盖 Interpreter + VM 两路径，对称实现。
+
+### 新增文件
+
+**`tests/unit/class_test.cpp`**
+- CL-01～CL-55 × Interp+VM = 112 个测试
+- 覆盖：class 声明/表达式/prototype 方法 enumerable=false/static 方法/getter-setter/直调 TypeError/constructor 参数/new.target/无 constructor/computed key/命名表达式自引用/extends 原型链/super() 调用/super.method()/this 绑定/派生 ReferenceError/super 传参/constructor 返回对象/多层 new.target/隐式 super/instanceof；M2 new.target 不泄漏（CL-52）；M3 extends null 不 TypeError（CL-53）；M5 super accessor getter（CL-54）；M6 class generator method（CL-55）
+
+### 主要变更
+
+**AST（ast.h）**
+- 新增 `ClassDeclaration`（StmtNode variant）、`ClassExpression`（ExprNode variant）、`ClassMethod`、`SuperCallExpression`（ExprNode variant）、`SuperMemberExpression`（ExprNode variant）
+- `MetaProperty` 新增 `MetaPropertyKind` 枚举区分 kImportMeta/kNewTarget
+
+**Token（token.h / token.cpp / lexer.cpp）**
+- 新增 `KwClass`/`KwExtends`/`KwSuper` 三个关键字，`is_keyword` 范围扩展，lexer.cpp 注册
+
+**JSFunction（js_function.h）**
+- 新增 `is_class_ctor_`/`is_derived_ctor_`/`home_object_`/`fn_ctor_proto_` 字段（后两者均为裸弱指针，不参与 RC）及对应 getter/setter
+
+**BytecodeFunction（bytecode.h）**
+- 新增 `is_class_ctor`/`is_derived_ctor`/`is_implicit_derived_ctor` 标志
+
+**Opcode（opcode.h）**
+- 新增 `MakeClass(2)` / `GetNewTarget(0)` / `SuperCall(1)` / `SuperGetProp(2)` / `SuperGetElem(0)` / `SetHomeObject(0)` / `SetHomeObjectStatic(0)` / `DefineClassMethod(2)` / `DefineComputedClassMethod(0)` 共 9 条
+
+**VM CallFrame（vm.h）**
+- 新增 `new_target_val`/`derived_this_initialized`/`current_fn_holder`（RcPtr，GC 安全）/`current_fn`（裸指针，快速访问）
+- GC 根节点收集扩展（两处 CallFrame 遍历均补入 new_target_val/current_fn_holder）
+
+**Parser（parser.cpp）**
+- `parse_class_body` 辅助函数完整支持 constructor/普通方法/getter/setter/async 方法/generator 方法/computed key/static
+- `parse_class_common` 处理 extends + body
+- `nud(KwClass)` 产生 ClassExpression；`parse_stmt` `case KwClass` 产生 ClassDeclaration
+- `nud(KwSuper)` 三路径（`super()`/`super.prop`/`super[key]`）
+- `nud(KwNew)` 新增 `new.target` 检测
+- `expr_range`/`stmt_range` 扩展
+
+**Interpreter（interpreter.h + interpreter.cpp）**
+- `eval_class_expr`/`eval_class_decl`/`eval_class_common`（prototype 建立、方法挂载 enumerable=false、home_object 设置、super chain 链接）
+- `eval_super_call`（super() 语义：创建新实例，调用父类 ctor，返回值绑定为 this）
+- `eval_super_member`（super.prop：遍历原型链 + accessor getter 调用，receiver=current_this_）
+- `eval_call_expr` 新增 `super_method_call` 分支
+- `eval_new_expr` 扩展 new.target/derived ctor/implicit derived ctor 处理
+- `eval_identifier("this")` 派生类未调 super 前访问 this 抛 ReferenceError
+- `call_function` 新增 is_class_ctor 直调守卫
+- MetaProperty kNewTarget 分支
+- `current_new_target_`/`current_fn_holder_` 新增成员（GC 根节点）
+- `NewTargetGuard` RAII：非 new 调用时设 `current_new_target_` 为 undefined，退出时自动恢复（M2 修复）
+
+**VM（vm.cpp）**
+- `kMakeClass`/`kSuperCall`/`kSuperGetProp`/`kSuperGetElem`/`kSetHomeObject`/`kSetHomeObjectStatic`/`kDefineClassMethod`/`kDefineComputedClassMethod`/`kGetNewTarget` 全部 handler
+- `kNewCall` 传播 new.target + implicit derived ctor 自动 super
+- `kLoadThis` 派生类检查（未初始化则 ReferenceError）
+- `kCall`/`kCallMethod` class ctor 直调守卫
+- `kSetProp` 扩展函数对象 own property 写入（static 方法支持）
+- `push_call_frame` 设置 `current_fn_holder`/`current_fn`
+- `kReturn`/`kReturnUndefined` 检查 `is_new && is_derived_ctor && !derived_this_initialized` → ReferenceError（M4 修复）
+- `kSetHomeObjectStatic` 改为 no-op（M1 修复：架构限制，home_object_ 类型为 JSObject* 无法持有 JSFunction）
+- `kMakeClass` 检测 extends_null：proto.proto=空 RcPtr，implicit ctor base 风格，is_derived_ctor=false（M3 修复）
+- `kSuperGetProp`/`kSuperGetElem` 检查 is_accessor 并嵌套 run() 调用 getter（M5 修复）
+
+**Compiler（compiler.h + compiler.cpp）**
+- `compile_class_expr`/`compile_class_decl`/`compile_class_common`（MakeClass + 方法挂载序列）
+- `compile_call_expr` 新增 SuperMemberExpression 分支
+- `hoist_vars_scan_expr` 新增三个变体节点
+- `hoist_vars` 扩展 ClassDeclaration 分支
+
+**Object（interpreter.cpp + vm.cpp）**
+- 新增 `Object.getPrototypeOf`（Interp+VM 对称）
+
+**GC Bug 修复**
+- `CallFrame.current_fn_holder (RcPtr)` + GC 根注册修复 `ArrowFunctionVM.AF22_TripleNestedArrowThis` heap-use-after-free 回归
+
+### Review 必修修复 M1-M6
+
+- **M1（kSetHomeObjectStatic）**：VM kSetHomeObjectStatic 改为 no-op，不再错误调用 `fn3->set_home_object(nullptr)` 清空 home_object_。架构限制（home_object_ 为 JSObject* 无法持有 JSFunction），static super 抛 TypeError 已记录为已知限制。
+- **M2（new.target 泄漏）**：`call_function` 非 new 调用路径引入 `NewTargetGuard`（RAII），非 new 调用时将 `current_new_target_` 设为 undefined，退出时自动恢复。箭头函数保持 `!fn->is_arrow()` 条件透传词法 new.target。
+- **M3（extends null）**：Interpreter `eval_class_common` + VM `kMakeClass` 检测 `super_val.is_null()`，标记 extends_null：proto 原型设为空 RcPtr（null 原型）；implicit ctor 退化为 base 风格（不调 super）；`is_derived_ctor = false`。
+- **M4（derived ctor missing super）**：Interpreter `eval_new_expr` 在 `call_function` 返回后检查 is_derived_ctor && !derived_super_called，抛 ReferenceError。VM `kReturn`/`kReturnUndefined` 检查 `is_new && is_derived_ctor && !derived_this_initialized` → ReferenceError。
+- **M5（super.x accessor）**：Interpreter `eval_super_member` 遍历原型链，检查 `kPropIsAccessor`，是 accessor 则调用 getter（receiver = `current_this_`）。VM `kSuperGetProp`/`kSuperGetElem` 同样遍历原型链，检查 accessor，嵌套 `run()` 调用 getter。
+- **M6（class generator method）**：Interpreter `eval_class_common` 中实例/static 方法的 FunctionExpression 路径，在 `make_function_value` 之后检查 `fe.is_generator`，若 true 则调用 `fn->set_is_generator(true)`。
+- **S1/S2（跳过）**：class 方法/static 方法 enumerable=false 需要新增 opcode，超出最小改动范围，暂不修复，已文档化为已知限制。
+
+### 测试结果
+- `./scripts/coverage.sh --quiet`：4344/4344 通过，0 LSan 泄漏
+- 新增测试：112 个（CL-01～CL-55 × Interp+VM）

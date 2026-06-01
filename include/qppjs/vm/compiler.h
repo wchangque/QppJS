@@ -106,6 +106,11 @@ private:
     void compile_import_call(const ImportCallExpression& expr);
     void compile_template_literal(const TemplateLiteral& expr);
     void compile_optional_chain(const OptionalChainExpression& expr, bool delete_mode = false);
+    void compile_class_expr(const ClassExpression& expr);
+    void compile_class_decl(const ClassDeclaration& stmt);
+    void compile_class_common(const std::optional<std::unique_ptr<ExprNode>>& super_class,
+                              const std::vector<ClassMethod>& methods,
+                              const std::optional<std::string>& class_name);
 
     // Emit helpers
     void emit(Opcode op);

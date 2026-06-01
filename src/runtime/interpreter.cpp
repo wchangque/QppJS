@@ -1933,12 +1933,37 @@ void Interpreter::init_runtime() {
         return EvalResult::ok(args[0]);
     });
 
+    // Build Object.getPrototypeOf
+    auto get_proto_fn = RcPtr<JSFunction>::make();
+    get_proto_fn->set_name(std::string("getPrototypeOf"));
+    get_proto_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_object()) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Object.getPrototypeOf called on non-object");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        RcObject* raw = args[0].as_object_raw();
+        if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+            auto* obj = static_cast<JSObject*>(raw);
+            if (obj->proto()) return EvalResult::ok(Value::object(ObjectPtr(obj->proto())));
+            return EvalResult::ok(Value::null());
+        }
+        if (raw->object_kind() == ObjectKind::kFunction) {
+            // Function.prototype is object_prototype_ (not the function's own .prototype)
+            if (function_prototype_) return EvalResult::ok(Value::object(ObjectPtr(function_prototype_)));
+            return EvalResult::ok(Value::null());
+        }
+        return EvalResult::ok(Value::null());
+    });
+    gc_heap_.Register(get_proto_fn.get());
+
     object_constructor_->set_property("keys", Value::object(ObjectPtr(keys_fn)));
     object_constructor_->set_property("assign", Value::object(ObjectPtr(assign_fn)));
     object_constructor_->set_property("create", Value::object(ObjectPtr(create_fn)));
     object_constructor_->set_property("defineProperty", Value::object(ObjectPtr(define_property_fn)));
     object_constructor_->set_property("getOwnPropertyDescriptor", Value::object(ObjectPtr(get_own_prop_desc_fn)));
     object_constructor_->set_property("preventExtensions", Value::object(ObjectPtr(prevent_extensions_fn)));
+    object_constructor_->set_property("getPrototypeOf", Value::object(ObjectPtr(get_proto_fn)));
 
     global_env_->define_initialized("Object");
     global_env_->set("Object", Value::object(ObjectPtr(object_constructor_)));
@@ -3944,6 +3969,16 @@ StmtResult Interpreter::eval_stmt(const StmtNode& stmt) {
             [this](const ForInStatement& s) { return eval_for_in_stmt(s); },
             [this](const ForOfStatement& s) { return eval_for_of_stmt(s); },
             [this](const DestructuringDeclaration& s) { return eval_destructuring_decl(s); },
+            [this](const ClassDeclaration& s) -> StmtResult {
+                // 将 ClassDeclaration 转成 ClassExpression 求值，然后绑定名字
+                ClassExpression ce;
+                // 无法直接 move ClassDeclaration（const 引用），需要转换
+                // 由于 ClassMethod 含 unique_ptr，只能手动构造等价 ClassExpression
+                // 直接调用 eval_class_decl
+                auto val = eval_class_decl(s);
+                if (!val.is_ok()) return StmtResult::err(val.error());
+                return StmtResult::ok(Completion::normal(Value::undefined()));
+            },
             [](const ImportDeclaration&) -> StmtResult {
                 // Link 阶段已处理，执行时 no-op
                 return StmtResult::ok(Completion::normal(Value::undefined()));
@@ -4354,7 +4389,11 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const AwaitExpression& e) { return eval_await_expr(e); },
             [this](const UpdateExpression& e) { return eval_update_expr(e); },
             [this](const AsyncFunctionExpression& e) { return eval_async_function_expr(e); },
-            [this](const MetaProperty& /*e*/) {
+            [this](const MetaProperty& e) {
+                // new.target meta-property
+                if (e.kind == MetaPropertyKind::kNewTarget) {
+                    return EvalResult::ok(current_new_target_);
+                }
                 // import.meta 是词法绑定：优先使用当前函数的定义模块
                 ModuleRecord* mod = nullptr;
                 if (current_function_ && current_function_->defining_module()) {
@@ -4393,6 +4432,9 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             },
             [this](const OptionalChainExpression& e) { return eval_optional_chain(e); },
             [this](const YieldExpression& e) { return eval_yield_expr(e); },
+            [this](const ClassExpression& e) { return eval_class_expr(e); },
+            [this](const SuperCallExpression& e) { return eval_super_call(e); },
+            [this](const SuperMemberExpression& e) { return eval_super_member(e); },
         },
         expr.v);
 }
@@ -4672,6 +4714,13 @@ EvalResult Interpreter::eval_identifier(const Identifier& expr) {
         return EvalResult::ok(Value::undefined());
     }
     if (expr.name == "this") {
+        // Derived constructor: 'this' before super() is ReferenceError
+        if (current_function_ && current_function_->is_derived_ctor() &&
+            !derived_this_initialized_) {
+            pending_throw_ = make_error_value(NativeErrorType::kReferenceError,
+                "Must call super constructor in derived class before accessing 'this'");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
         return EvalResult::ok(current_this_);
     }
     auto result = current_env_->get(expr.name);
@@ -6100,6 +6149,13 @@ Value Interpreter::make_function_value(std::optional<std::string> name, const st
 
 StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
                                       std::vector<Value> args, bool is_new_call) {
+    // 守卫：class constructor 不可直接调用（需要 new）
+    if (fn->is_class_ctor() && !is_new_call) {
+        std::string fn_name = fn->name().has_value() ? *fn->name() : "class";
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "Class constructor " + fn_name + " cannot be invoked without 'new'");
+        return StmtResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
     // 守卫 0：method 不可用 new 构造
     if (fn->is_method() && is_new_call) {
         std::string fn_name = fn->name().has_value() ? *fn->name() : "method";
@@ -6122,6 +6178,17 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
             "arrow function is not a constructor");
         return StmtResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
+
+    // M2: 非 new 调用时 new.target 应为 undefined；保存并恢复调用方的 new.target
+    Value saved_call_new_target = current_new_target_;
+    if (!is_new_call && !fn->is_arrow()) {
+        current_new_target_ = Value::undefined();
+    }
+    struct NewTargetGuard {
+        Interpreter& interp;
+        Value saved;
+        ~NewTargetGuard() { interp.current_new_target_ = std::move(saved); }
+    } nt_guard{*this, saved_call_new_target};
 
     RcPtr<Environment> outer = fn->closure_env() ? fn->closure_env() : global_env_;
     auto fn_env = RcPtr<Environment>::make(outer);
@@ -6870,8 +6937,18 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
     Value this_val = Value::undefined();
     Value callee_val = Value::undefined();
 
+    bool super_method_call = false;
+    // Detect super.method() call — method lookup on home_object.__proto__, receiver = current_this_
+    if (std::holds_alternative<SuperMemberExpression>(expr.callee->v)) {
+        const auto& smember = std::get<SuperMemberExpression>(expr.callee->v);
+        auto method_r = eval_super_member(smember);
+        if (!method_r.is_ok()) return method_r;
+        callee_val = method_r.value();
+        this_val = current_this_;  // receiver is the current 'this'
+        super_method_call = true;
+    }
     // Detect method call: obj.method() — extract this from the object
-    if (std::holds_alternative<MemberExpression>(expr.callee->v)) {
+    if (!super_method_call && std::holds_alternative<MemberExpression>(expr.callee->v)) {
         const auto& member = std::get<MemberExpression>(expr.callee->v);
         auto obj_result = eval_expr(*member.object);
         if (!obj_result.is_ok()) {
@@ -6967,7 +7044,7 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
         }
         }
         } // end of string-key else branch
-    } else {
+    } else if (!super_method_call) {
         auto callee_result = eval_expr(*expr.callee);
         if (!callee_result.is_ok()) {
             return callee_result;
@@ -7087,8 +7164,59 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
         }
     }
 
+    // Set new.target for the constructor call
+    Value saved_new_target = current_new_target_;
+    bool saved_derived_init = derived_this_initialized_;
+    current_new_target_ = callee_val;
+
     Value this_val = Value::object(ObjectPtr(new_obj));
+
+    // Derived class: this is set by super(), not pre-created
+    if (fn->is_derived_ctor()) {
+        // The this_val will be updated by super() call
+        this_val = Value::undefined();
+    }
+
+    // Handle implicit derived ctor: rest_param == "$__class_impl_args__" and empty body
+    bool is_implicit_derived = fn->is_derived_ctor() &&
+                               fn->rest_param().has_value() &&
+                               fn->rest_param().value() == "$__class_impl_args__" &&
+                               fn->body() && fn->body()->empty();
+    if (is_implicit_derived) {
+        // Implicit derived ctor: call super with all args
+        JSFunction* super_ctor_id = fn->fn_ctor_proto();
+        if (super_ctor_id) {
+            // Create new_obj with new_target prototype
+            auto new_proto_id = fn->prototype_obj();
+            auto new_obj_id = RcPtr<JSObject>::make();
+            gc_heap_.Register(new_obj_id.get());
+            if (new_proto_id) new_obj_id->set_proto(new_proto_id);
+            else new_obj_id->set_proto(object_prototype_);
+            Value new_obj_id_val = Value::object(ObjectPtr(new_obj_id));
+
+            RcPtr<JSFunction> super_rc_id(super_ctor_id);
+            auto super_r_id = call_function(super_rc_id, new_obj_id_val, args, /*is_new_call=*/true);
+            current_new_target_ = saved_new_target;
+            derived_this_initialized_ = saved_derived_init;
+            if (!super_r_id.is_ok()) return EvalResult::err(super_r_id.error());
+
+            Value super_ret_id = super_r_id.completion().value;
+            Value result_id = (super_ret_id.is_object() && !super_ret_id.is_null())
+                ? std::move(super_ret_id) : std::move(new_obj_id_val);
+            return EvalResult::ok(result_id);
+        }
+    }
+
+    derived_this_initialized_ = !fn->is_derived_ctor();  // base ctor: initialized; derived: not yet
+
     auto call_result = call_function(fn, this_val, std::move(args), /*is_new_call=*/true);
+    // M4: capture derived_this_initialized_ before restoring (to detect missing super())
+    bool derived_super_called = derived_this_initialized_;
+    current_new_target_ = saved_new_target;
+    derived_this_initialized_ = saved_derived_init;
+    Value derived_this = last_new_this_;
+    last_new_this_ = Value::undefined();
+
     if (!call_result.is_ok()) {
         return EvalResult::err(call_result.error());
     }
@@ -7097,11 +7225,24 @@ EvalResult Interpreter::eval_new_expr(const NewExpression& expr) {
         return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     }
 
+    // For derived class, this_val was set by super() call inside the constructor body
+    if (fn->is_derived_ctor()) {
+        this_val = derived_this;
+    }
+
     // Only an explicit return <Object> overrides this_val (ECMAScript §10.2.2 step 9)
     const Completion& c = call_result.completion();
     if (c.is_return() && c.value.is_object() && c.value.as_object_raw() != nullptr) {
         return EvalResult::ok(c.value);
     }
+
+    // M4: derived ctor returned without calling super() → ReferenceError
+    if (fn->is_derived_ctor() && !derived_super_called) {
+        pending_throw_ = make_error_value(NativeErrorType::kReferenceError,
+            "Must call super constructor in derived class before returning from derived constructor");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+
     return EvalResult::ok(this_val);
 }
 
@@ -8280,6 +8421,358 @@ EvalResult Interpreter::eval_yield_expr(const YieldExpression& expr) {
 
     pending_generator_yield_value_ = std::move(yield_val);
     return EvalResult::err(Error(ErrorKind::Runtime, kGeneratorYieldSentinel));
+}
+
+// ============================================================
+// class 支持（Interpreter 侧）
+// ============================================================
+
+EvalResult Interpreter::eval_class_common(
+    const std::optional<std::unique_ptr<ExprNode>>& super_class_opt,
+    const std::vector<ClassMethod>& methods,
+    const std::optional<std::string>& class_name) {
+
+    bool has_super = super_class_opt.has_value();
+    bool extends_null = false;  // M3: class C extends null {}
+    JSFunction* super_fn = nullptr;
+    RcPtr<JSObject> super_proto;
+
+    // 1. 求 super class
+    if (has_super) {
+        auto super_r = eval_expr(*super_class_opt->get());
+        if (!super_r.is_ok()) return super_r;
+        Value super_val = super_r.value();
+        if (super_val.is_null()) {
+            // M3: extends null — proto gets null prototype, no super ctor
+            extends_null = true;
+        } else if (!super_val.is_undefined()) {
+            if (!super_val.is_object() ||
+                super_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Class extends value is not a constructor or null");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            super_fn = static_cast<JSFunction*>(super_val.as_object_raw());
+            super_proto = super_fn->prototype_obj();
+        }
+    }
+
+    // 2. 找 constructor 方法
+    const ClassMethod* ctor_method = nullptr;
+    for (const auto& m : methods) {
+        if (!m.computed && m.key == "constructor" && !m.is_static &&
+            m.method_kind == MethodKind::kData) {
+            ctor_method = &m;
+            break;
+        }
+    }
+
+    // 3. 创建 prototype 对象
+    auto proto_obj = RcPtr<JSObject>::make();
+    gc_heap_.Register(proto_obj.get());
+    if (extends_null) {
+        // M3: extends null → C.prototype.[[Prototype]] = null (empty RcPtr)
+        proto_obj->set_proto(RcPtr<JSObject>{});
+    } else if (super_proto) {
+        proto_obj->set_proto(super_proto);
+    } else {
+        proto_obj->set_proto(object_prototype_);
+    }
+
+    // 4. 创建 constructor 函数
+    Value ctor_fn_val;
+    if (ctor_method != nullptr) {
+        const auto& fe = std::get<FunctionExpression>(ctor_method->fn_expr->v);
+        ctor_fn_val = make_function_value(class_name, fe.params, fe.body, current_env_,
+                                           false, fe.rest_param);
+    } else if (has_super && !extends_null) {
+        // Implicit derived constructor: constructor(...args) { super(...args); }
+        auto empty_body = std::make_shared<std::vector<StmtNode>>();
+        ctor_fn_val = make_function_value(class_name, {}, empty_body, current_env_,
+                                           false, std::optional<std::string>{"$__class_impl_args__"});
+    } else {
+        // Implicit base constructor (also used for extends null): constructor() {}
+        auto empty_body = std::make_shared<std::vector<StmtNode>>();
+        ctor_fn_val = make_function_value(class_name, {}, empty_body, current_env_);
+    }
+
+    auto* ctor_fn = static_cast<JSFunction*>(ctor_fn_val.as_object_raw());
+    ctor_fn->set_is_class_ctor(true);
+    // M3: extends null — treat as base class (no super ctor to call)
+    ctor_fn->set_is_derived_ctor(has_super && !extends_null);
+    if (super_fn) {
+        ctor_fn->set_fn_ctor_proto(super_fn);
+    }
+
+    // 5. 设置 prototype 和 constructor 属性
+    ctor_fn->set_prototype_obj(proto_obj);
+    proto_obj->set_constructor_property(ctor_fn);
+
+    // 6. 挂载非 static 方法到 prototype
+    for (const auto& m : methods) {
+        if (m.is_static || m.method_kind == MethodKind::kData) continue;
+
+        // 求方法 key
+        std::string key;
+        if (m.computed) {
+            auto key_r = eval_expr(*m.key_expr);
+            if (!key_r.is_ok()) return key_r;
+            key = to_string_val(key_r.value());
+        } else {
+            key = m.key;
+        }
+
+        // 创建方法函数值
+        Value method_val;
+        if (std::holds_alternative<FunctionExpression>(m.fn_expr->v)) {
+            const auto& fe = std::get<FunctionExpression>(m.fn_expr->v);
+            method_val = make_function_value(
+                m.computed ? std::nullopt : std::optional<std::string>{m.key},
+                fe.params, fe.body, current_env_, false, fe.rest_param);
+            // M6: class generator method — propagate is_generator flag
+            if (fe.is_generator && method_val.is_object() &&
+                method_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                static_cast<JSFunction*>(method_val.as_object_raw())->set_is_generator(true);
+            }
+        } else if (std::holds_alternative<AsyncFunctionExpression>(m.fn_expr->v)) {
+            const auto& afe = std::get<AsyncFunctionExpression>(m.fn_expr->v);
+            method_val = make_async_function_value(
+                m.computed ? std::nullopt : std::optional<std::string>{m.key},
+                afe.params, afe.body, current_env_, afe.rest_param);
+        } else {
+            method_val = Value::undefined();
+        }
+
+        // 设置 home_object
+        if (method_val.is_object() && method_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+            auto* mfn = static_cast<JSFunction*>(method_val.as_object_raw());
+            mfn->set_home_object(proto_obj.get());
+        }
+
+        // 定义在 prototype 上（enumerable=false, writable=true, configurable=true）
+        if (m.method_kind == MethodKind::kGetter) {
+            PropDesc desc;
+            desc.getter = method_val;
+            desc.enumerable = false;
+            desc.configurable = true;
+            proto_obj->define_property(key, desc);
+        } else if (m.method_kind == MethodKind::kSetter) {
+            PropDesc desc;
+            desc.setter = method_val;
+            desc.enumerable = false;
+            desc.configurable = true;
+            proto_obj->define_property(key, desc);
+        } else {
+            PropDesc desc;
+            desc.value = method_val;
+            desc.writable = true;
+            desc.enumerable = false;
+            desc.configurable = true;
+            proto_obj->define_property(key, desc);
+        }
+    }
+
+    // 7. 挂载 static 方法到 ctor
+    for (const auto& m : methods) {
+        if (!m.is_static) continue;
+
+        std::string key;
+        if (m.computed) {
+            auto key_r = eval_expr(*m.key_expr);
+            if (!key_r.is_ok()) return key_r;
+            key = to_string_val(key_r.value());
+        } else {
+            key = m.key;
+        }
+
+        Value method_val;
+        if (std::holds_alternative<FunctionExpression>(m.fn_expr->v)) {
+            const auto& fe = std::get<FunctionExpression>(m.fn_expr->v);
+            method_val = make_function_value(
+                m.computed ? std::nullopt : std::optional<std::string>{m.key},
+                fe.params, fe.body, current_env_, false, fe.rest_param);
+            // M6: static generator method — propagate is_generator flag
+            if (fe.is_generator && method_val.is_object() &&
+                method_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                static_cast<JSFunction*>(method_val.as_object_raw())->set_is_generator(true);
+            }
+        } else if (std::holds_alternative<AsyncFunctionExpression>(m.fn_expr->v)) {
+            const auto& afe = std::get<AsyncFunctionExpression>(m.fn_expr->v);
+            method_val = make_async_function_value(
+                m.computed ? std::nullopt : std::optional<std::string>{m.key},
+                afe.params, afe.body, current_env_, afe.rest_param);
+        } else {
+            method_val = Value::undefined();
+        }
+
+        ctor_fn->set_property(key, method_val);
+    }
+
+    return EvalResult::ok(ctor_fn_val);
+}
+
+EvalResult Interpreter::eval_class_expr(const ClassExpression& expr) {
+    // 命名 class 表达式：在内部作用域绑定名字
+    if (expr.name.has_value()) {
+        auto class_env = RcPtr<Environment>::make(current_env_);
+        gc_heap_.Register(class_env.get());
+        class_env->define(*expr.name, VarKind::Const);
+        ScopeGuard guard(*this, class_env, var_env_, current_this_);
+        auto result = eval_class_common(expr.super_class, expr.methods, expr.name);
+        if (!result.is_ok()) return result;
+        // Bind name to the class
+        auto init_r = class_env->initialize(*expr.name, result.value());
+        (void)init_r;
+        return result;
+    }
+    return eval_class_common(expr.super_class, expr.methods, expr.name);
+}
+
+EvalResult Interpreter::eval_class_decl(const ClassDeclaration& stmt) {
+    std::optional<std::string> class_name{stmt.name};
+    auto result = eval_class_common(stmt.super_class, stmt.methods, class_name);
+    if (!result.is_ok()) return result;
+    // Bind to current scope (like let declaration at declaration point)
+    current_env_->define(stmt.name, VarKind::Let);
+    auto init_r = current_env_->initialize(stmt.name, result.value());
+    if (!init_r.is_ok()) {
+        // Already defined (e.g., re-declaration): try set
+        current_env_->set(stmt.name, result.value());
+    }
+    return EvalResult::ok(Value::undefined());
+}
+
+EvalResult Interpreter::eval_super_call(const SuperCallExpression& expr) {
+    // super(...args) — call parent class constructor
+    JSFunction* active_fn = current_function_;
+    if (!active_fn) {
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "super() called outside a constructor");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+    JSFunction* super_ctor = active_fn->fn_ctor_proto();
+    if (!super_ctor) {
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "super() called in a non-derived constructor");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+
+    // Evaluate arguments
+    std::vector<Value> args;
+    for (const auto& arg : expr.arguments) {
+        if (std::holds_alternative<SpreadElement>(arg->v)) {
+            const auto& sp = std::get<SpreadElement>(arg->v);
+            auto spread_r = eval_expr(*sp.argument);
+            if (!spread_r.is_ok()) return spread_r;
+            if (!spread_into(spread_r.value(), args)) {
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+        } else {
+            auto arg_r = eval_expr(*arg);
+            if (!arg_r.is_ok()) return arg_r;
+            args.push_back(arg_r.value());
+        }
+    }
+
+    // Create new_obj using new.target prototype
+    Value new_target = current_new_target_;
+    RcPtr<JSObject> new_proto;
+    if (new_target.is_object() &&
+        new_target.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+        new_proto = static_cast<JSFunction*>(new_target.as_object_raw())->prototype_obj();
+    }
+    auto new_obj = RcPtr<JSObject>::make();
+    gc_heap_.Register(new_obj.get());
+    if (new_proto) {
+        new_obj->set_proto(new_proto);
+    } else {
+        new_obj->set_proto(object_prototype_);
+    }
+    Value new_obj_val = Value::object(ObjectPtr(new_obj));
+
+    // Call super constructor with new_obj as this (is_new_call=true to pass class ctor guard)
+    RcPtr<JSFunction> super_fn_rc(super_ctor);
+
+    // Save new_target and pass it down
+    Value saved_new_target = current_new_target_;
+    bool saved_derived_init = derived_this_initialized_;
+
+    auto call_r = call_function(super_fn_rc, new_obj_val, std::move(args), /*is_new_call=*/true);
+
+    current_new_target_ = saved_new_target;
+    derived_this_initialized_ = saved_derived_init;
+
+    if (!call_r.is_ok()) return EvalResult::err(call_r.error());
+
+    // If super returned an object, use it
+    Value super_ret = call_r.completion().value;
+    Value new_this = (super_ret.is_object() && !super_ret.is_null())
+        ? std::move(super_ret)
+        : std::move(new_obj_val);
+
+    // Update current_this_ (visible inside the derived ctor body)
+    current_this_ = new_this;
+    last_new_this_ = new_this;  // also save for eval_new_expr to read after call_function returns
+    derived_this_initialized_ = true;
+
+    return EvalResult::ok(Value::undefined());
+}
+
+EvalResult Interpreter::eval_super_member(const SuperMemberExpression& expr) {
+    // super.prop or super[key]
+    JSFunction* cur_fn = current_function_;
+    if (!cur_fn || !cur_fn->home_object()) {
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "super property access outside method");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+
+    JSObject* home = cur_fn->home_object();
+    // Get home.__proto__
+    JSObject* home_proto = nullptr;
+    if (home->proto()) {
+        RcObject* proto_raw = home->proto().get();
+        if (proto_raw->object_kind() == ObjectKind::kOrdinary ||
+            proto_raw->object_kind() == ObjectKind::kArray) {
+            home_proto = static_cast<JSObject*>(proto_raw);
+        }
+    }
+
+    std::string key;
+    if (expr.computed) {
+        auto key_r = eval_expr(*expr.key_expr);
+        if (!key_r.is_ok()) return key_r;
+        key = to_string_val(key_r.value());
+    } else {
+        key = expr.property;
+    }
+
+    Value result_val = Value::undefined();
+    if (home_proto) {
+        // M5: walk prototype chain and call accessor getter with current this as receiver
+        JSObject* search = home_proto;
+        while (search) {
+            const auto* entry = search->get_own_entry(key);
+            if (entry) {
+                if ((entry->flags & kPropIsAccessor) && !entry->getter.is_undefined()) {
+                    auto getter_r = call_function_val(entry->getter, current_this_, {});
+                    if (!getter_r.is_ok()) return getter_r;
+                    return EvalResult::ok(getter_r.value());
+                }
+                result_val = entry->value;
+                break;
+            }
+            RcObject* proto_raw = search->proto().get();
+            if (!proto_raw) break;
+            if (proto_raw->object_kind() == ObjectKind::kOrdinary ||
+                proto_raw->object_kind() == ObjectKind::kArray) {
+                search = static_cast<JSObject*>(proto_raw);
+            } else {
+                break;
+            }
+        }
+    }
+    return EvalResult::ok(result_val);
 }
 
 }  // namespace qppjs

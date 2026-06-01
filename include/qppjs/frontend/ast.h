@@ -178,8 +178,10 @@ struct AwaitExpression {
     SourceRange range;
 };
 
-// import.meta 元属性（仅在模块上下文合法）
+// import.meta / new.target 元属性
+enum class MetaPropertyKind { kImportMeta, kNewTarget };
 struct MetaProperty {
+    MetaPropertyKind kind = MetaPropertyKind::kImportMeta;
     SourceRange range;
 };
 
@@ -265,6 +267,46 @@ struct DestructuringAssignmentExpression {
     SourceRange range;
 };
 
+// class 成员描述（方法、getter、setter、static）
+struct ClassMethod {
+    std::string key;                            // 静态键；computed=true 时可为空
+    std::unique_ptr<ExprNode> key_expr;         // computed=true 时非空
+    std::unique_ptr<ExprNode> fn_expr;          // FunctionExpression
+    MethodKind method_kind = MethodKind::kMethod;
+    bool is_static = false;
+    bool computed = false;
+};
+
+// class 声明语句 class Name [extends super] { body }
+struct ClassDeclaration {
+    std::string name;
+    std::optional<std::unique_ptr<ExprNode>> super_class;
+    std::vector<ClassMethod> methods;
+    SourceRange range;
+};
+
+// class 表达式 class [Name] [extends super] { body }
+struct ClassExpression {
+    std::optional<std::string> name;
+    std::optional<std::unique_ptr<ExprNode>> super_class;
+    std::vector<ClassMethod> methods;
+    SourceRange range;
+};
+
+// super() 调用
+struct SuperCallExpression {
+    std::vector<std::unique_ptr<ExprNode>> arguments;
+    SourceRange range;
+};
+
+// super.prop 或 super[key] 访问
+struct SuperMemberExpression {
+    std::string property;              // 非 computed 时有效
+    std::unique_ptr<ExprNode> key_expr;  // computed=true 时非空
+    bool computed = false;
+    SourceRange range;
+};
+
 // Optional chaining 表达式：base?.prop / base?.[key] / base?.()
 // 定义在 ExprNode 之前：ElemLink/CallLink 内的 unique_ptr 只需前向声明
 struct OptionalChainExpression {
@@ -289,7 +331,7 @@ struct ExprNode {
                  MetaProperty, ImportCallExpression, RegexLiteral, TemplateLiteral,
                  ArrowFunctionExpression, ConditionalExpression, SpreadElement,
                  DestructuringAssignmentExpression, OptionalChainExpression,
-                 YieldExpression>
+                 YieldExpression, ClassExpression, SuperCallExpression, SuperMemberExpression>
             v;
 
     bool is_parenthesized = false;  // set by Parser when wrapped in ( )
@@ -522,7 +564,7 @@ struct StmtNode {
                  ThrowStatement, TryStatement, BreakStatement, ContinueStatement,
                  LabeledStatement, ForStatement, ForInStatement, ForOfStatement,
                  ImportDeclaration, ExportNamedDeclaration, ExportDefaultDeclaration,
-                 DestructuringDeclaration>
+                 DestructuringDeclaration, ClassDeclaration>
             v;
 
     StmtNode() = default;

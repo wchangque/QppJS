@@ -143,7 +143,17 @@ namespace qppjs {
     /* computed property (stack: obj key val/fn) */ \
     X(SetComputedProp, 0)              \
     X(DefineComputedGetter, 0)         \
-    X(DefineComputedSetter, 0)
+    X(DefineComputedSetter, 0)         \
+    /* class support */                \
+    X(MakeClass, 2)                    \
+    X(GetNewTarget, 0)                 \
+    X(SuperCall, 1)                    \
+    X(SuperGetProp, 2)                 \
+    X(SuperGetElem, 0)                 \
+    X(SetHomeObject, 0)                \
+    X(SetHomeObjectStatic, 0)          \
+    X(DefineClassMethod, 2)            \
+    X(DefineComputedClassMethod, 0)
 
 enum class Opcode : uint8_t {
 #define X(name, _operand_bytes) k##name,

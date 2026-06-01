@@ -7,10 +7,10 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 4232/4232 通过（coverage），0 LSan 泄漏 |
-| 最近更新 | 2026-05-28 |
+| 测试计数 | 4344/4344 通过（coverage），0 LSan 泄漏 |
+| 最近更新 | 2026-06-01 |
 | 下一步 | 下一批 test262 候选目标（tagged template / Map/Set / eval 等） |
-| test262 | language/expressions 32.4%（method shorthand 后预计约 +5pp） |
+| test262 | language/expressions class 实现后约 22%（expressions 32.4% 基线） |
 
 ## 已知遗留问题
 
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **JavaScript class 语法基础 + Review 必修修复 M1-M6**（2026-06-01）：class declaration/expression，constructor，prototype methods，extends，super()，static，getter/setter；AST 新增 ClassDeclaration/ClassExpression/ClassMethod/SuperCallExpression/SuperMemberExpression/MetaPropertyKind::kNewTarget；Token 新增 KwClass/KwExtends/KwSuper；JSFunction 新增 is_class_ctor_/is_derived_ctor_/home_object_/fn_ctor_proto_；opcode 新增 9 条（MakeClass/GetNewTarget/SuperCall/SuperGetProp/SuperGetElem/SetHomeObject/SetHomeObjectStatic/DefineClassMethod/DefineComputedClassMethod）；Parser/Interpreter/VM/Compiler 完整双路径实现；Review M1-M6 全部修复（M1 kSetHomeObjectStatic no-op；M2 NewTargetGuard RAII new.target 不泄漏；M3 extends null 特殊处理；M4 derived ctor missing super ReferenceError；M5 super accessor getter 遍历原型链；M6 class generator method 标志传递）；新增 `tests/unit/class_test.cpp`（112 个测试：CL-01～CL-55 × Interp+VM 对称）。4344/4344 通过（coverage），0 LSan 泄漏。
 
 - [x] **Generator functions `function*` / `yield` / `yield*`**（2026-05-28）：新增 `js_generator.h`（JSGeneratorObject，GeneratorState/ResumeMode 枚举）及 `js_generator.cpp`（TraceRefs/ClearRefs）；Parser 解析 `function*`、`yield expr`、`yield*`；Interpreter eval_yield_expr、run_generator_body、generator prototype 初始化、.next/.return/.throw natives；VM kYield 指令、generator 函数调用处理、.next/.return/.throw natives；Compiler compile_yield_expr、is_generator 标志传递；environment.cpp kGenerator binding 特殊清零（打断 RC 环路）；js_object.cpp symbol_props_ 中 JSString 值清零（修复 "Generator" 字符串泄漏）；新增 `tests/unit/generator_test.cpp`（GEN01～GEN18 + GENExtra01～05，43 个测试，Interp+VM 双路径）。4232/4232 通过（coverage），0 LSan 泄漏。
 

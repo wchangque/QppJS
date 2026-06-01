@@ -76,6 +76,20 @@ public:
     bool is_generator() const { return is_generator_; }
     void set_is_generator(bool v) { is_generator_ = v; }
 
+    // Class constructor flags
+    bool is_class_ctor() const { return is_class_ctor_; }
+    bool is_derived_ctor() const { return is_derived_ctor_; }
+    void set_is_class_ctor(bool v) { is_class_ctor_ = v; }
+    void set_is_derived_ctor(bool v) { is_derived_ctor_ = v; }
+
+    // [[HomeObject]]: the object on which the method is defined (weak, not RC-tracked)
+    JSObject* home_object() const { return home_object_; }
+    void set_home_object(JSObject* obj) { home_object_ = obj; }
+
+    // Parent class constructor (weak pointer, kept alive via closure env / global env)
+    JSFunction* fn_ctor_proto() const { return fn_ctor_proto_; }
+    void set_fn_ctor_proto(JSFunction* fn) { fn_ctor_proto_ = fn; }
+
     // import.meta 词法绑定：记录函数是在哪个模块中创建的
     ModuleRecord* defining_module() const { return defining_module_; }
     void set_defining_module(ModuleRecord* mod) { defining_module_ = mod; }
@@ -121,6 +135,12 @@ private:
 
     // Generator function data
     bool is_generator_ = false;
+
+    // Class constructor data
+    bool is_class_ctor_ = false;
+    bool is_derived_ctor_ = false;
+    JSObject* home_object_ = nullptr;   // [[HomeObject]], weak ref, not RC-tracked
+    JSFunction* fn_ctor_proto_ = nullptr;  // parent class ctor, weak ref
 
     // import.meta 词法绑定：函数定义时所在的模块（非拥有指针）
     ModuleRecord* defining_module_ = nullptr;
