@@ -43,6 +43,7 @@
 23. ~~**Logical Assignment Operators (&&=, ||=, ??=) + Tagged Template Literals** — 已完成（2026-06-01，57 个新测试（LA-01～LA-15 × Interp+VM + TTL-01～TTL-10 × Interp+VM + 3 Parser），4403/4403 通过，0 LSan 泄漏）~~
 24. ~~**ES2022 Class Public Instance Fields & Static Fields** — 已完成（2026-06-01，38 个新测试（CF-01～CF-17 × Interp+VM + 2 Extra），4441/4441 通过，0 LSan 泄漏）~~
 25. ~~**Exponentiation `**`/`**=` + async generator `async function*`** — 已完成（2026-06-01，23+16=39 个新测试，4480/4480 通过，0 LSan 泄漏）~~
+26. ~~**Map、Set、WeakMap、WeakSet 内建对象** — 已完成（2026-06-01，90 个新测试（MS-01～MS-45 × Interp+VM），4570/4570 通过（coverage），4568/4568 通过（run_ut ASAN），0 LSan 泄漏）~~
 
 ## 3. 进入前提
 

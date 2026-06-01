@@ -59,6 +59,7 @@ add_executable(qppjs_unit_tests
     unit/logical_assign_test.cpp
     unit/exponent_test.cpp
     unit/async_generator_test.cpp
+    unit/map_set_test.cpp
     # unit/global_stubs_test.cpp  # FIXME: pre-existing compilation error (is_err not a member of EvalResult)
 )
 

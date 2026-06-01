@@ -4,6 +4,8 @@
 
 ## 1. 已完成任务
 
+- [x] **Map、Set、WeakMap、WeakSet 内建对象**（2026-06-01）：新增 `js_map.h`（JSMap、JSSet、JSWeakMap、JSWeakSet、JSMapIterator、JSSetIterator 六个类，SameValueZero 比较）和 `js_map.cpp`（TraceRefs/ClearRefs 实现）；ObjectKind 枚举新增 kMap/kSet/kWeakMap/kWeakSet/kMapIterator/kSetIterator；interpreter.cpp 和 vm.cpp `init_global_env()`/`init_runtime()` 注册 Map/Set/WeakMap/WeakSet 四个全局构造函数（含 prototype 方法体系：size getter、set/get/has/delete/clear/forEach、keys/values/entries 迭代器、Symbol.iterator）；Map/Set 迭代器通过 JSMapIterator/JSSetIterator 实现插入顺序遍历，支持 for...of；WeakMap/WeakSet 使用 `unordered_map<RcObject*, Value>` / `unordered_set<RcObject*>` 实现（raw pointer key，弱引用语义）；interpreter.cpp 和 vm.cpp 中 ObjectKind 白名单（kGetProp/kGetElem/kSetProp/kCallMethod/kForOfStart/kForOfNext/spread_into/eval_call_expr 等）均扩展支持 kMap/kSet/kWeakMap/kWeakSet；GC roots（4 处 exec/exec_module）和 cleanup（4 处 clear_function_properties）同步扩展；新增 `tests/unit/map_set_test.cpp`（MS-01～MS-45 × Interp+VM 共 90 个测试）。4570/4570 通过（coverage），4568/4568 通过（run_ut ASAN），0 LSan 泄漏。
+
 - [x] **Exponentiation operator `**`/`**=` + async generator `async function*`**（2026-06-01）：
   - **特性 A：`**` 和 `**=`（ES2016 exponentiation）**
     - Token：新增 `StarStar`（`**`）和 `StarStarEq`（`**=`）；Lexer `case '*'` 三路消歧（`**=` > `**` > `*`）；token.cpp 新增对应 `to_string` 分支。

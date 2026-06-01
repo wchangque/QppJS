@@ -15,7 +15,9 @@ enum class ObjectKind {
     kOrdinary, kFunction, kArray, kEnvironment, kModule, kPromise, kRegExp,
     kStringObject, kBooleanObject, kForInIterator,
     kForOfIterator, kArrayIterator, kStringIterator,
-    kGenerator
+    kGenerator,
+    kMap, kSet, kWeakMap, kWeakSet,
+    kMapIterator, kSetIterator
 };
 
 // Base class for all heap-allocated JS objects with non-atomic reference counting.

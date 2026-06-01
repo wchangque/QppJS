@@ -7,6 +7,7 @@
 #include "qppjs/runtime/for_of_iterator.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_generator.h"
+#include "qppjs/runtime/js_map.h"
 #include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/js_regexp.h"
 #include "qppjs/runtime/module_loader.h"
@@ -3413,6 +3414,705 @@ void Interpreter::init_runtime() {
             Value::object(ObjectPtr(gen_iter_fn)));
     }
 
+    // ---- Map ----
+    {
+        map_prototype_ = RcPtr<JSObject>::make();
+        map_prototype_->set_proto(object_prototype_);
+        gc_heap_.Register(map_prototype_.get());
+
+        // size getter via "size" property that dispatches based on ObjectKind
+        {
+            auto size_fn = RcPtr<JSFunction>::make();
+            size_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map.prototype.size requires a Map");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* m = static_cast<JSMap*>(this_val.as_object_raw());
+                return EvalResult::ok(Value::number(static_cast<double>(m->entries_.size())));
+            });
+            gc_heap_.Register(size_fn.get());
+            PropDesc desc;
+            desc.getter = Value::object(ObjectPtr(size_fn));
+            desc.enumerable = false;
+            desc.configurable = true;
+            map_prototype_->define_property("size", desc);
+        }
+
+        auto make_map_method = [&](auto fn_body) {
+            auto fn = RcPtr<JSFunction>::make();
+            fn->set_native_fn(fn_body);
+            gc_heap_.Register(fn.get());
+            return fn;
+        };
+
+        // Map.prototype.set
+        map_prototype_->set_property("set", Value::object(ObjectPtr(make_map_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map.prototype.set called on non-Map");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* m = static_cast<JSMap*>(this_val.as_object_raw());
+                Value key = args.size() > 0 ? args[0] : Value::undefined();
+                Value val = args.size() > 1 ? args[1] : Value::undefined();
+                size_t idx = m->find_key(key);
+                if (idx == JSMap::kNotFound) {
+                    m->entries_.emplace_back(std::move(key), std::move(val));
+                } else {
+                    m->entries_[idx].second = std::move(val);
+                }
+                return EvalResult::ok(this_val);
+            }))));
+
+        // Map.prototype.get
+        map_prototype_->set_property("get", Value::object(ObjectPtr(make_map_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map.prototype.get called on non-Map");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* m = static_cast<JSMap*>(this_val.as_object_raw());
+                Value key = args.size() > 0 ? args[0] : Value::undefined();
+                size_t idx = m->find_key(key);
+                if (idx == JSMap::kNotFound) return EvalResult::ok(Value::undefined());
+                return EvalResult::ok(m->entries_[idx].second);
+            }))));
+
+        // Map.prototype.has
+        map_prototype_->set_property("has", Value::object(ObjectPtr(make_map_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map.prototype.has called on non-Map");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* m = static_cast<JSMap*>(this_val.as_object_raw());
+                Value key = args.size() > 0 ? args[0] : Value::undefined();
+                return EvalResult::ok(Value::boolean(m->find_key(key) != JSMap::kNotFound));
+            }))));
+
+        // Map.prototype.delete
+        map_prototype_->set_property("delete", Value::object(ObjectPtr(make_map_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map.prototype.delete called on non-Map");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* m = static_cast<JSMap*>(this_val.as_object_raw());
+                Value key = args.size() > 0 ? args[0] : Value::undefined();
+                size_t idx = m->find_key(key);
+                if (idx == JSMap::kNotFound) return EvalResult::ok(Value::boolean(false));
+                m->entries_.erase(m->entries_.begin() + static_cast<ptrdiff_t>(idx));
+                return EvalResult::ok(Value::boolean(true));
+            }))));
+
+        // Map.prototype.clear
+        map_prototype_->set_property("clear", Value::object(ObjectPtr(make_map_method(
+            [this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map.prototype.clear called on non-Map");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* m = static_cast<JSMap*>(this_val.as_object_raw());
+                m->entries_.clear();
+                return EvalResult::ok(Value::undefined());
+            }))));
+
+        // Map.prototype.forEach
+        map_prototype_->set_property("forEach", Value::object(ObjectPtr(make_map_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map.prototype.forEach called on non-Map");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                if (args.empty() || !args[0].is_object() ||
+                    args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "forEach callback must be a function");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* m = static_cast<JSMap*>(this_val.as_object_raw());
+                Value this_arg = args.size() > 1 ? args[1] : Value::undefined();
+                size_t sz = m->entries_.size();
+                for (size_t i = 0; i < sz; ++i) {
+                    // Re-read size after each callback call in case entries changed
+                    if (i >= m->entries_.size()) break;
+                    Value cb_args[3] = {m->entries_[i].second, m->entries_[i].first, this_val};
+                    auto r = call_function_val(args[0], this_arg, std::span<Value>(cb_args, 3));
+                    if (!r.is_ok()) return r;
+                }
+                return EvalResult::ok(Value::undefined());
+            }))));
+
+        // Helper: create a MapIterator-based iterator
+        auto make_map_iter_fn = [&](CollectionIterMode mode) {
+            auto fn = RcPtr<JSFunction>::make();
+            fn->set_native_fn([this, mode](Value this_val, std::vector<Value>, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map iterator called on non-Map");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* m = static_cast<JSMap*>(this_val.as_object_raw());
+                auto iter = RcPtr<JSMapIterator>::make();
+                iter->map_ = RcPtr<JSMap>(m);
+                iter->index_ = 0;
+                iter->mode_ = mode;
+                gc_heap_.Register(iter.get());
+
+                // Wrap in a JSObject so it's a proper JS value
+                auto iter_obj = RcPtr<JSObject>::make();
+                iter_obj->set_proto(object_prototype_);
+                gc_heap_.Register(iter_obj.get());
+                iter_obj->set_property("__map_iter__", Value::object(ObjectPtr(iter)));
+
+                auto next_fn = RcPtr<JSFunction>::make();
+                next_fn->set_native_fn([this, mode](Value self, std::vector<Value>, bool) -> EvalResult {
+                    if (!self.is_object()) {
+                        auto r = RcPtr<JSObject>::make();
+                        gc_heap_.Register(r.get());
+                        r->set_property("value", Value::undefined());
+                        r->set_property("done", Value::boolean(true));
+                        return EvalResult::ok(Value::object(ObjectPtr(r)));
+                    }
+                    auto* iter_wrap = static_cast<JSObject*>(self.as_object_raw());
+                    Value iter_val = iter_wrap->get_property("__map_iter__");
+                    if (!iter_val.is_object() || iter_val.as_object_raw()->object_kind() != ObjectKind::kMapIterator) {
+                        auto r = RcPtr<JSObject>::make();
+                        gc_heap_.Register(r.get());
+                        r->set_property("value", Value::undefined());
+                        r->set_property("done", Value::boolean(true));
+                        return EvalResult::ok(Value::object(ObjectPtr(r)));
+                    }
+                    auto* iter = static_cast<JSMapIterator*>(iter_val.as_object_raw());
+                    auto make_result = [&](Value value, bool done) -> EvalResult {
+                        auto r = RcPtr<JSObject>::make();
+                        gc_heap_.Register(r.get());
+                        r->set_property("value", std::move(value));
+                        r->set_property("done", Value::boolean(done));
+                        return EvalResult::ok(Value::object(ObjectPtr(r)));
+                    };
+                    if (!iter->map_ || iter->index_ >= iter->map_->entries_.size()) {
+                        return make_result(Value::undefined(), true);
+                    }
+                    auto& entry = iter->map_->entries_[iter->index_++];
+                    if (mode == CollectionIterMode::kKeys) {
+                        return make_result(entry.first, false);
+                    } else if (mode == CollectionIterMode::kValues) {
+                        return make_result(entry.second, false);
+                    } else {
+                        // kEntries: return [k, v] array
+                        auto pair_arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+                        gc_heap_.Register(pair_arr.get());
+                        pair_arr->set_proto(array_prototype_);
+                        pair_arr->elements_[0] = entry.first;
+                        pair_arr->elements_[1] = entry.second;
+                        pair_arr->array_length_ = 2;
+                        return make_result(Value::object(ObjectPtr(pair_arr)), false);
+                    }
+                });
+                gc_heap_.Register(next_fn.get());
+                iter_obj->set_property("next", Value::object(ObjectPtr(next_fn)));
+
+                // [Symbol.iterator]() { return this; }
+                auto self_iter_fn = RcPtr<JSFunction>::make();
+                self_iter_fn->set_native_fn([](Value self2, std::vector<Value>, bool) -> EvalResult {
+                    return EvalResult::ok(self2);
+                });
+                gc_heap_.Register(self_iter_fn.get());
+                iter_obj->set_property_by_symbol(symbol_table_.well_known_iterator,
+                                                  Value::object(ObjectPtr(self_iter_fn)));
+                return EvalResult::ok(Value::object(ObjectPtr(iter_obj)));
+            });
+            gc_heap_.Register(fn.get());
+            return fn;
+        };
+
+        map_prototype_->set_property("keys", Value::object(ObjectPtr(
+            make_map_iter_fn(CollectionIterMode::kKeys))));
+        map_prototype_->set_property("values", Value::object(ObjectPtr(
+            make_map_iter_fn(CollectionIterMode::kValues))));
+        map_prototype_->set_property("entries", Value::object(ObjectPtr(
+            make_map_iter_fn(CollectionIterMode::kEntries))));
+
+        // [Symbol.iterator] = entries
+        {
+            auto entries_val = map_prototype_->get_property("entries");
+            map_prototype_->set_property_by_symbol(symbol_table_.well_known_iterator, entries_val);
+        }
+
+        // Map constructor
+        auto map_ctor = RcPtr<JSFunction>::make();
+        map_ctor->set_name(std::string("Map"));
+        map_ctor->set_native_fn([this](Value, std::vector<Value> args, bool is_new) -> EvalResult {
+            if (!is_new) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Constructor Map requires 'new'");
+                return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+            }
+            auto m = RcPtr<JSMap>::make();
+            gc_heap_.Register(m.get());
+            m->set_proto(map_prototype_);
+            if (!args.empty() && !args[0].is_undefined() && !args[0].is_null()) {
+                // Iterate over iterable, each element is [k, v]
+                std::vector<Value> items;
+                if (!spread_into(args[0], items)) {
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                for (auto& item : items) {
+                    if (!item.is_object()) {
+                        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                            "Iterator value is not an object");
+                        return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                    }
+                    auto* pair_obj = static_cast<JSObject*>(item.as_object_raw());
+                    Value k, v;
+                    if (pair_obj->object_kind() == ObjectKind::kArray) {
+                        k = pair_obj->elements_.count(0) ? pair_obj->elements_.at(0) : Value::undefined();
+                        v = pair_obj->elements_.count(1) ? pair_obj->elements_.at(1) : Value::undefined();
+                    } else {
+                        k = pair_obj->get_property("0");
+                        v = pair_obj->get_property("1");
+                    }
+                    size_t idx = m->find_key(k);
+                    if (idx == JSMap::kNotFound) {
+                        m->entries_.emplace_back(std::move(k), std::move(v));
+                    } else {
+                        m->entries_[idx].second = std::move(v);
+                    }
+                }
+            }
+            return EvalResult::ok(Value::object(ObjectPtr(m)));
+        });
+        gc_heap_.Register(map_ctor.get());
+        global_env_->define_initialized("Map");
+        global_env_->set("Map", Value::object(ObjectPtr(map_ctor)));
+    }
+
+    // ---- Set ----
+    {
+        set_prototype_ = RcPtr<JSObject>::make();
+        set_prototype_->set_proto(object_prototype_);
+        gc_heap_.Register(set_prototype_.get());
+
+        {
+            auto size_fn = RcPtr<JSFunction>::make();
+            size_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kSet) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Set.prototype.size requires a Set");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* s = static_cast<JSSet*>(this_val.as_object_raw());
+                return EvalResult::ok(Value::number(static_cast<double>(s->values_.size())));
+            });
+            gc_heap_.Register(size_fn.get());
+            PropDesc desc;
+            desc.getter = Value::object(ObjectPtr(size_fn));
+            desc.enumerable = false;
+            desc.configurable = true;
+            set_prototype_->define_property("size", desc);
+        }
+
+        auto make_set_method = [&](auto fn_body) {
+            auto fn = RcPtr<JSFunction>::make();
+            fn->set_native_fn(fn_body);
+            gc_heap_.Register(fn.get());
+            return fn;
+        };
+
+        // Set.prototype.add
+        set_prototype_->set_property("add", Value::object(ObjectPtr(make_set_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kSet) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Set.prototype.add called on non-Set");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* s = static_cast<JSSet*>(this_val.as_object_raw());
+                Value val = args.size() > 0 ? args[0] : Value::undefined();
+                if (s->find_value(val) == JSSet::kNotFound) {
+                    s->values_.push_back(std::move(val));
+                }
+                return EvalResult::ok(this_val);
+            }))));
+
+        // Set.prototype.has
+        set_prototype_->set_property("has", Value::object(ObjectPtr(make_set_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kSet) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Set.prototype.has called on non-Set");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* s = static_cast<JSSet*>(this_val.as_object_raw());
+                Value val = args.size() > 0 ? args[0] : Value::undefined();
+                return EvalResult::ok(Value::boolean(s->find_value(val) != JSSet::kNotFound));
+            }))));
+
+        // Set.prototype.delete
+        set_prototype_->set_property("delete", Value::object(ObjectPtr(make_set_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kSet) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Set.prototype.delete called on non-Set");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* s = static_cast<JSSet*>(this_val.as_object_raw());
+                Value val = args.size() > 0 ? args[0] : Value::undefined();
+                size_t idx = s->find_value(val);
+                if (idx == JSSet::kNotFound) return EvalResult::ok(Value::boolean(false));
+                s->values_.erase(s->values_.begin() + static_cast<ptrdiff_t>(idx));
+                return EvalResult::ok(Value::boolean(true));
+            }))));
+
+        // Set.prototype.clear
+        set_prototype_->set_property("clear", Value::object(ObjectPtr(make_set_method(
+            [this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kSet) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Set.prototype.clear called on non-Set");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* s = static_cast<JSSet*>(this_val.as_object_raw());
+                s->values_.clear();
+                return EvalResult::ok(Value::undefined());
+            }))));
+
+        // Set.prototype.forEach
+        set_prototype_->set_property("forEach", Value::object(ObjectPtr(make_set_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kSet) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Set.prototype.forEach called on non-Set");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                if (args.empty() || !args[0].is_object() ||
+                    args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "forEach callback must be a function");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* s = static_cast<JSSet*>(this_val.as_object_raw());
+                Value this_arg = args.size() > 1 ? args[1] : Value::undefined();
+                size_t sz = s->values_.size();
+                for (size_t i = 0; i < sz; ++i) {
+                    if (i >= s->values_.size()) break;
+                    Value cb_args[3] = {s->values_[i], s->values_[i], this_val};
+                    auto r = call_function_val(args[0], this_arg, std::span<Value>(cb_args, 3));
+                    if (!r.is_ok()) return r;
+                }
+                return EvalResult::ok(Value::undefined());
+            }))));
+
+        // Helper: create a SetIterator-based iterator
+        auto make_set_iter_fn = [&](CollectionIterMode mode) {
+            auto fn = RcPtr<JSFunction>::make();
+            fn->set_native_fn([this, mode](Value this_val, std::vector<Value>, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kSet) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Set iterator called on non-Set");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* s = static_cast<JSSet*>(this_val.as_object_raw());
+                auto iter = RcPtr<JSSetIterator>::make();
+                iter->set_ = RcPtr<JSSet>(s);
+                iter->index_ = 0;
+                iter->mode_ = mode;
+                gc_heap_.Register(iter.get());
+
+                auto iter_obj = RcPtr<JSObject>::make();
+                iter_obj->set_proto(object_prototype_);
+                gc_heap_.Register(iter_obj.get());
+                iter_obj->set_property("__set_iter__", Value::object(ObjectPtr(iter)));
+
+                auto next_fn = RcPtr<JSFunction>::make();
+                next_fn->set_native_fn([this, mode](Value self, std::vector<Value>, bool) -> EvalResult {
+                    if (!self.is_object()) {
+                        auto r = RcPtr<JSObject>::make();
+                        gc_heap_.Register(r.get());
+                        r->set_property("value", Value::undefined());
+                        r->set_property("done", Value::boolean(true));
+                        return EvalResult::ok(Value::object(ObjectPtr(r)));
+                    }
+                    auto* iter_wrap = static_cast<JSObject*>(self.as_object_raw());
+                    Value iter_val = iter_wrap->get_property("__set_iter__");
+                    if (!iter_val.is_object() || iter_val.as_object_raw()->object_kind() != ObjectKind::kSetIterator) {
+                        auto r = RcPtr<JSObject>::make();
+                        gc_heap_.Register(r.get());
+                        r->set_property("value", Value::undefined());
+                        r->set_property("done", Value::boolean(true));
+                        return EvalResult::ok(Value::object(ObjectPtr(r)));
+                    }
+                    auto* iter = static_cast<JSSetIterator*>(iter_val.as_object_raw());
+                    auto make_result = [&](Value value, bool done) -> EvalResult {
+                        auto r = RcPtr<JSObject>::make();
+                        gc_heap_.Register(r.get());
+                        r->set_property("value", std::move(value));
+                        r->set_property("done", Value::boolean(done));
+                        return EvalResult::ok(Value::object(ObjectPtr(r)));
+                    };
+                    if (!iter->set_ || iter->index_ >= iter->set_->values_.size()) {
+                        return make_result(Value::undefined(), true);
+                    }
+                    Value elem = iter->set_->values_[iter->index_++];
+                    if (mode == CollectionIterMode::kEntries) {
+                        auto pair_arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+                        gc_heap_.Register(pair_arr.get());
+                        pair_arr->set_proto(array_prototype_);
+                        pair_arr->elements_[0] = elem;
+                        pair_arr->elements_[1] = elem;
+                        pair_arr->array_length_ = 2;
+                        return make_result(Value::object(ObjectPtr(pair_arr)), false);
+                    }
+                    return make_result(std::move(elem), false);
+                });
+                gc_heap_.Register(next_fn.get());
+                iter_obj->set_property("next", Value::object(ObjectPtr(next_fn)));
+
+                auto self_iter_fn = RcPtr<JSFunction>::make();
+                self_iter_fn->set_native_fn([](Value self2, std::vector<Value>, bool) -> EvalResult {
+                    return EvalResult::ok(self2);
+                });
+                gc_heap_.Register(self_iter_fn.get());
+                iter_obj->set_property_by_symbol(symbol_table_.well_known_iterator,
+                                                  Value::object(ObjectPtr(self_iter_fn)));
+                return EvalResult::ok(Value::object(ObjectPtr(iter_obj)));
+            });
+            gc_heap_.Register(fn.get());
+            return fn;
+        };
+
+        set_prototype_->set_property("values", Value::object(ObjectPtr(
+            make_set_iter_fn(CollectionIterMode::kValues))));
+        // keys() === values() for Set
+        set_prototype_->set_property("keys", Value::object(ObjectPtr(
+            make_set_iter_fn(CollectionIterMode::kValues))));
+        set_prototype_->set_property("entries", Value::object(ObjectPtr(
+            make_set_iter_fn(CollectionIterMode::kEntries))));
+
+        // [Symbol.iterator] = values
+        {
+            auto values_val = set_prototype_->get_property("values");
+            set_prototype_->set_property_by_symbol(symbol_table_.well_known_iterator, values_val);
+        }
+
+        // Set constructor
+        auto set_ctor = RcPtr<JSFunction>::make();
+        set_ctor->set_name(std::string("Set"));
+        set_ctor->set_native_fn([this](Value, std::vector<Value> args, bool is_new) -> EvalResult {
+            if (!is_new) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Constructor Set requires 'new'");
+                return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+            }
+            auto s = RcPtr<JSSet>::make();
+            gc_heap_.Register(s.get());
+            s->set_proto(set_prototype_);
+            if (!args.empty() && !args[0].is_undefined() && !args[0].is_null()) {
+                std::vector<Value> items;
+                if (!spread_into(args[0], items)) {
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                for (auto& item : items) {
+                    if (s->find_value(item) == JSSet::kNotFound) {
+                        s->values_.push_back(std::move(item));
+                    }
+                }
+            }
+            return EvalResult::ok(Value::object(ObjectPtr(s)));
+        });
+        gc_heap_.Register(set_ctor.get());
+        global_env_->define_initialized("Set");
+        global_env_->set("Set", Value::object(ObjectPtr(set_ctor)));
+    }
+
+    // ---- WeakMap ----
+    {
+        weakmap_prototype_ = RcPtr<JSObject>::make();
+        weakmap_prototype_->set_proto(object_prototype_);
+        gc_heap_.Register(weakmap_prototype_.get());
+
+        auto make_wm_method = [&](auto fn_body) {
+            auto fn = RcPtr<JSFunction>::make();
+            fn->set_native_fn(fn_body);
+            gc_heap_.Register(fn.get());
+            return fn;
+        };
+
+        weakmap_prototype_->set_property("set", Value::object(ObjectPtr(make_wm_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakMap) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakMap.prototype.set called on non-WeakMap");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                Value key = args.size() > 0 ? args[0] : Value::undefined();
+                if (!key.is_object()) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Invalid value used as weak map key");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* wm = static_cast<JSWeakMap*>(this_val.as_object_raw());
+                Value val = args.size() > 1 ? args[1] : Value::undefined();
+                wm->table_[key.as_object_raw()] = std::move(val);
+                return EvalResult::ok(this_val);
+            }))));
+
+        weakmap_prototype_->set_property("get", Value::object(ObjectPtr(make_wm_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakMap) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakMap.prototype.get called on non-WeakMap");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                Value key = args.size() > 0 ? args[0] : Value::undefined();
+                if (!key.is_object()) return EvalResult::ok(Value::undefined());
+                auto* wm = static_cast<JSWeakMap*>(this_val.as_object_raw());
+                auto it = wm->table_.find(key.as_object_raw());
+                if (it == wm->table_.end()) return EvalResult::ok(Value::undefined());
+                return EvalResult::ok(it->second);
+            }))));
+
+        weakmap_prototype_->set_property("has", Value::object(ObjectPtr(make_wm_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakMap) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakMap.prototype.has called on non-WeakMap");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                Value key = args.size() > 0 ? args[0] : Value::undefined();
+                if (!key.is_object()) return EvalResult::ok(Value::boolean(false));
+                auto* wm = static_cast<JSWeakMap*>(this_val.as_object_raw());
+                return EvalResult::ok(Value::boolean(wm->table_.count(key.as_object_raw()) > 0));
+            }))));
+
+        weakmap_prototype_->set_property("delete", Value::object(ObjectPtr(make_wm_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakMap) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakMap.prototype.delete called on non-WeakMap");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                Value key = args.size() > 0 ? args[0] : Value::undefined();
+                if (!key.is_object()) return EvalResult::ok(Value::boolean(false));
+                auto* wm = static_cast<JSWeakMap*>(this_val.as_object_raw());
+                return EvalResult::ok(Value::boolean(wm->table_.erase(key.as_object_raw()) > 0));
+            }))));
+
+        auto wm_ctor = RcPtr<JSFunction>::make();
+        wm_ctor->set_name(std::string("WeakMap"));
+        wm_ctor->set_native_fn([this](Value, std::vector<Value> args, bool is_new) -> EvalResult {
+            if (!is_new) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Constructor WeakMap requires 'new'");
+                return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+            }
+            auto wm = RcPtr<JSWeakMap>::make();
+            gc_heap_.Register(wm.get());
+            wm->set_proto(weakmap_prototype_);
+            if (!args.empty() && !args[0].is_undefined() && !args[0].is_null()) {
+                std::vector<Value> items;
+                if (!spread_into(args[0], items)) {
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                for (auto& item : items) {
+                    if (!item.is_object()) {
+                        pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Invalid value used as weak map key");
+                        return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                    }
+                    auto* pair_obj = static_cast<JSObject*>(item.as_object_raw());
+                    Value k, v;
+                    if (pair_obj->object_kind() == ObjectKind::kArray) {
+                        k = pair_obj->elements_.count(0) ? pair_obj->elements_.at(0) : Value::undefined();
+                        v = pair_obj->elements_.count(1) ? pair_obj->elements_.at(1) : Value::undefined();
+                    } else {
+                        k = pair_obj->get_property("0");
+                        v = pair_obj->get_property("1");
+                    }
+                    if (!k.is_object()) {
+                        pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Invalid value used as weak map key");
+                        return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                    }
+                    wm->table_[k.as_object_raw()] = std::move(v);
+                }
+            }
+            return EvalResult::ok(Value::object(ObjectPtr(wm)));
+        });
+        gc_heap_.Register(wm_ctor.get());
+        global_env_->define_initialized("WeakMap");
+        global_env_->set("WeakMap", Value::object(ObjectPtr(wm_ctor)));
+    }
+
+    // ---- WeakSet ----
+    {
+        weakset_prototype_ = RcPtr<JSObject>::make();
+        weakset_prototype_->set_proto(object_prototype_);
+        gc_heap_.Register(weakset_prototype_.get());
+
+        auto make_ws_method = [&](auto fn_body) {
+            auto fn = RcPtr<JSFunction>::make();
+            fn->set_native_fn(fn_body);
+            gc_heap_.Register(fn.get());
+            return fn;
+        };
+
+        weakset_prototype_->set_property("add", Value::object(ObjectPtr(make_ws_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakSet) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakSet.prototype.add called on non-WeakSet");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                Value val = args.size() > 0 ? args[0] : Value::undefined();
+                if (!val.is_object()) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Invalid value used in weak set");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                auto* ws = static_cast<JSWeakSet*>(this_val.as_object_raw());
+                ws->table_.insert(val.as_object_raw());
+                return EvalResult::ok(this_val);
+            }))));
+
+        weakset_prototype_->set_property("has", Value::object(ObjectPtr(make_ws_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakSet) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakSet.prototype.has called on non-WeakSet");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                Value val = args.size() > 0 ? args[0] : Value::undefined();
+                if (!val.is_object()) return EvalResult::ok(Value::boolean(false));
+                auto* ws = static_cast<JSWeakSet*>(this_val.as_object_raw());
+                return EvalResult::ok(Value::boolean(ws->table_.count(val.as_object_raw()) > 0));
+            }))));
+
+        weakset_prototype_->set_property("delete", Value::object(ObjectPtr(make_ws_method(
+            [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakSet) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakSet.prototype.delete called on non-WeakSet");
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                Value val = args.size() > 0 ? args[0] : Value::undefined();
+                if (!val.is_object()) return EvalResult::ok(Value::boolean(false));
+                auto* ws = static_cast<JSWeakSet*>(this_val.as_object_raw());
+                return EvalResult::ok(Value::boolean(ws->table_.erase(val.as_object_raw()) > 0));
+            }))));
+
+        auto ws_ctor = RcPtr<JSFunction>::make();
+        ws_ctor->set_name(std::string("WeakSet"));
+        ws_ctor->set_native_fn([this](Value, std::vector<Value> args, bool is_new) -> EvalResult {
+            if (!is_new) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Constructor WeakSet requires 'new'");
+                return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+            }
+            auto ws = RcPtr<JSWeakSet>::make();
+            gc_heap_.Register(ws.get());
+            ws->set_proto(weakset_prototype_);
+            if (!args.empty() && !args[0].is_undefined() && !args[0].is_null()) {
+                std::vector<Value> items;
+                if (!spread_into(args[0], items)) {
+                    return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                }
+                for (auto& item : items) {
+                    if (!item.is_object()) {
+                        pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Invalid value used in weak set");
+                        return EvalResult::err(Error{ErrorKind::Runtime, kPendingThrowSentinel});
+                    }
+                    ws->table_.insert(item.as_object_raw());
+                }
+            }
+            return EvalResult::ok(Value::object(ObjectPtr(ws)));
+        });
+        gc_heap_.Register(ws_ctor.get());
+        global_env_->define_initialized("WeakSet");
+        global_env_->set("WeakSet", Value::object(ObjectPtr(ws_ctor)));
+    }
+
     // Register the global environment with GcHeap so user-created closures reachable
     // from it are treated as roots and not swept.
     gc_heap_.Register(global_env_.get());
@@ -3912,6 +4612,10 @@ EvalResult Interpreter::exec(const Program& program) {
         add_obj(symbol_prototype_.get());
         add_obj(symbol_constructor_.get());
         add_obj(generator_prototype_.get());
+        add_obj(map_prototype_.get());
+        add_obj(set_prototype_.get());
+        add_obj(weakmap_prototype_.get());
+        add_obj(weakset_prototype_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
         if (pending_throw_.has_value()) add_val(*pending_throw_);
@@ -3940,6 +4644,10 @@ EvalResult Interpreter::exec(const Program& program) {
     if (regexp_prototype_) regexp_prototype_->clear_function_properties();
     if (symbol_prototype_) symbol_prototype_->clear_function_properties();
     if (generator_prototype_) generator_prototype_->clear_function_properties();
+    if (map_prototype_) map_prototype_->clear_function_properties();
+    if (set_prototype_) set_prototype_->clear_function_properties();
+    if (weakmap_prototype_) weakmap_prototype_->clear_function_properties();
+    if (weakset_prototype_) weakset_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     if (number_constructor_) number_constructor_->clear_own_properties();
     if (boolean_constructor_) boolean_constructor_->clear_own_properties();
@@ -4548,7 +5256,8 @@ bool Interpreter::spread_into(const Value& iterable, std::vector<Value>& out) {
     JSObject* obj = nullptr;
     if (k == ObjectKind::kOrdinary || k == ObjectKind::kRegExp ||
         k == ObjectKind::kStringObject || k == ObjectKind::kBooleanObject ||
-        k == ObjectKind::kGenerator) {
+        k == ObjectKind::kGenerator ||
+        k == ObjectKind::kMap || k == ObjectKind::kSet) {
         obj = static_cast<JSObject*>(iterable.as_object_raw());
     }
     if (!obj) {
@@ -4571,7 +5280,8 @@ bool Interpreter::spread_into(const Value& iterable, std::vector<Value>& out) {
     ObjectKind ik = iterator.as_object_raw()->object_kind();
     if (ik == ObjectKind::kOrdinary || ik == ObjectKind::kArray ||
         ik == ObjectKind::kRegExp || ik == ObjectKind::kStringObject ||
-        ik == ObjectKind::kBooleanObject || ik == ObjectKind::kGenerator) {
+        ik == ObjectKind::kBooleanObject || ik == ObjectKind::kGenerator ||
+        ik == ObjectKind::kMap || ik == ObjectKind::kSet) {
         next_method = static_cast<JSObject*>(iterator.as_object_raw())->get_property("next");
     }
     while (true) {
@@ -5805,7 +6515,11 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
         RcObject* raw_for_sym = obj_val.as_object_raw();
         if (raw_for_sym->object_kind() == ObjectKind::kOrdinary ||
             raw_for_sym->object_kind() == ObjectKind::kArray ||
-            raw_for_sym->object_kind() == ObjectKind::kGenerator) {
+            raw_for_sym->object_kind() == ObjectKind::kGenerator ||
+            raw_for_sym->object_kind() == ObjectKind::kMap ||
+            raw_for_sym->object_kind() == ObjectKind::kSet ||
+            raw_for_sym->object_kind() == ObjectKind::kWeakMap ||
+            raw_for_sym->object_kind() == ObjectKind::kWeakSet) {
             auto* js_obj_sym = static_cast<JSObject*>(raw_for_sym);
             uint64_t sym_id = key_result.value().as_symbol_id();
             const JSObject::SymbolPropertyEntry* sym_entry = js_obj_sym->find_symbol_entry(sym_id);
@@ -5873,7 +6587,9 @@ EvalResult Interpreter::eval_member_expr(const MemberExpression& expr) {
         return EvalResult::ok(js_obj->get_property(key));
     }
     if (raw_obj->object_kind() != ObjectKind::kOrdinary && raw_obj->object_kind() != ObjectKind::kArray &&
-        raw_obj->object_kind() != ObjectKind::kGenerator) {
+        raw_obj->object_kind() != ObjectKind::kGenerator &&
+        raw_obj->object_kind() != ObjectKind::kMap && raw_obj->object_kind() != ObjectKind::kSet &&
+        raw_obj->object_kind() != ObjectKind::kWeakMap && raw_obj->object_kind() != ObjectKind::kWeakSet) {
         return EvalResult::ok(Value::undefined());
     }
     auto* js_obj = static_cast<JSObject*>(raw_obj);
@@ -5932,7 +6648,9 @@ EvalResult Interpreter::eval_get_property_of(const Value& obj_val, const Value& 
     if (key_val.is_symbol()) {
         RcObject* raw = obj_val.as_object_raw();
         if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray ||
-            raw->object_kind() == ObjectKind::kGenerator) {
+            raw->object_kind() == ObjectKind::kGenerator ||
+            raw->object_kind() == ObjectKind::kMap || raw->object_kind() == ObjectKind::kSet ||
+            raw->object_kind() == ObjectKind::kWeakMap || raw->object_kind() == ObjectKind::kWeakSet) {
             auto* js_obj_sym = static_cast<JSObject*>(raw);
             uint64_t sym_id = key_val.as_symbol_id();
             const JSObject::SymbolPropertyEntry* sym_entry = js_obj_sym->find_symbol_entry(sym_id);
@@ -5991,7 +6709,9 @@ EvalResult Interpreter::eval_get_property_of(const Value& obj_val, const Value& 
         return EvalResult::ok(js_obj->get_property(key));
     }
     if (raw_obj->object_kind() != ObjectKind::kOrdinary && raw_obj->object_kind() != ObjectKind::kArray &&
-        raw_obj->object_kind() != ObjectKind::kGenerator) {
+        raw_obj->object_kind() != ObjectKind::kGenerator &&
+        raw_obj->object_kind() != ObjectKind::kMap && raw_obj->object_kind() != ObjectKind::kSet &&
+        raw_obj->object_kind() != ObjectKind::kWeakMap && raw_obj->object_kind() != ObjectKind::kWeakSet) {
         return EvalResult::ok(Value::undefined());
     }
     auto* js_obj = static_cast<JSObject*>(raw_obj);
@@ -7044,7 +7764,8 @@ StmtResult Interpreter::eval_for_of_stmt(const ForOfStatement& stmt,
         JSObject* obj = nullptr;
         if (k == ObjectKind::kOrdinary || k == ObjectKind::kRegExp ||
             k == ObjectKind::kStringObject || k == ObjectKind::kBooleanObject ||
-            k == ObjectKind::kGenerator) {
+            k == ObjectKind::kGenerator ||
+            k == ObjectKind::kMap || k == ObjectKind::kSet) {
             obj = static_cast<JSObject*>(iterable.as_object_raw());
         }
         if (obj) {
@@ -7207,7 +7928,9 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
                 RcObject* sym_raw = this_val.as_object_raw();
                 if (sym_raw->object_kind() == ObjectKind::kOrdinary ||
                     sym_raw->object_kind() == ObjectKind::kArray ||
-                    sym_raw->object_kind() == ObjectKind::kGenerator) {
+                    sym_raw->object_kind() == ObjectKind::kGenerator ||
+                    sym_raw->object_kind() == ObjectKind::kMap ||
+                    sym_raw->object_kind() == ObjectKind::kSet) {
                     callee_val = static_cast<JSObject*>(sym_raw)->get_property_by_symbol(sym_id);
                 } else {
                     callee_val = Value::undefined();
@@ -7237,7 +7960,9 @@ EvalResult Interpreter::eval_call_expr(const CallExpression& expr) {
         } else {
         RcObject* obj_ptr = this_val.as_object_raw();
         if (obj_ptr->object_kind() == ObjectKind::kOrdinary || obj_ptr->object_kind() == ObjectKind::kArray ||
-            obj_ptr->object_kind() == ObjectKind::kGenerator) {
+            obj_ptr->object_kind() == ObjectKind::kGenerator ||
+            obj_ptr->object_kind() == ObjectKind::kMap || obj_ptr->object_kind() == ObjectKind::kSet ||
+            obj_ptr->object_kind() == ObjectKind::kWeakMap || obj_ptr->object_kind() == ObjectKind::kWeakSet) {
             auto* js_obj = static_cast<JSObject*>(obj_ptr);
             callee_val = js_obj->get_property(key);
         } else if (obj_ptr->object_kind() == ObjectKind::kFunction) {
@@ -7556,6 +8281,10 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
         add_obj(symbol_prototype_.get());
         add_obj(symbol_constructor_.get());
         add_obj(generator_prototype_.get());
+        add_obj(map_prototype_.get());
+        add_obj(set_prototype_.get());
+        add_obj(weakmap_prototype_.get());
+        add_obj(weakset_prototype_.get());
         for (auto& ep : error_protos_) add_obj(ep.get());
         add_val(current_this_);
         if (pending_throw_.has_value()) add_val(*pending_throw_);
@@ -7581,6 +8310,10 @@ EvalResult Interpreter::exec_module(const std::string& entry_path) {
     if (regexp_prototype_) regexp_prototype_->clear_function_properties();
     if (symbol_prototype_) symbol_prototype_->clear_function_properties();
     if (generator_prototype_) generator_prototype_->clear_function_properties();
+    if (map_prototype_) map_prototype_->clear_function_properties();
+    if (set_prototype_) set_prototype_->clear_function_properties();
+    if (weakmap_prototype_) weakmap_prototype_->clear_function_properties();
+    if (weakset_prototype_) weakset_prototype_->clear_function_properties();
     if (object_constructor_) object_constructor_->clear_own_properties();
     if (number_constructor_) number_constructor_->clear_own_properties();
     if (boolean_constructor_) boolean_constructor_->clear_own_properties();

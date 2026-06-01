@@ -7,6 +7,7 @@
 #include "qppjs/runtime/job_queue.h"
 #include "qppjs/runtime/js_function.h"
 #include "qppjs/runtime/js_generator.h"
+#include "qppjs/runtime/js_map.h"
 #include "qppjs/runtime/js_object.h"
 #include "qppjs/runtime/js_regexp.h"
 #include "qppjs/runtime/module_loader.h"
@@ -234,6 +235,10 @@ private:
     RcPtr<JSObject> regexp_prototype_;   // RegExp.prototype
     RcPtr<JSObject> symbol_prototype_;   // Symbol.prototype (toString/valueOf)
     RcPtr<JSObject> generator_prototype_;  // Generator prototype (.next/.return/.throw/[Symbol.iterator])
+    RcPtr<JSObject> map_prototype_;        // Map.prototype
+    RcPtr<JSObject> set_prototype_;        // Set.prototype
+    RcPtr<JSObject> weakmap_prototype_;    // WeakMap.prototype
+    RcPtr<JSObject> weakset_prototype_;    // WeakSet.prototype
     RcPtr<JSFunction> object_constructor_;  // global Object function
     RcPtr<JSFunction> number_constructor_;  // global Number function
     RcPtr<JSFunction> boolean_constructor_;  // global Boolean function
