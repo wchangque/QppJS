@@ -49,6 +49,7 @@
 29. ~~**Number.prototype 方法 + String.prototype 缺失方法** — 已完成（2026-06-02，50 个新测试（NS-01～NS-25 × Interp+VM），4680/4680 通过（coverage），0 LSan 泄漏（预期））~~
 30. ~~**5 组内建功能补充（globalThis/Object.is/setPrototypeOf/hasOwn/Array.at/JSON/queueMicrotask）** — 已完成（2026-06-02，32 个新测试（GJ-01～GJ-16 × Interp+VM），4712/4712 通过（coverage），0 LSan 泄漏（预期））~~
 31. ~~**3 组功能补充（Symbol WKS + Symbol.toPrimitive/hasInstance/toStringTag + Function constructor + eval）** — 已完成（2026-06-02，34 个新测试（SE-01～SE-15 × Interp+VM），4746/4746 通过（coverage），0 LSan 泄漏（预期））~~
+32. ~~**switch 语句（switch/case/default/break/fallthrough 语义）** — 已完成（2026-06-02，24 个新测试（SW-01～SW-12 × Interp+VM），4770/4770 通过（coverage），0 LSan 泄漏（预期））~~
 
 ## 3. 进入前提
 

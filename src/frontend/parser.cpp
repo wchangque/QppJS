@@ -439,6 +439,7 @@ static SourceRange stmt_range(const StmtNode& s) {
                               [](const ExportDefaultDeclaration& n) { return n.range; },
                               [](const DestructuringDeclaration& n) { return n.range; },
                               [](const ClassDeclaration& n) { return n.range; },
+                              [](const SwitchStatement& n) { return n.range; },
                       },
                       s.v);
 }
@@ -3426,6 +3427,67 @@ struct Parser {
                 span(kw.range.offset, try_end)}});
     }
 
+    ParseResult<StmtNode> parse_switch_stmt() {
+        Token kw = cur;
+        advance();  // consume 'switch'
+        if (cur.kind != TokenKind::LParen) {
+            return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected '(' after 'switch'"));
+        }
+        advance();  // consume '('
+        auto disc_r = parse_expr(1);
+        if (!disc_r.ok()) return ParseResult<StmtNode>::Err(disc_r.error());
+        if (cur.kind != TokenKind::RParen) {
+            return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected ')'"));
+        }
+        advance();  // consume ')'
+        if (cur.kind != TokenKind::LBrace) {
+            return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected '{'"));
+        }
+        advance();  // consume '{'
+
+        std::vector<SwitchCase> cases;
+        while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
+            SwitchCase sc;
+            if (cur.kind == TokenKind::KwCase) {
+                advance();  // consume 'case'
+                auto test_r = parse_expr(2);
+                if (!test_r.ok()) return ParseResult<StmtNode>::Err(test_r.error());
+                sc.test = std::make_unique<ExprNode>(std::move(test_r.value()));
+                if (cur.kind != TokenKind::Colon) {
+                    return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected ':' after case"));
+                }
+                advance();  // consume ':'
+            } else if (is_contextual_keyword("default")) {
+                advance();  // consume 'default'
+                sc.test = std::nullopt;
+                if (cur.kind != TokenKind::Colon) {
+                    return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected ':' after default"));
+                }
+                advance();  // consume ':'
+            } else {
+                return ParseResult<StmtNode>::Err(
+                    make_parse_error(source, cur, "expected 'case' or 'default' in switch"));
+            }
+            // parse consequent: statements until next case/default/}
+            // 'default' is not in kKeywords so it appears as Ident
+            while (cur.kind != TokenKind::KwCase && !is_contextual_keyword("default") &&
+                   cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
+                auto stmt_r = parse_stmt();
+                if (!stmt_r.ok()) return ParseResult<StmtNode>::Err(stmt_r.error());
+                sc.consequent.push_back(std::make_unique<StmtNode>(std::move(stmt_r.value())));
+            }
+            cases.push_back(std::move(sc));
+        }
+        if (cur.kind != TokenKind::RBrace) {
+            return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected '}'"));
+        }
+        uint32_t end = range_end(cur.range);
+        advance();  // consume '}'
+        return ParseResult<StmtNode>::Ok(StmtNode{SwitchStatement{
+            std::make_unique<ExprNode>(std::move(disc_r.value())), std::move(cases),
+            span(kw.range.offset, end)}});
+    }
+
     ParseResult<StmtNode> parse_break_stmt() {
         Token kw = cur;
         advance();
@@ -4167,6 +4229,8 @@ struct Parser {
                 return parse_continue_stmt();
             case TokenKind::KwFor:
                 return parse_for_stmt();
+            case TokenKind::KwSwitch:
+                return parse_switch_stmt();
             case TokenKind::Ident: {
                 // async function name(params) { body } — async 函数声明
                 if (token_text(cur) == "async") {

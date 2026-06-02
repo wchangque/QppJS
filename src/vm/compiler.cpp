@@ -217,6 +217,13 @@ void Compiler::hoist_vars_scan_stmt(const StmtNode& stmt) {
         if (dd.kind == VarKind::Var) {
             hoist_vars_scan_pattern(*dd.pattern);
         }
+    } else if (std::holds_alternative<SwitchStatement>(stmt.v)) {
+        const auto& sw = std::get<SwitchStatement>(stmt.v);
+        for (const auto& sc : sw.cases) {
+            for (const auto& s : sc.consequent) {
+                hoist_vars_scan_stmt(*s);
+            }
+        }
     }
     // Do NOT recurse into FunctionDeclaration/FunctionExpression bodies
 }
@@ -558,6 +565,7 @@ void Compiler::compile_stmt(const StmtNode& stmt) {
             [this](const ForOfStatement& s) { compile_for_of_stmt(s); },
             [this](const DestructuringDeclaration& s) { compile_destructuring_decl(s); },
             [this](const ClassDeclaration& s) { compile_class_decl(s); },
+            [this](const SwitchStatement& s) { compile_switch_stmt(s); },
             [](const ImportDeclaration&) {
                 // Link 阶段已处理，编译时 no-op
             },
@@ -2124,7 +2132,10 @@ void Compiler::compile_break_stmt(const BreakStatement& stmt) {
 void Compiler::compile_continue_stmt(const ContinueStatement& stmt) {
     size_t unwind_finally_depth = finally_info_stack_.size();
     for (auto it = loop_env_stack_.rbegin(); it != loop_env_stack_.rend(); ++it) {
-        bool matches = !stmt.label.has_value() || (it->label == stmt.label);
+        // switch 不响应 continue：无标签 continue 跳过，有标签 continue 仅在标签匹配时响应
+        bool matches = (it->is_switch && !stmt.label.has_value())
+                           ? false
+                           : (!stmt.label.has_value() || (it->label == stmt.label));
         if (matches) {
             for (size_t i = unwind_finally_depth; i > it->finally_depth_at_entry; --i) {
                 emit(Opcode::kLeaveTry);
@@ -2183,6 +2194,76 @@ void Compiler::compile_labeled_stmt(const LabeledStatement& stmt) {
         }
         loop_env_stack_.pop_back();
     }
+}
+
+void Compiler::compile_switch_stmt(const SwitchStatement& stmt, std::optional<std::string> label) {
+    // 使用临时变量存储 discriminant，避免栈管理复杂性
+    static int switch_counter = 0;
+    std::string disc_tmp = "$__qppjs_sw_disc_" + std::to_string(switch_counter++) + "__";
+    uint16_t disc_idx = add_name(disc_tmp);
+
+    // 编译 discriminant，存入临时变量（DefLet + InitVar 完成定义和初始化）
+    emit(Opcode::kDefLet);
+    emit_u16(disc_idx);
+    compile_expr(*stmt.discriminant);
+    emit(Opcode::kInitVar);
+    emit_u16(disc_idx);
+    emit(Opcode::kPop);
+
+    // 确定 default case 索引
+    int default_idx = -1;
+    for (int i = 0; i < static_cast<int>(stmt.cases.size()); ++i) {
+        if (!stmt.cases[i].test.has_value()) {
+            default_idx = i;
+            break;
+        }
+    }
+
+    // 比较段：每个非 default case：kGetVar disc + compile test + kStrictEq + kJumpIfTrue L_body[i]
+    std::vector<size_t> match_patches(stmt.cases.size(), 0);
+    for (int i = 0; i < static_cast<int>(stmt.cases.size()); ++i) {
+        if (!stmt.cases[i].test.has_value()) continue;
+        emit(Opcode::kGetVar);
+        emit_u16(disc_idx);
+        compile_expr(**stmt.cases[i].test);
+        emit(Opcode::kStrictEq);
+        match_patches[static_cast<size_t>(i)] = emit_jump(Opcode::kJumpIfTrue);
+    }
+
+    // 无匹配：跳到 default 或 after_switch
+    size_t default_patch = emit_jump(Opcode::kJump);
+
+    // 推入 LoopEnv（允许 break 退出 switch；is_switch=true 使 continue 跳过此 env 传到外层）
+    loop_env_stack_.push_back(LoopEnv{label, 0, {}, {}, {}, false, false, false, false,
+                                      finally_info_stack_.size(), /*is_switch=*/true});
+
+    // body 段：逐 case 发射 body，记录每个 case body 的起始偏移
+    std::vector<size_t> body_offsets(stmt.cases.size(), 0);
+    for (int i = 0; i < static_cast<int>(stmt.cases.size()); ++i) {
+        body_offsets[static_cast<size_t>(i)] = current_offset();
+        // 非 default case：patch 比较跳转到此处
+        if (stmt.cases[i].test.has_value()) {
+            patch_jump_to(match_patches[static_cast<size_t>(i)], body_offsets[static_cast<size_t>(i)]);
+        }
+        for (const auto& s : stmt.cases[i].consequent) {
+            compile_stmt(*s);
+        }
+    }
+
+    size_t after_switch = current_offset();
+
+    // patch default_patch
+    if (default_idx >= 0) {
+        patch_jump_to(default_patch, body_offsets[static_cast<size_t>(default_idx)]);
+    } else {
+        patch_jump_to(default_patch, after_switch);
+    }
+
+    // patch break_patches
+    for (size_t p : loop_env_stack_.back().break_patches) {
+        patch_jump_to(p, after_switch);
+    }
+    loop_env_stack_.pop_back();
 }
 
 void Compiler::compile_for_stmt(const ForStatement& stmt, std::optional<std::string> label) {

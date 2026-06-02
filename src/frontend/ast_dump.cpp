@@ -625,6 +625,22 @@ std::string dump_stmt(const StmtNode& node, int indent) {
                        [&](const ClassDeclaration& cd) {
                            result = prefix + "ClassDeclaration(" + cd.name + ")\n";
                        },
+                       [&](const SwitchStatement& ss) {
+                           result = prefix + "SwitchStatement\n";
+                           result += ind(indent + 1) + "discriminant:\n";
+                           result += dump_expr(*ss.discriminant, indent + 2);
+                           for (const auto& sc : ss.cases) {
+                               if (sc.test.has_value()) {
+                                   result += ind(indent + 1) + "case:\n";
+                                   result += dump_expr(**sc.test, indent + 2);
+                               } else {
+                                   result += ind(indent + 1) + "default:\n";
+                               }
+                               for (const auto& s : sc.consequent) {
+                                   result += dump_stmt(*s, indent + 2);
+                               }
+                           }
+                       },
                },
                node.v);
 

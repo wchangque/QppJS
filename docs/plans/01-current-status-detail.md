@@ -4,6 +4,17 @@
 
 ## 1. 已完成任务
 
+- [x] **switch 语句（switch/case/default/break/fallthrough）**（2026-06-02）：
+  - **背景**：switch 语句完全未实现，导致 test262 的 propertyHelper.js harness 无法加载，间接导致大量使用 verifyProperty 的测试失败。
+  - **Token/Lexer**：lexer.cpp 的 kKeywords 中添加 `"switch"→KwSwitch` 和 `"case"→KwCase`（"default" 保持 contextual keyword 以避免影响 `export default` 的解析）；token.cpp 中 `token_kind_name` 补充 KwSwitch/KwCase/KwDefault 三个 case；`is_keyword` 范围扩展到 KwDefault。
+  - **Parser**：parser.cpp `stmt_range` 补充 SwitchStatement 分支；`parse_switch_stmt()` 使用 `is_contextual_keyword("default")` 检测 default 子句（而非 KwDefault），consequent 的终止条件同样用 `!is_contextual_keyword("default")`；`parse_stmt()` 添加 `KwSwitch` 分支调用 `parse_switch_stmt()`。
+  - **AST dump**：ast_dump.cpp 添加 SwitchStatement 输出（discriminant + 各 case 的 test 和 consequent）。
+  - **Interpreter**：`interpreter.h` 声明 `eval_switch_stmt`；`interpreter.cpp` 实现 `eval_switch_stmt`（先找 default_idx，再严格相等匹配 case，从 start_idx 开始 fallthrough 执行，break 无标签→退出，有标签/return/throw/continue→传播）；`hoist_vars_stmt` 添加 SwitchStatement 分支（递归各 case 的 consequent）；`eval_stmt` 添加 `SwitchStatement` 分发。
+  - **Compiler（VM）**：`compiler.h` 声明 `compile_switch_stmt`，`LoopEnv` 新增 `is_switch` 字段；`compile_continue_stmt` 跳过 `is_switch=true` 的 LoopEnv（continue 正确穿透到外层循环）；`hoist_vars_scan_stmt` 添加 SwitchStatement 分支；`compile_stmt` 添加 SwitchStatement 分发；`compile_switch_stmt` 使用临时变量（DefLet+InitVar）存储 discriminant，比较段（GetVar+test+StrictEq+JumpIfTrue）+ 无匹配跳转段（Jump L_default/end）+ body 段（各 case body 自然 fallthrough），break 通过 LoopEnv break_patches 机制处理。
+  - **测试**：新增 `tests/unit/switch_test.cpp`（SW-01～SW-12 × Interp+VM = 24 个测试）；`tests/CMakeLists.txt` 注册。
+  - **修改文件**：`src/frontend/lexer.cpp`、`src/frontend/token.cpp`、`src/frontend/parser.cpp`、`src/frontend/ast_dump.cpp`、`include/qppjs/runtime/interpreter.h`、`src/runtime/interpreter.cpp`、`include/qppjs/vm/compiler.h`、`src/vm/compiler.cpp`、`tests/unit/switch_test.cpp`（新增）、`tests/CMakeLists.txt`。
+  - **测试结果**：4770/4770 通过（coverage），0 LSan 泄漏（预期）。
+
 - [x] **3 组功能补充（Symbol WKS + Symbol.toPrimitive/hasInstance/toStringTag + Function constructor + eval）**（2026-06-02）：
   - **Symbol WKS 补充注册**：`include/qppjs/runtime/symbol_table.h` 新增 `well_known_async_iterator` 和 `well_known_species` 字段；`src/runtime/symbol_table.cpp` 在构造函数中分配 id 并填入 descriptions_；`interpreter.cpp` 和 `vm.cpp` 在 Symbol 构造函数注册区域补充 `Symbol.asyncIterator` 和 `Symbol.species` 属性。
   - **Symbol.toPrimitive 调用**：interpreter.cpp `eval_unary(Plus)` 和 `eval_template_literal` 中，当操作数是对象时先通过 `find_symbol_entry(well_known_to_primitive)` 检查 `[Symbol.toPrimitive]`，若存在则调用（hint="number" 或 hint="string"）再转换；vm.cpp `kPos` opcode 和 `kToString` opcode 对称实现（`kToString` 改为弹栈后处理，避免悬空引用）。

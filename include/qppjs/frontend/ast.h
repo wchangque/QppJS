@@ -501,6 +501,19 @@ struct AsyncFunctionDeclaration {
     bool is_generator = false;  // true for async function* declarations
 };
 
+// switch 语句的单个 case（test == nullopt 表示 default case）
+struct SwitchCase {
+    std::optional<std::unique_ptr<ExprNode>> test;  // nullopt = default
+    std::vector<std::unique_ptr<StmtNode>> consequent;
+};
+
+// switch 语句 switch (disc) { case ...: ... }
+struct SwitchStatement {
+    std::unique_ptr<ExprNode> discriminant;
+    std::vector<SwitchCase> cases;
+    SourceRange range;
+};
+
 struct ThrowStatement {
     ExprNode argument;
     SourceRange range;
@@ -608,7 +621,7 @@ struct StmtNode {
                  ThrowStatement, TryStatement, BreakStatement, ContinueStatement,
                  LabeledStatement, ForStatement, ForInStatement, ForOfStatement,
                  ImportDeclaration, ExportNamedDeclaration, ExportDefaultDeclaration,
-                 DestructuringDeclaration, ClassDeclaration>
+                 DestructuringDeclaration, ClassDeclaration, SwitchStatement>
             v;
 
     StmtNode() = default;

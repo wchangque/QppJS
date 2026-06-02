@@ -44,6 +44,9 @@ enum class TokenKind {
     KwClass,
     KwExtends,
     KwSuper,
+    KwSwitch,
+    KwCase,
+    KwDefault,
 
     // 标点
     LParen,

@@ -55,6 +55,7 @@ private:
     StmtResult eval_function_decl(const FunctionDeclaration& stmt);
     StmtResult eval_throw_stmt(const ThrowStatement& stmt);
     StmtResult eval_try_stmt(const TryStatement& stmt);
+    StmtResult eval_switch_stmt(const SwitchStatement& stmt);
     StmtResult eval_break_stmt(const BreakStatement& stmt);
     StmtResult eval_continue_stmt(const ContinueStatement& stmt);
     StmtResult eval_labeled_stmt(const LabeledStatement& stmt);

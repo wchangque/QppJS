@@ -6246,6 +6246,13 @@ void Interpreter::hoist_vars_stmt(const StmtNode& stmt, Environment& var_target)
     } else if (std::holds_alternative<LabeledStatement>(stmt.v)) {
         const auto& labeled = std::get<LabeledStatement>(stmt.v);
         hoist_vars_stmt(*labeled.body, var_target);
+    } else if (std::holds_alternative<SwitchStatement>(stmt.v)) {
+        const auto& sw = std::get<SwitchStatement>(stmt.v);
+        for (const auto& sc : sw.cases) {
+            for (const auto& s : sc.consequent) {
+                hoist_vars_stmt(*s, var_target);
+            }
+        }
     }
 }
 
@@ -6505,6 +6512,7 @@ StmtResult Interpreter::eval_stmt(const StmtNode& stmt) {
                 if (!val.is_ok()) return StmtResult::err(val.error());
                 return StmtResult::ok(Completion::normal(Value::undefined()));
             },
+            [this](const SwitchStatement& s) { return eval_switch_stmt(s); },
             [](const ImportDeclaration&) -> StmtResult {
                 // Link 阶段已处理，执行时 no-op
                 return StmtResult::ok(Completion::normal(Value::undefined()));
@@ -9431,6 +9439,52 @@ StmtResult Interpreter::eval_try_stmt(const TryStatement& stmt) {
     }
 
     return try_result;
+}
+
+StmtResult Interpreter::eval_switch_stmt(const SwitchStatement& stmt) {
+    auto disc_r = eval_expr(*stmt.discriminant);
+    if (!disc_r.is_ok()) return StmtResult::err(disc_r.error());
+    Value disc = disc_r.value();
+
+    // 找 default 索引
+    int default_idx = -1;
+    for (int i = 0; i < static_cast<int>(stmt.cases.size()); ++i) {
+        if (!stmt.cases[i].test.has_value()) {
+            default_idx = i;
+            break;
+        }
+    }
+
+    // 找第一个严格匹配的 case
+    int start_idx = -1;
+    for (int i = 0; i < static_cast<int>(stmt.cases.size()); ++i) {
+        if (!stmt.cases[i].test.has_value()) continue;
+        auto test_r = eval_expr(**stmt.cases[i].test);
+        if (!test_r.is_ok()) return StmtResult::err(test_r.error());
+        if (strict_eq_values(disc, test_r.value())) {
+            start_idx = i;
+            break;
+        }
+    }
+    if (start_idx < 0) start_idx = default_idx;
+    if (start_idx < 0) return StmtResult::ok(Completion::normal(Value::undefined()));
+
+    // 从 start_idx 开始执行，支持 fallthrough
+    for (int i = start_idx; i < static_cast<int>(stmt.cases.size()); ++i) {
+        for (const auto& s : stmt.cases[i].consequent) {
+            auto r = eval_stmt(*s);
+            if (!r.is_ok()) return r;
+            const Completion& c = r.completion();
+            if (c.is_break() && !c.target.has_value()) {
+                // 无标签 break → 退出 switch
+                return StmtResult::ok(Completion::normal(Value::undefined()));
+            }
+            if (c.is_return() || c.is_throw()) return r;
+            if (c.is_break() && c.target.has_value()) return r;  // 有标签 break 向外传播
+            if (c.is_continue()) return r;                       // continue 传递给外层循环
+        }
+    }
+    return StmtResult::ok(Completion::normal(Value::undefined()));
 }
 
 StmtResult Interpreter::eval_break_stmt(const BreakStatement& stmt) {
