@@ -7,7 +7,7 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 4630/4630 通过（coverage），0 LSan 泄漏（预期） |
+| 测试计数 | 4680/4680 通过（coverage），0 LSan 泄漏（预期） |
 | 最近更新 | 2026-06-02 |
 | 下一步 | 下一批 test262 候选目标（eval / WeakRef 等） |
 | test262 | language/expressions class fields + private fields 实现后约 24%（expressions 32.4% 基线） |
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **Number.prototype 方法（toFixed/toString/toExponential/toPrecision/valueOf）+ String.prototype 缺失方法（at/replaceAll/replace/search/padStart/padEnd/repeat/startsWith/endsWith/includes/matchAll）**（2026-06-02）：interpreter.cpp 和 vm.cpp 向 `number_prototype_` 注册 5 个方法，并在 `eval_member_expr`/`eval_call_expr`/`kGetProp` 添加数字原始值 prototype 查找路径；向 `string_prototype_` 注册 11 个缺失方法（at 用 UTF-16 code unit 语义，matchAll 返回迭代器对象，replace 支持 string/regexp/函数替换器，replaceAll 支持全局替换）；新增 `tests/unit/number_string_methods_test.cpp`（NS-01～NS-25 × Interp+VM = 50 个测试）。4680/4680 通过（coverage），0 LSan 泄漏（预期）。
 
 - [x] **Promise 静态方法（all/race/allSettled/any）+ Array.from 完整实现 + Array.of + Object.entries/values/fromEntries/getOwnPropertyNames**（2026-06-02）：interpreter.cpp 和 vm.cpp 新增 Promise.all（保序结果数组，任一 reject 短路）、Promise.race（第一个 settle 赢）、Promise.allSettled（所有 settle，返回 {status,value/reason} 数组）、Promise.any（任一 resolve 赢，全部 reject 时 reject AggregateError with errors 数组）；interpreter.cpp 补全 Array.from（mapFn + array-like 路径）和 Array.of；vm.cpp 改进 Array.from（mapFn + array-like + string 路径，统一 iterable 消费逻辑）+ Array.of；两侧新增 Object.entries（返回 [[k,v]] 数组）、Object.values（返回值数组）、Object.fromEntries（iterable/array/Map → 对象）、Object.getOwnPropertyNames（含非枚举属性）；js_object.h/cpp 新增 `own_all_string_keys()` 方法（用于 getOwnPropertyNames）；新增 `tests/unit/promise_array_object_test.cpp`（PAO-01～PAO-20 × Interp+VM = 40 个测试）。4630/4630 通过（coverage），0 LSan 泄漏（预期）。
 

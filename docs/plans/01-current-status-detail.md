@@ -4,6 +4,13 @@
 
 ## 1. 已完成任务
 
+- [x] **Number.prototype 方法（toFixed/toString/toExponential/toPrecision/valueOf）+ String.prototype 缺失方法（at/replaceAll/replace/search/padStart/padEnd/repeat/startsWith/endsWith/includes/matchAll）**（2026-06-02）：
+  - **Number.prototype 5 个方法**：`interpreter.cpp` + `vm.cpp` 向 `number_prototype_` 注册 `toFixed`（格式化小数位数，返回字符串）、`toString`（支持 radix 参数，默认 10 进制）、`toExponential`（科学计数法格式）、`toPrecision`（指定有效位数）、`valueOf`（返回原始数值）；两侧在 `eval_member_expr`/`eval_call_expr`/`kGetProp`/`kCallMethod` 添加数字原始值 prototype 查找路径（`is_number()` 分支查 `number_prototype_`），使 `(3.14159).toFixed(2)` 等调用正确路由。
+  - **String.prototype 11 个缺失方法**：`interpreter.cpp` + `vm.cpp` 向 `string_prototype_` 补充注册：`at`（UTF-16 code unit 语义，负索引从末尾倒数）、`replaceAll`（全局替换字符串/正则，支持函数替换器）、`replace`（单次/全局替换，支持 string/regexp/函数替换器，`$&`/`$1` 等反向引用模式）、`search`（返回匹配起始索引，无匹配 -1）、`padStart`（左填充到指定长度）、`padEnd`（右填充到指定长度）、`repeat`（重复字符串 n 次）、`startsWith`（前缀检查，支持 position 参数）、`endsWith`（后缀检查，支持 endPosition 参数）、`includes`（子串存在检查，支持 position 参数）、`matchAll`（返回所有匹配的迭代器对象，要求正则含 `g` flag）。
+  - **布尔原始值 prototype 查找**：`eval_member_expr`/`kGetProp` 添加 `is_boolean()` 分支查 `boolean_prototype_`，使 `true.toString()` 等调用路由正确。
+  - **测试**：新增 `tests/unit/number_string_methods_test.cpp`（NS-01～NS-25 × Interp+VM = 50 个测试，覆盖 Number.prototype toFixed 小数精度/toString radix/toExponential/toPrecision/valueOf、String.prototype at 正负索引、replaceAll 字符串替换/函数替换器、replace 首次匹配/全局/函数替换器、search 匹配/不匹配、padStart/padEnd 填充/已满长度/自定义填充字符、repeat 基础/零次/大数、startsWith/endsWith/includes 基础/position 参数、matchAll 多次匹配/捕获组）；`tests/CMakeLists.txt` 注册。
+  - **测试结果**：4680/4680 通过（coverage），0 LSan 泄漏（预期）。test262 通过率：19.9% → 21.1%。
+
 - [x] **Promise 静态方法（all/race/allSettled/any）+ Array.from 完整 + Array.of + Object.entries/values/fromEntries/getOwnPropertyNames**（2026-06-02）：
   - **Promise 静态方法**：`interpreter.cpp` + `vm.cpp` 新增 `Promise.all`（收集全部 resolve 结果到保序数组，任一 reject 立即短路 reject 整体）；`Promise.race`（注册全部 Promise 的 onFulfilled/onRejected，第一个 settle 的结果赢）；`Promise.allSettled`（等待所有 settle，返回 `{status:"fulfilled",value}` / `{status:"rejected",reason}` 数组）；`Promise.any`（任一 resolve 赢，若全部 reject 则 reject AggregateError，带 `errors` 数组）；四个方法均遍历传入可迭代数组，通过 `PerformThen` / native callback 正确接入微任务队列，count 原子递减归零时触发最终 resolve/reject。
   - **Array.from 完整版**：`interpreter.cpp` 补全 `Array.from` 第二参数 `mapFn`（对每个元素调用 callback，结果写入结果数组）和 array-like 路径（对象含 `length` 属性则按索引读取）；`vm.cpp` 全面改进 `Array.from`（mapFn + array-like + string 路径，统一 iterable 消费逻辑）。

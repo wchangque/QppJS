@@ -46,6 +46,7 @@
 26. ~~**Map、Set、WeakMap、WeakSet 内建对象** — 已完成（2026-06-01，90 个新测试（MS-01～MS-45 × Interp+VM），4570/4570 通过（coverage），4568/4568 通过（run_ut ASAN），0 LSan 泄漏）~~
 27. ~~**ES2022 Class Private Fields（`#x`）** — 已完成（2026-06-02，20 个新测试（PF-01～PF-10 × Interp+VM），4590/4590 通过（coverage），0 LSan 泄漏）~~
 28. ~~**Promise 静态方法（all/race/allSettled/any）+ Array.from 完整 + Array.of + Object.entries/values/fromEntries/getOwnPropertyNames** — 已完成（2026-06-02，40 个新测试（PAO-01～PAO-20 × Interp+VM），4630/4630 通过（coverage），0 LSan 泄漏（预期））~~
+29. ~~**Number.prototype 方法 + String.prototype 缺失方法** — 已完成（2026-06-02，50 个新测试（NS-01～NS-25 × Interp+VM），4680/4680 通过（coverage），0 LSan 泄漏（预期））~~
 
 ## 3. 进入前提
 

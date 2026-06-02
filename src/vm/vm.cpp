@@ -24,6 +24,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -3423,6 +3424,181 @@ void VM::init_global_env() {
     number_constructor_->set_prototype_obj(RcPtr<JSObject>(number_prototype_));
     number_constructor_->set_property("prototype", Value::object(ObjectPtr(number_prototype_)));
 
+    // Number.prototype.valueOf
+    auto vm_num_valueof_fn = RcPtr<JSFunction>::make();
+    vm_num_valueof_fn->set_native_fn([this](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+        if (this_val.is_number()) return EvalResult::ok(this_val);
+        native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "Number.prototype.valueOf requires a number");
+        return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+    });
+    gc_heap_.Register(vm_num_valueof_fn.get());
+    number_prototype_->set_property("valueOf", Value::object(ObjectPtr(vm_num_valueof_fn)));
+
+    // Number.prototype.toString([radix])
+    auto vm_num_tostring_fn = RcPtr<JSFunction>::make();
+    vm_num_tostring_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (!this_val.is_number()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Number.prototype.toString requires a number");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        double val = this_val.as_number();
+        int radix = 10;
+        if (!args.empty() && !args[0].is_undefined()) {
+            double r = to_number_double_vm(args[0]);
+            radix = static_cast<int>(std::trunc(r));
+        }
+        if (radix < 2 || radix > 36) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kRangeError,
+                "toString() radix must be between 2 and 36");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        if (std::isnan(val)) return EvalResult::ok(Value::string("NaN"));
+        if (std::isinf(val)) return EvalResult::ok(Value::string(val > 0 ? "Infinity" : "-Infinity"));
+        if (radix == 10) {
+            return EvalResult::ok(Value::string(to_string_val(this_val)));
+        }
+        bool negative = val < 0;
+        double abs_val = std::fabs(val);
+        double int_part = std::trunc(abs_val);
+        double frac_part = abs_val - int_part;
+        static const char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+        std::string int_str;
+        if (int_part == 0.0) {
+            int_str = "0";
+        } else {
+            while (int_part >= 1.0) {
+                int rem = static_cast<int>(std::fmod(int_part, static_cast<double>(radix)));
+                int_str += digits[rem];
+                int_part = std::trunc(int_part / static_cast<double>(radix));
+            }
+            std::reverse(int_str.begin(), int_str.end());
+        }
+        std::string result = (negative ? "-" : "") + int_str;
+        if (frac_part > 0.0) {
+            result += '.';
+            int max_digits = 52;
+            while (frac_part > 0.0 && max_digits-- > 0) {
+                frac_part *= static_cast<double>(radix);
+                int digit = static_cast<int>(std::trunc(frac_part));
+                result += digits[digit];
+                frac_part -= std::trunc(frac_part);
+            }
+        }
+        return EvalResult::ok(Value::string(result));
+    });
+    gc_heap_.Register(vm_num_tostring_fn.get());
+    number_prototype_->set_property("toString", Value::object(ObjectPtr(vm_num_tostring_fn)));
+
+    // Number.prototype.toFixed([digits])
+    auto vm_num_tofixed_fn = RcPtr<JSFunction>::make();
+    vm_num_tofixed_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (!this_val.is_number()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Number.prototype.toFixed requires a number");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        double val = this_val.as_number();
+        int digits = 0;
+        if (!args.empty() && !args[0].is_undefined()) {
+            double d = to_number_double_vm(args[0]);
+            digits = static_cast<int>(std::trunc(d));
+        }
+        if (digits < 0 || digits > 100) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kRangeError,
+                "toFixed() digits must be between 0 and 100");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        if (std::isnan(val)) return EvalResult::ok(Value::string("NaN"));
+        if (std::isinf(val)) return EvalResult::ok(Value::string(val > 0 ? "Infinity" : "-Infinity"));
+        if (std::fabs(val) >= 1e21) return EvalResult::ok(Value::string(to_string_val(this_val)));
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), "%.*f", digits, val);
+        return EvalResult::ok(Value::string(buf));
+    });
+    gc_heap_.Register(vm_num_tofixed_fn.get());
+    number_prototype_->set_property("toFixed", Value::object(ObjectPtr(vm_num_tofixed_fn)));
+
+    // Number.prototype.toExponential([digits])
+    auto vm_num_toexp_fn = RcPtr<JSFunction>::make();
+    vm_num_toexp_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (!this_val.is_number()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Number.prototype.toExponential requires a number");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        double val = this_val.as_number();
+        if (std::isnan(val)) return EvalResult::ok(Value::string("NaN"));
+        if (std::isinf(val)) return EvalResult::ok(Value::string(val > 0 ? "Infinity" : "-Infinity"));
+        int digits = -1;
+        if (!args.empty() && !args[0].is_undefined()) {
+            double d = to_number_double_vm(args[0]);
+            digits = static_cast<int>(std::trunc(d));
+            if (digits < 0 || digits > 100) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kRangeError,
+                    "toExponential() digits must be between 0 and 100");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+        }
+        char buf[256];
+        if (digits < 0) {
+            std::snprintf(buf, sizeof(buf), "%e", val);
+        } else {
+            std::snprintf(buf, sizeof(buf), "%.*e", digits, val);
+        }
+        std::string result(buf);
+        auto e_pos = result.rfind('e');
+        if (e_pos != std::string::npos) {
+            char sign = result[e_pos + 1];
+            std::string exp_str = result.substr(e_pos + 2);
+            size_t first_nonzero = exp_str.find_first_not_of('0');
+            if (first_nonzero == std::string::npos) exp_str = "0";
+            else exp_str = exp_str.substr(first_nonzero);
+            result = result.substr(0, e_pos + 1) + sign + exp_str;
+        }
+        return EvalResult::ok(Value::string(result));
+    });
+    gc_heap_.Register(vm_num_toexp_fn.get());
+    number_prototype_->set_property("toExponential", Value::object(ObjectPtr(vm_num_toexp_fn)));
+
+    // Number.prototype.toPrecision([prec])
+    auto vm_num_toprec_fn = RcPtr<JSFunction>::make();
+    vm_num_toprec_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (!this_val.is_number()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Number.prototype.toPrecision requires a number");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        double val = this_val.as_number();
+        if (args.empty() || args[0].is_undefined()) {
+            return EvalResult::ok(Value::string(to_string_val(this_val)));
+        }
+        int prec = static_cast<int>(std::trunc(to_number_double_vm(args[0])));
+        if (prec < 1 || prec > 100) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kRangeError,
+                "toPrecision() precision must be between 1 and 100");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        if (std::isnan(val)) return EvalResult::ok(Value::string("NaN"));
+        if (std::isinf(val)) return EvalResult::ok(Value::string(val > 0 ? "Infinity" : "-Infinity"));
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), "%.*g", prec, val);
+        std::string result(buf);
+        auto e_pos = result.rfind('e');
+        if (e_pos != std::string::npos) {
+            char sign = result[e_pos + 1];
+            std::string exp_str = result.substr(e_pos + 2);
+            size_t first_nonzero = exp_str.find_first_not_of('0');
+            if (first_nonzero == std::string::npos) exp_str = "0";
+            else exp_str = exp_str.substr(first_nonzero);
+            result = result.substr(0, e_pos + 1) + sign + exp_str;
+        }
+        return EvalResult::ok(Value::string(result));
+    });
+    gc_heap_.Register(vm_num_toprec_fn.get());
+    number_prototype_->set_property("toPrecision", Value::object(ObjectPtr(vm_num_toprec_fn)));
+
     gc_heap_.Register(number_constructor_.get());
     global_env_->define_initialized("Number");
     global_env_->set("Number", Value::object(ObjectPtr(number_constructor_)));
@@ -3853,6 +4029,528 @@ void VM::init_global_env() {
     });
     if (string_prototype_) {
         string_prototype_->set_property("match", Value::object(ObjectPtr(vm_string_match_fn)));
+    }
+
+    // ---- String.prototype.search ----
+
+    auto vm_string_search_fn = RcPtr<JSFunction>::make();
+    vm_string_search_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_undefined() || this_val.is_null()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.search called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string str(string_this_value_vm(this_val).sv());
+        JSRegExp* rx = nullptr;
+        RcPtr<JSObject> rx_holder;
+        if (args.empty() || args[0].is_undefined()) {
+            auto rx_res = vm_make_regexp("", "");
+            if (!rx_res.is_ok()) return rx_res;
+            rx_holder = RcPtr<JSObject>(static_cast<JSObject*>(rx_res.value().as_object_raw()));
+            rx = static_cast<JSRegExp*>(rx_holder.get());
+        } else if (args[0].is_object() && args[0].as_object_raw() &&
+                   args[0].as_object_raw()->object_kind() == ObjectKind::kRegExp) {
+            rx = static_cast<JSRegExp*>(args[0].as_object_raw());
+        } else {
+            std::string pat = to_string_val(args[0]);
+            auto rx_res = vm_make_regexp(pat, "");
+            if (!rx_res.is_ok()) return rx_res;
+            rx_holder = RcPtr<JSObject>(static_cast<JSObject*>(rx_res.value().as_object_raw()));
+            rx = static_cast<JSRegExp*>(rx_holder.get());
+        }
+        uint32_t saved_last_index = rx->last_index_;
+        rx->last_index_ = 0;
+        auto exec_res = vm_regexp_exec(rx, str);
+        rx->last_index_ = saved_last_index;
+        if (!exec_res.is_ok()) return exec_res;
+        if (exec_res.value().is_null()) return EvalResult::ok(Value::number(-1.0));
+        auto* match_arr = static_cast<JSObject*>(exec_res.value().as_object_raw());
+        Value idx_val = match_arr->get_property("index");
+        return EvalResult::ok(idx_val.is_number() ? idx_val : Value::number(-1.0));
+    });
+    gc_heap_.Register(vm_string_search_fn.get());
+    if (string_prototype_) {
+        string_prototype_->set_property("search", Value::object(ObjectPtr(vm_string_search_fn)));
+    }
+
+    // ---- String.prototype.replace ----
+
+    auto vm_string_replace_fn = RcPtr<JSFunction>::make();
+    vm_string_replace_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_undefined() || this_val.is_null()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.replace called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string str(string_this_value_vm(this_val).sv());
+        Value search_val = args.size() >= 1 ? args[0] : Value::undefined();
+        Value replace_val = args.size() >= 2 ? args[1] : Value::undefined();
+
+        bool is_regexp = search_val.is_object() && search_val.as_object_raw() &&
+                         search_val.as_object_raw()->object_kind() == ObjectKind::kRegExp;
+
+        if (is_regexp) {
+            auto* rx = static_cast<JSRegExp*>(search_val.as_object_raw());
+            bool is_global = rx->global_;
+            rx->last_index_ = 0;
+
+            if (!is_global) {
+                auto exec_res = vm_regexp_exec(rx, str);
+                if (!exec_res.is_ok()) return exec_res;
+                if (exec_res.value().is_null()) return EvalResult::ok(Value::string(str));
+                auto* match_arr = static_cast<JSObject*>(exec_res.value().as_object_raw());
+                std::string matched = match_arr->elements_.count(0) ? match_arr->elements_[0].as_string() : "";
+                Value idx_val = match_arr->get_property("index");
+                size_t match_start = idx_val.is_number() ? static_cast<size_t>(idx_val.as_number()) : 0;
+
+                std::string repl;
+                if (replace_val.is_object() && replace_val.as_object_raw() &&
+                    replace_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                    Value call_args[3] = {Value::string(matched),
+                                          Value::number(static_cast<double>(match_start)),
+                                          Value::string(str)};
+                    auto r = call_function_val(replace_val, Value::undefined(), std::span<Value>(call_args, 3));
+                    if (!r.is_ok()) return r;
+                    repl = to_string_val(r.value());
+                } else {
+                    repl = to_string_val(replace_val);
+                }
+                std::string result = str.substr(0, match_start) + repl + str.substr(match_start + matched.size());
+                return EvalResult::ok(Value::string(result));
+            }
+
+            // Global regexp replace
+            const std::string orig_str = str;
+            std::string result;
+            size_t last_end = 0;
+            rx->last_index_ = 0;
+            while (true) {
+                if (rx->last_index_ > static_cast<uint32_t>(orig_str.size())) break;
+                auto exec_res = vm_regexp_exec(rx, orig_str);
+                if (!exec_res.is_ok()) return exec_res;
+                if (exec_res.value().is_null()) break;
+                auto* match_arr = static_cast<JSObject*>(exec_res.value().as_object_raw());
+                std::string matched = match_arr->elements_.count(0) ? match_arr->elements_[0].as_string() : "";
+                Value idx_val = match_arr->get_property("index");
+                size_t match_start = idx_val.is_number() ? static_cast<size_t>(idx_val.as_number()) : 0;
+
+                result += orig_str.substr(last_end, match_start - last_end);
+                if (replace_val.is_object() && replace_val.as_object_raw() &&
+                    replace_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                    Value call_args[3] = {Value::string(matched),
+                                          Value::number(static_cast<double>(match_start)),
+                                          Value::string(orig_str)};
+                    auto r = call_function_val(replace_val, Value::undefined(), std::span<Value>(call_args, 3));
+                    if (!r.is_ok()) return r;
+                    result += to_string_val(r.value());
+                } else {
+                    std::string repl_str = to_string_val(replace_val);
+                    for (size_t i = 0; i < repl_str.size(); ++i) {
+                        if (repl_str[i] == '$' && i + 1 < repl_str.size()) {
+                            char next = repl_str[i + 1];
+                            if (next == '&') { result += matched; i++; }
+                            else if (next == '`') { result += orig_str.substr(0, match_start); i++; }
+                            else if (next == '\'') { result += orig_str.substr(match_start + matched.size()); i++; }
+                            else { result += repl_str[i]; }
+                        } else {
+                            result += repl_str[i];
+                        }
+                    }
+                }
+                last_end = match_start + matched.size();
+                if (matched.empty()) {
+                    if (last_end < orig_str.size()) result += orig_str[last_end++];
+                    else break;
+                }
+            }
+            result += orig_str.substr(last_end);
+            return EvalResult::ok(Value::string(result));
+        }
+
+        // String search: replace first occurrence
+        std::string search_str = to_string_val(search_val);
+        size_t pos = str.find(search_str);
+        if (pos == std::string::npos) return EvalResult::ok(Value::string(str));
+
+        std::string repl;
+        if (replace_val.is_object() && replace_val.as_object_raw() &&
+            replace_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+            Value call_args[3] = {Value::string(search_str),
+                                  Value::number(static_cast<double>(pos)),
+                                  Value::string(str)};
+            auto r = call_function_val(replace_val, Value::undefined(), std::span<Value>(call_args, 3));
+            if (!r.is_ok()) return r;
+            repl = to_string_val(r.value());
+        } else {
+            repl = to_string_val(replace_val);
+        }
+        std::string result = str.substr(0, pos) + repl + str.substr(pos + search_str.size());
+        return EvalResult::ok(Value::string(result));
+    });
+    gc_heap_.Register(vm_string_replace_fn.get());
+    if (string_prototype_) {
+        string_prototype_->set_property("replace", Value::object(ObjectPtr(vm_string_replace_fn)));
+    }
+
+    // ---- String.prototype.replaceAll ----
+
+    auto vm_string_replace_all_fn = RcPtr<JSFunction>::make();
+    vm_string_replace_all_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_undefined() || this_val.is_null()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.replaceAll called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string str(string_this_value_vm(this_val).sv());
+        Value search_val = args.size() >= 1 ? args[0] : Value::undefined();
+        Value replace_val = args.size() >= 2 ? args[1] : Value::undefined();
+
+        if (search_val.is_object() && search_val.as_object_raw() &&
+            search_val.as_object_raw()->object_kind() == ObjectKind::kRegExp) {
+            auto* rx = static_cast<JSRegExp*>(search_val.as_object_raw());
+            if (!rx->global_) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "String.prototype.replaceAll requires global flag for RegExp");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+        }
+
+        std::string search_str = to_string_val(search_val);
+        bool is_fn = replace_val.is_object() && replace_val.as_object_raw() &&
+                     replace_val.as_object_raw()->object_kind() == ObjectKind::kFunction;
+        std::string repl_str = is_fn ? "" : to_string_val(replace_val);
+
+        std::string result;
+        if (search_str.empty()) {
+            for (size_t i = 0; i <= str.size(); ++i) {
+                if (is_fn) {
+                    Value call_args[3] = {Value::string(""),
+                                          Value::number(static_cast<double>(i)),
+                                          Value::string(str)};
+                    auto r = call_function_val(replace_val, Value::undefined(), std::span<Value>(call_args, 3));
+                    if (!r.is_ok()) return r;
+                    result += to_string_val(r.value());
+                } else {
+                    result += repl_str;
+                }
+                if (i < str.size()) result += str[i];
+            }
+        } else {
+            size_t pos = 0;
+            while (true) {
+                size_t found = str.find(search_str, pos);
+                if (found == std::string::npos) {
+                    result += str.substr(pos);
+                    break;
+                }
+                result += str.substr(pos, found - pos);
+                if (is_fn) {
+                    Value call_args[3] = {Value::string(search_str),
+                                          Value::number(static_cast<double>(found)),
+                                          Value::string(str)};
+                    auto r = call_function_val(replace_val, Value::undefined(), std::span<Value>(call_args, 3));
+                    if (!r.is_ok()) return r;
+                    result += to_string_val(r.value());
+                } else {
+                    result += repl_str;
+                }
+                pos = found + search_str.size();
+            }
+        }
+        return EvalResult::ok(Value::string(result));
+    });
+    gc_heap_.Register(vm_string_replace_all_fn.get());
+    if (string_prototype_) {
+        string_prototype_->set_property("replaceAll", Value::object(ObjectPtr(vm_string_replace_all_fn)));
+    }
+
+    // ---- String.prototype.at ----
+
+    auto vm_string_at_fn = RcPtr<JSFunction>::make();
+    vm_string_at_fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_undefined() || this_val.is_null()) {
+            return EvalResult::ok(Value::undefined());
+        }
+        Value str_val = string_this_value_vm(this_val);
+        auto* js_str = str_val.js_string_raw();
+        int32_t len = js_str ? utf8_cp_len_vm(js_str) : static_cast<int32_t>(str_val.sv().size());
+        double idx_d = args.empty() ? 0.0 : to_number_double_vm(args[0]);
+        if (std::isnan(idx_d)) idx_d = 0.0;
+        int32_t idx = static_cast<int32_t>(std::trunc(idx_d));
+        if (idx < 0) idx = len + idx;
+        if (idx < 0 || idx >= len) return EvalResult::ok(Value::undefined());
+        return EvalResult::ok(Value::string(utf8_substr_vm(str_val.sv(), idx, idx + 1)));
+    });
+    gc_heap_.Register(vm_string_at_fn.get());
+    if (string_prototype_) {
+        string_prototype_->set_property("at", Value::object(ObjectPtr(vm_string_at_fn)));
+    }
+
+    // ---- String.prototype.padStart ----
+
+    auto vm_string_pad_start_fn = RcPtr<JSFunction>::make();
+    vm_string_pad_start_fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_undefined() || this_val.is_null()) {
+            return EvalResult::ok(Value::undefined());
+        }
+        std::string str(string_this_value_vm(this_val).sv());
+        int32_t target_len = args.empty() ? 0 : static_cast<int32_t>(to_number_double_vm(args[0]));
+        std::string pad_str = args.size() >= 2 && !args[1].is_undefined() ? VM::to_string_val(args[1]) : " ";
+        if (pad_str.empty()) return EvalResult::ok(Value::string(str));
+        int32_t str_len = static_cast<int32_t>(str.size());
+        if (target_len <= str_len) return EvalResult::ok(Value::string(str));
+        int32_t pad_needed = target_len - str_len;
+        std::string padding;
+        padding.reserve(static_cast<size_t>(pad_needed));
+        while (static_cast<int32_t>(padding.size()) < pad_needed) {
+            padding += pad_str;
+        }
+        return EvalResult::ok(Value::string(padding.substr(0, static_cast<size_t>(pad_needed)) + str));
+    });
+    gc_heap_.Register(vm_string_pad_start_fn.get());
+    if (string_prototype_) {
+        string_prototype_->set_property("padStart", Value::object(ObjectPtr(vm_string_pad_start_fn)));
+    }
+
+    // ---- String.prototype.padEnd ----
+
+    auto vm_string_pad_end_fn = RcPtr<JSFunction>::make();
+    vm_string_pad_end_fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_undefined() || this_val.is_null()) {
+            return EvalResult::ok(Value::undefined());
+        }
+        std::string str(string_this_value_vm(this_val).sv());
+        int32_t target_len = args.empty() ? 0 : static_cast<int32_t>(to_number_double_vm(args[0]));
+        std::string pad_str = args.size() >= 2 && !args[1].is_undefined() ? VM::to_string_val(args[1]) : " ";
+        if (pad_str.empty()) return EvalResult::ok(Value::string(str));
+        int32_t str_len = static_cast<int32_t>(str.size());
+        if (target_len <= str_len) return EvalResult::ok(Value::string(str));
+        std::string result = str;
+        result.reserve(static_cast<size_t>(target_len));
+        while (static_cast<int32_t>(result.size()) < target_len) {
+            result += pad_str;
+        }
+        return EvalResult::ok(Value::string(result.substr(0, static_cast<size_t>(target_len))));
+    });
+    gc_heap_.Register(vm_string_pad_end_fn.get());
+    if (string_prototype_) {
+        string_prototype_->set_property("padEnd", Value::object(ObjectPtr(vm_string_pad_end_fn)));
+    }
+
+    // ---- String.prototype.repeat ----
+
+    auto vm_string_repeat_fn = RcPtr<JSFunction>::make();
+    vm_string_repeat_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_undefined() || this_val.is_null()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.repeat called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string str(string_this_value_vm(this_val).sv());
+        double count_d = args.empty() ? 0.0 : to_number_double_vm(args[0]);
+        if (std::isnan(count_d)) count_d = 0.0;
+        if (count_d < 0 || std::isinf(count_d)) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kRangeError,
+                "Invalid count value");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        int32_t count = static_cast<int32_t>(std::trunc(count_d));
+        if (count == 0 || str.empty()) return EvalResult::ok(Value::string(""));
+        std::string result;
+        result.reserve(str.size() * static_cast<size_t>(count));
+        for (int32_t i = 0; i < count; ++i) result += str;
+        return EvalResult::ok(Value::string(result));
+    });
+    gc_heap_.Register(vm_string_repeat_fn.get());
+    if (string_prototype_) {
+        string_prototype_->set_property("repeat", Value::object(ObjectPtr(vm_string_repeat_fn)));
+    }
+
+    // ---- String.prototype.startsWith ----
+
+    auto vm_string_starts_with_fn = RcPtr<JSFunction>::make();
+    vm_string_starts_with_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_undefined() || this_val.is_null()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.startsWith called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        if (!args.empty() && args[0].is_object() && args[0].as_object_raw() &&
+            args[0].as_object_raw()->object_kind() == ObjectKind::kRegExp) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "First argument to startsWith must not be a RegExp");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string_view str = string_this_value_vm(this_val).sv();
+        std::string search = args.empty() ? "undefined" : to_string_val(args[0]);
+        int32_t pos = 0;
+        if (args.size() >= 2 && !args[1].is_undefined()) {
+            double p = to_number_double_vm(args[1]);
+            pos = std::isnan(p) ? 0 : static_cast<int32_t>(std::max(0.0, std::trunc(p)));
+        }
+        if (pos < 0) pos = 0;
+        if (static_cast<size_t>(pos) > str.size()) return EvalResult::ok(Value::boolean(false));
+        auto sub = str.substr(static_cast<size_t>(pos));
+        bool result = sub.size() >= search.size() && sub.substr(0, search.size()) == search;
+        return EvalResult::ok(Value::boolean(result));
+    });
+    gc_heap_.Register(vm_string_starts_with_fn.get());
+    if (string_prototype_) {
+        string_prototype_->set_property("startsWith", Value::object(ObjectPtr(vm_string_starts_with_fn)));
+    }
+
+    // ---- String.prototype.endsWith ----
+
+    auto vm_string_ends_with_fn = RcPtr<JSFunction>::make();
+    vm_string_ends_with_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_undefined() || this_val.is_null()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.endsWith called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        if (!args.empty() && args[0].is_object() && args[0].as_object_raw() &&
+            args[0].as_object_raw()->object_kind() == ObjectKind::kRegExp) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "First argument to endsWith must not be a RegExp");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string_view str = string_this_value_vm(this_val).sv();
+        std::string search = args.empty() ? "undefined" : to_string_val(args[0]);
+        int32_t end_pos = static_cast<int32_t>(str.size());
+        if (args.size() >= 2 && !args[1].is_undefined()) {
+            double p = to_number_double_vm(args[1]);
+            if (!std::isnan(p)) end_pos = static_cast<int32_t>(std::min(std::max(0.0, std::trunc(p)),
+                                                                          static_cast<double>(str.size())));
+        }
+        if (end_pos < 0) end_pos = 0;
+        std::string_view sub = str.substr(0, static_cast<size_t>(end_pos));
+        if (search.size() > sub.size()) return EvalResult::ok(Value::boolean(false));
+        bool result = sub.substr(sub.size() - search.size()) == search;
+        return EvalResult::ok(Value::boolean(result));
+    });
+    gc_heap_.Register(vm_string_ends_with_fn.get());
+    if (string_prototype_) {
+        string_prototype_->set_property("endsWith", Value::object(ObjectPtr(vm_string_ends_with_fn)));
+    }
+
+    // ---- String.prototype.includes ----
+
+    auto vm_string_includes_fn = RcPtr<JSFunction>::make();
+    vm_string_includes_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_undefined() || this_val.is_null()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.includes called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        if (!args.empty() && args[0].is_object() && args[0].as_object_raw() &&
+            args[0].as_object_raw()->object_kind() == ObjectKind::kRegExp) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "First argument to includes must not be a RegExp");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string_view str = string_this_value_vm(this_val).sv();
+        std::string search = args.empty() ? "undefined" : to_string_val(args[0]);
+        int32_t pos = 0;
+        if (args.size() >= 2 && !args[1].is_undefined()) {
+            double p = to_number_double_vm(args[1]);
+            pos = std::isnan(p) ? 0 : static_cast<int32_t>(std::max(0.0, std::trunc(p)));
+        }
+        if (static_cast<size_t>(pos) > str.size()) return EvalResult::ok(Value::boolean(false));
+        bool result = str.substr(static_cast<size_t>(pos)).find(search) != std::string_view::npos;
+        return EvalResult::ok(Value::boolean(result));
+    });
+    gc_heap_.Register(vm_string_includes_fn.get());
+    if (string_prototype_) {
+        string_prototype_->set_property("includes", Value::object(ObjectPtr(vm_string_includes_fn)));
+    }
+
+    // ---- String.prototype.matchAll ----
+
+    auto vm_string_match_all_fn = RcPtr<JSFunction>::make();
+    vm_string_match_all_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        if (this_val.is_undefined() || this_val.is_null()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "String.prototype.matchAll called on null or undefined");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string str(string_this_value_vm(this_val).sv());
+        Value regexp_val = args.empty() ? Value::undefined() : args[0];
+
+        if (regexp_val.is_object() && regexp_val.as_object_raw() &&
+            regexp_val.as_object_raw()->object_kind() == ObjectKind::kRegExp) {
+            auto* rx = static_cast<JSRegExp*>(regexp_val.as_object_raw());
+            if (!rx->global_ && !rx->sticky_) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "String.prototype.matchAll requires global or sticky flag");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+        } else {
+            std::string pat = regexp_val.is_undefined() ? "" : to_string_val(regexp_val);
+            auto rx_res = vm_make_regexp(pat, "g");
+            if (!rx_res.is_ok()) return rx_res;
+            regexp_val = rx_res.value();
+        }
+
+        auto iter_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(iter_obj.get());
+        if (object_prototype_) iter_obj->set_proto(object_prototype_);
+        iter_obj->set_property("__str__", Value::string(str));
+        iter_obj->set_property("__rx__", regexp_val);
+
+        auto vm_next_fn = RcPtr<JSFunction>::make();
+        vm_next_fn->set_native_fn([this](Value iter_this, std::vector<Value> /*args*/, bool) -> EvalResult {
+            if (!iter_this.is_object()) {
+                return EvalResult::ok(Value::undefined());
+            }
+            auto* iter = static_cast<JSObject*>(iter_this.as_object_raw());
+            Value str_val = iter->get_property("__str__");
+            Value rx_val = iter->get_property("__rx__");
+            if (!rx_val.is_object() || !rx_val.as_object_raw() ||
+                rx_val.as_object_raw()->object_kind() != ObjectKind::kRegExp) {
+                auto done_obj = RcPtr<JSObject>::make();
+                gc_heap_.Register(done_obj.get());
+                done_obj->set_property("value", Value::undefined());
+                done_obj->set_property("done", Value::boolean(true));
+                return EvalResult::ok(Value::object(ObjectPtr(done_obj)));
+            }
+            std::string str(str_val.sv());
+            auto* rx = static_cast<JSRegExp*>(rx_val.as_object_raw());
+            if (rx->last_index_ > static_cast<uint32_t>(str.size())) {
+                iter->set_property("__rx__", Value::undefined());
+                auto done_obj = RcPtr<JSObject>::make();
+                gc_heap_.Register(done_obj.get());
+                done_obj->set_property("value", Value::undefined());
+                done_obj->set_property("done", Value::boolean(true));
+                return EvalResult::ok(Value::object(ObjectPtr(done_obj)));
+            }
+            auto exec_res = vm_regexp_exec(rx, str);
+            if (!exec_res.is_ok()) return exec_res;
+            if (exec_res.value().is_null()) {
+                iter->set_property("__rx__", Value::undefined());
+                auto done_obj = RcPtr<JSObject>::make();
+                gc_heap_.Register(done_obj.get());
+                done_obj->set_property("value", Value::undefined());
+                done_obj->set_property("done", Value::boolean(true));
+                return EvalResult::ok(Value::object(ObjectPtr(done_obj)));
+            }
+            auto* match_arr = static_cast<JSObject*>(exec_res.value().as_object_raw());
+            Value match0 = match_arr->elements_.count(0) ? match_arr->elements_[0] : Value::string("");
+            if (match0.is_string() && match0.sv().empty()) rx->last_index_++;
+
+            auto result_obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(result_obj.get());
+            result_obj->set_property("value", exec_res.value());
+            result_obj->set_property("done", Value::boolean(false));
+            return EvalResult::ok(Value::object(ObjectPtr(result_obj)));
+        });
+        gc_heap_.Register(vm_next_fn.get());
+        iter_obj->set_property("next", Value::object(ObjectPtr(vm_next_fn)));
+
+        return EvalResult::ok(Value::object(ObjectPtr(iter_obj)));
+    });
+    gc_heap_.Register(vm_string_match_all_fn.get());
+    if (string_prototype_) {
+        string_prototype_->set_property("matchAll", Value::object(ObjectPtr(vm_string_match_all_fn)));
     }
 
     // ---- Symbol ----
@@ -6668,6 +7366,22 @@ EvalResult VM::run(size_t exit_depth) {
                     stack.push_back(Value::number(static_cast<double>(utf8_cp_len_vm(obj_val.js_string_raw()))));
                 } else if (string_prototype_) {
                     stack.push_back(string_prototype_->get_property(name));
+                } else {
+                    stack.push_back(Value::undefined());
+                }
+                break;
+            }
+            if (obj_val.is_number()) {
+                if (number_prototype_) {
+                    stack.push_back(number_prototype_->get_property(name));
+                } else {
+                    stack.push_back(Value::undefined());
+                }
+                break;
+            }
+            if (obj_val.is_bool()) {
+                if (boolean_prototype_) {
+                    stack.push_back(boolean_prototype_->get_property(name));
                 } else {
                     stack.push_back(Value::undefined());
                 }
