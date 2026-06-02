@@ -7,8 +7,8 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 4770/4770 通过（coverage），0 LSan 泄漏（预期） |
-| 最近更新 | 2026-06-02 |
+| 测试计数 | 4804/4804 通过（coverage），0 LSan 泄漏（预期） |
+| 最近更新 | 2026-06-03 |
 | 下一步 | 下一批 test262 候选目标（WeakRef / Proxy 等） |
 | test262 | language/expressions class fields + private fields 实现后约 24%（expressions 32.4% 基线） |
 
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **Array.prototype 缺失方法补充（entries/keys/values 迭代器 + findLast/findLastIndex + toSorted/toReversed/toSpliced/with）**（2026-06-02）：interpreter.cpp 和 vm.cpp 的 array_prototype_ 注册区域新增 9 个方法（Interp+VM 对称）：`entries()`/`keys()`/`values()` 返回带 `next()` 和 `[Symbol.iterator]` 的迭代器对象，支持 for...of 消费和解构；`findLast(fn, thisArg?)` 和 `findLastIndex(fn, thisArg?)` 从末尾向前遍历；`toSorted(compareFn?)`/`toReversed()`/`toSpliced(start, deleteCount, ...items)`/`with(index, value)` 均返回新数组不修改原数组；新增 `tests/unit/array_methods_test.cpp`（AM-01～AM-10 × Interp+VM = 34 个测试）。4804/4804 通过（coverage），0 LSan 泄漏（预期）。
 
 - [x] **switch 语句（switch/case/default/break/fallthrough）**（2026-06-02）：AST 中 SwitchCase/SwitchStatement 已定义；在 lexer 注册 "switch"/"case" 两个关键字（"default" 保持 contextual keyword 避免影响 export default）；parser.cpp 新增 `parse_switch_stmt()`（default 用 `is_contextual_keyword("default")` 识别）并在 stmt_range 补全 SwitchStatement 分支；ast_dump.cpp 添加 SwitchStatement 输出；interpreter.cpp 新增 `eval_switch_stmt`（严格相等匹配，fallthrough，break/continue/return/throw 传播语义），hoist_vars_stmt 递归 case consequent；compiler.cpp 新增 `compile_switch_stmt`（临时变量存 discriminant，比较段 + body 段，break_patches 机制），hoist_vars_scan_stmt 递归 case consequent；LoopEnv 新增 `is_switch` 字段，compile_continue_stmt 跳过 is_switch=true 的 entry（continue 正确传递给外层循环）；token.cpp 补充 KwSwitch/KwCase/KwDefault 的 token_kind_name；新增 `tests/unit/switch_test.cpp`（SW-01～SW-12 × Interp+VM = 24 个测试）。4770/4770 通过（coverage），0 LSan 泄漏（预期）。
 

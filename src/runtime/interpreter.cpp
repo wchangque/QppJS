@@ -1374,6 +1374,415 @@ void Interpreter::init_runtime() {
     });
     array_prototype_->set_property("flatMap", Value::object(ObjectPtr(flat_map_fn)));
 
+    // Array.prototype.findLast
+    auto find_last_fn = RcPtr<JSFunction>::make();
+    find_last_fn->set_name(std::string("findLast"));
+    find_last_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "findLast called on non-array");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        if (args.empty() || !args[0].is_object() ||
+            args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError, "callback is not a function");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        Value callback = args[0];
+        Value this_arg = args.size() >= 2 ? args[1] : Value::undefined();
+        uint32_t len = arr->array_length_;
+        for (int64_t i = static_cast<int64_t>(len) - 1; i >= 0; i--) {
+            auto it = arr->elements_.find(static_cast<uint32_t>(i));
+            Value elem = (it != arr->elements_.end()) ? it->second : Value::undefined();
+            Value call_args[3] = {elem, Value::number(static_cast<double>(i)), this_val};
+            auto res = call_function_val(callback, this_arg, {call_args, 3});
+            if (!res.is_ok()) return res;
+            if (to_boolean(res.value())) return EvalResult::ok(elem);
+        }
+        return EvalResult::ok(Value::undefined());
+    });
+    gc_heap_.Register(find_last_fn.get());
+    array_prototype_->set_property("findLast", Value::object(ObjectPtr(find_last_fn)));
+
+    // Array.prototype.findLastIndex
+    auto find_last_index_fn = RcPtr<JSFunction>::make();
+    find_last_index_fn->set_name(std::string("findLastIndex"));
+    find_last_index_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "findLastIndex called on non-array");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        if (args.empty() || !args[0].is_object() ||
+            args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError, "callback is not a function");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* arr = static_cast<JSObject*>(raw);
+        Value callback = args[0];
+        Value this_arg = args.size() >= 2 ? args[1] : Value::undefined();
+        uint32_t len = arr->array_length_;
+        for (int64_t i = static_cast<int64_t>(len) - 1; i >= 0; i--) {
+            auto it = arr->elements_.find(static_cast<uint32_t>(i));
+            Value elem = (it != arr->elements_.end()) ? it->second : Value::undefined();
+            Value call_args[3] = {elem, Value::number(static_cast<double>(i)), this_val};
+            auto res = call_function_val(callback, this_arg, {call_args, 3});
+            if (!res.is_ok()) return res;
+            if (to_boolean(res.value())) return EvalResult::ok(Value::number(static_cast<double>(i)));
+        }
+        return EvalResult::ok(Value::number(-1.0));
+    });
+    gc_heap_.Register(find_last_index_fn.get());
+    array_prototype_->set_property("findLastIndex", Value::object(ObjectPtr(find_last_index_fn)));
+
+    // Array.prototype.toSorted
+    auto to_sorted_fn = RcPtr<JSFunction>::make();
+    to_sorted_fn->set_name(std::string("toSorted"));
+    to_sorted_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "toSorted called on non-array");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        bool has_cmp = !args.empty() && !args[0].is_undefined();
+        if (has_cmp) {
+            if (!args[0].is_object() || args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                  "compareFn must be a function");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+        }
+        auto* src = static_cast<JSObject*>(raw);
+        uint32_t len = src->array_length_;
+        auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(result.get());
+        result->set_proto(array_prototype_);
+        struct Slot {
+            Value val;
+            uint32_t pos;
+            std::string str_cache;
+        };
+        std::vector<Slot> slots;
+        slots.reserve(len);
+        uint32_t undef_count = 0;
+        for (uint32_t i = 0; i < len; i++) {
+            auto it = src->elements_.find(i);
+            if (it == src->elements_.end()) {
+            } else if (it->second.is_undefined()) {
+                undef_count++;
+            } else {
+                slots.push_back({it->second, i, {}});
+            }
+        }
+        if (!has_cmp) {
+            for (auto& s : slots) s.str_cache = Interpreter::to_string_val(s.val);
+        }
+        Value cmp_fn = has_cmp ? args[0] : Value::undefined();
+        EvalResult sort_err = EvalResult::ok(Value::undefined());
+        bool had_error = false;
+        std::stable_sort(slots.begin(), slots.end(), [&](const Slot& a, const Slot& b) -> bool {
+            if (had_error) return false;
+            if (has_cmp) {
+                Value call_args[2] = {a.val, b.val};
+                auto res = call_function_val(cmp_fn, Value::undefined(), {call_args, 2});
+                if (!res.is_ok()) { sort_err = res; had_error = true; return false; }
+                double cmp = to_number_double(res.value());
+                if (std::isnan(cmp)) cmp = 0.0;
+                if (cmp != 0.0) return cmp < 0.0;
+                return a.pos < b.pos;
+            } else {
+                int cmp = a.str_cache.compare(b.str_cache);
+                if (cmp != 0) return cmp < 0;
+                return a.pos < b.pos;
+            }
+        });
+        if (had_error) return sort_err;
+        uint32_t idx = 0;
+        for (auto& s : slots) result->elements_[idx++] = std::move(s.val);
+        for (uint32_t i = 0; i < undef_count; i++) result->elements_[idx++] = Value::undefined();
+        result->array_length_ = idx + (len - slots.size() - undef_count);
+        return EvalResult::ok(Value::object(ObjectPtr(result)));
+    });
+    gc_heap_.Register(to_sorted_fn.get());
+    array_prototype_->set_property("toSorted", Value::object(ObjectPtr(to_sorted_fn)));
+
+    // Array.prototype.toReversed
+    auto to_reversed_fn = RcPtr<JSFunction>::make();
+    to_reversed_fn->set_name(std::string("toReversed"));
+    to_reversed_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "toReversed called on non-array");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* src = static_cast<JSObject*>(raw);
+        uint32_t len = src->array_length_;
+        auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(result.get());
+        result->set_proto(array_prototype_);
+        for (uint32_t i = 0; i < len; i++) {
+            uint32_t from = len - 1 - i;
+            auto it = src->elements_.find(from);
+            if (it != src->elements_.end()) {
+                result->elements_[i] = it->second;
+            }
+        }
+        result->array_length_ = len;
+        return EvalResult::ok(Value::object(ObjectPtr(result)));
+    });
+    gc_heap_.Register(to_reversed_fn.get());
+    array_prototype_->set_property("toReversed", Value::object(ObjectPtr(to_reversed_fn)));
+
+    // Array.prototype.toSpliced(start, deleteCount, ...items)
+    auto to_spliced_fn = RcPtr<JSFunction>::make();
+    to_spliced_fn->set_name(std::string("toSpliced"));
+    to_spliced_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "toSpliced called on non-array");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* src = static_cast<JSObject*>(raw);
+        int64_t len = static_cast<int64_t>(src->array_length_);
+        int64_t start = 0;
+        if (!args.empty() && !args[0].is_undefined()) {
+            double s = to_number_double(args[0]);
+            start = std::isnan(s) ? 0 : static_cast<int64_t>(std::trunc(s));
+        }
+        if (start < 0) start = std::max(int64_t(0), len + start);
+        else start = std::min(start, len);
+        int64_t del_count = len - start;
+        if (args.size() >= 2 && !args[1].is_undefined()) {
+            double d = to_number_double(args[1]);
+            del_count = std::isnan(d) ? 0 : static_cast<int64_t>(std::trunc(d));
+            del_count = std::max(int64_t(0), std::min(del_count, len - start));
+        }
+        uint32_t item_count = args.size() > 2 ? static_cast<uint32_t>(args.size() - 2) : 0;
+        auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(result.get());
+        result->set_proto(array_prototype_);
+        uint32_t n = 0;
+        for (int64_t i = 0; i < start; i++) {
+            auto it = src->elements_.find(static_cast<uint32_t>(i));
+            if (it != src->elements_.end()) result->elements_[n] = it->second;
+            n++;
+        }
+        for (uint32_t k = 0; k < item_count; k++) result->elements_[n++] = args[2 + k];
+        for (int64_t i = start + del_count; i < len; i++) {
+            auto it = src->elements_.find(static_cast<uint32_t>(i));
+            if (it != src->elements_.end()) result->elements_[n] = it->second;
+            n++;
+        }
+        result->array_length_ = n;
+        return EvalResult::ok(Value::object(ObjectPtr(result)));
+    });
+    gc_heap_.Register(to_spliced_fn.get());
+    array_prototype_->set_property("toSpliced", Value::object(ObjectPtr(to_spliced_fn)));
+
+    // Array.prototype.with(index, value)
+    auto with_fn = RcPtr<JSFunction>::make();
+    with_fn->set_name(std::string("with"));
+    with_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+        RcObject* raw = this_val.as_object_raw();
+        if (!raw || raw->object_kind() != ObjectKind::kArray) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "with called on non-array");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto* src = static_cast<JSObject*>(raw);
+        uint32_t len = src->array_length_;
+        if (args.size() < 2) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                              "Array.prototype.with requires 2 arguments");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        double idx_d = to_number_double(args[0]);
+        int64_t idx = std::isnan(idx_d) ? 0 : static_cast<int64_t>(std::trunc(idx_d));
+        if (idx < 0) idx = static_cast<int64_t>(len) + idx;
+        if (idx < 0 || idx >= static_cast<int64_t>(len)) {
+            pending_throw_ = make_error_value(NativeErrorType::kRangeError,
+                                              "Invalid index");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        auto result = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(result.get());
+        result->set_proto(array_prototype_);
+        for (uint32_t i = 0; i < len; i++) {
+            if (static_cast<int64_t>(i) == idx) {
+                result->elements_[i] = args[1];
+            } else {
+                auto it = src->elements_.find(i);
+                if (it != src->elements_.end()) result->elements_[i] = it->second;
+            }
+        }
+        result->array_length_ = len;
+        return EvalResult::ok(Value::object(ObjectPtr(result)));
+    });
+    gc_heap_.Register(with_fn.get());
+    array_prototype_->set_property("with", Value::object(ObjectPtr(with_fn)));
+
+    // Array.prototype.keys
+    auto keys_iter_fn = RcPtr<JSFunction>::make();
+    keys_iter_fn->set_name(std::string("keys"));
+    keys_iter_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+        auto iter_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(iter_obj.get());
+        iter_obj->set_property("__arr__", this_val);
+        iter_obj->set_property("__idx__", Value::number(0.0));
+        iter_obj->set_property("__mode__", Value::string("keys"));
+        auto next_fn = RcPtr<JSFunction>::make();
+        next_fn->set_name(std::string("next"));
+        next_fn->set_native_fn([this](Value iter_this, std::vector<Value>, bool) -> EvalResult {
+            auto make_done = [&]() -> EvalResult {
+                auto r = RcPtr<JSObject>::make();
+                gc_heap_.Register(r.get());
+                r->set_property("value", Value::undefined());
+                r->set_property("done", Value::boolean(true));
+                return EvalResult::ok(Value::object(ObjectPtr(r)));
+            };
+            if (!iter_this.is_object()) return make_done();
+            auto* iter = static_cast<JSObject*>(iter_this.as_object_raw());
+            Value arr_val = iter->get_property("__arr__");
+            Value idx_val = iter->get_property("__idx__");
+            uint32_t idx = idx_val.is_number() ? static_cast<uint32_t>(idx_val.as_number()) : 0u;
+            if (!arr_val.is_object() || arr_val.as_object_raw()->object_kind() != ObjectKind::kArray)
+                return make_done();
+            auto* arr = static_cast<JSObject*>(arr_val.as_object_raw());
+            if (idx >= arr->array_length_) return make_done();
+            iter->set_property("__idx__", Value::number(static_cast<double>(idx + 1)));
+            auto r = RcPtr<JSObject>::make();
+            gc_heap_.Register(r.get());
+            r->set_property("value", Value::number(static_cast<double>(idx)));
+            r->set_property("done", Value::boolean(false));
+            return EvalResult::ok(Value::object(ObjectPtr(r)));
+        });
+        gc_heap_.Register(next_fn.get());
+        iter_obj->set_property("next", Value::object(ObjectPtr(next_fn)));
+        auto self_iter_fn = RcPtr<JSFunction>::make();
+        self_iter_fn->set_native_fn([](Value v, std::vector<Value>, bool) -> EvalResult {
+            return EvalResult::ok(v);
+        });
+        gc_heap_.Register(self_iter_fn.get());
+        iter_obj->set_property_by_symbol(symbol_table_.well_known_iterator,
+                                          Value::object(ObjectPtr(self_iter_fn)));
+        return EvalResult::ok(Value::object(ObjectPtr(iter_obj)));
+    });
+    gc_heap_.Register(keys_iter_fn.get());
+    array_prototype_->set_property("keys", Value::object(ObjectPtr(keys_iter_fn)));
+
+    // Array.prototype.values
+    auto values_iter_fn = RcPtr<JSFunction>::make();
+    values_iter_fn->set_name(std::string("values"));
+    values_iter_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+        auto iter_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(iter_obj.get());
+        iter_obj->set_property("__arr__", this_val);
+        iter_obj->set_property("__idx__", Value::number(0.0));
+        auto next_fn = RcPtr<JSFunction>::make();
+        next_fn->set_name(std::string("next"));
+        next_fn->set_native_fn([this](Value iter_this, std::vector<Value>, bool) -> EvalResult {
+            auto make_done = [&]() -> EvalResult {
+                auto r = RcPtr<JSObject>::make();
+                gc_heap_.Register(r.get());
+                r->set_property("value", Value::undefined());
+                r->set_property("done", Value::boolean(true));
+                return EvalResult::ok(Value::object(ObjectPtr(r)));
+            };
+            if (!iter_this.is_object()) return make_done();
+            auto* iter = static_cast<JSObject*>(iter_this.as_object_raw());
+            Value arr_val = iter->get_property("__arr__");
+            Value idx_val = iter->get_property("__idx__");
+            uint32_t idx = idx_val.is_number() ? static_cast<uint32_t>(idx_val.as_number()) : 0u;
+            if (!arr_val.is_object() || arr_val.as_object_raw()->object_kind() != ObjectKind::kArray)
+                return make_done();
+            auto* arr = static_cast<JSObject*>(arr_val.as_object_raw());
+            if (idx >= arr->array_length_) return make_done();
+            auto elem_it = arr->elements_.find(idx);
+            Value value = (elem_it != arr->elements_.end()) ? elem_it->second : Value::undefined();
+            iter->set_property("__idx__", Value::number(static_cast<double>(idx + 1)));
+            auto r = RcPtr<JSObject>::make();
+            gc_heap_.Register(r.get());
+            r->set_property("value", std::move(value));
+            r->set_property("done", Value::boolean(false));
+            return EvalResult::ok(Value::object(ObjectPtr(r)));
+        });
+        gc_heap_.Register(next_fn.get());
+        iter_obj->set_property("next", Value::object(ObjectPtr(next_fn)));
+        auto self_iter_fn = RcPtr<JSFunction>::make();
+        self_iter_fn->set_native_fn([](Value v, std::vector<Value>, bool) -> EvalResult {
+            return EvalResult::ok(v);
+        });
+        gc_heap_.Register(self_iter_fn.get());
+        iter_obj->set_property_by_symbol(symbol_table_.well_known_iterator,
+                                          Value::object(ObjectPtr(self_iter_fn)));
+        return EvalResult::ok(Value::object(ObjectPtr(iter_obj)));
+    });
+    gc_heap_.Register(values_iter_fn.get());
+    array_prototype_->set_property("values", Value::object(ObjectPtr(values_iter_fn)));
+
+    // Array.prototype.entries
+    auto entries_iter_fn = RcPtr<JSFunction>::make();
+    entries_iter_fn->set_name(std::string("entries"));
+    entries_iter_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+        auto iter_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(iter_obj.get());
+        iter_obj->set_property("__arr__", this_val);
+        iter_obj->set_property("__idx__", Value::number(0.0));
+        auto next_fn = RcPtr<JSFunction>::make();
+        next_fn->set_name(std::string("next"));
+        next_fn->set_native_fn([this](Value iter_this, std::vector<Value>, bool) -> EvalResult {
+            auto make_done = [&]() -> EvalResult {
+                auto r = RcPtr<JSObject>::make();
+                gc_heap_.Register(r.get());
+                r->set_property("value", Value::undefined());
+                r->set_property("done", Value::boolean(true));
+                return EvalResult::ok(Value::object(ObjectPtr(r)));
+            };
+            if (!iter_this.is_object()) return make_done();
+            auto* iter = static_cast<JSObject*>(iter_this.as_object_raw());
+            Value arr_val = iter->get_property("__arr__");
+            Value idx_val = iter->get_property("__idx__");
+            uint32_t idx = idx_val.is_number() ? static_cast<uint32_t>(idx_val.as_number()) : 0u;
+            if (!arr_val.is_object() || arr_val.as_object_raw()->object_kind() != ObjectKind::kArray)
+                return make_done();
+            auto* arr = static_cast<JSObject*>(arr_val.as_object_raw());
+            if (idx >= arr->array_length_) return make_done();
+            auto elem_it = arr->elements_.find(idx);
+            Value elem = (elem_it != arr->elements_.end()) ? elem_it->second : Value::undefined();
+            iter->set_property("__idx__", Value::number(static_cast<double>(idx + 1)));
+            // Build [idx, elem] pair array
+            auto pair = RcPtr<JSObject>::make(ObjectKind::kArray);
+            gc_heap_.Register(pair.get());
+            pair->set_proto(array_prototype_);
+            pair->elements_[0] = Value::number(static_cast<double>(idx));
+            pair->elements_[1] = std::move(elem);
+            pair->array_length_ = 2;
+            auto r = RcPtr<JSObject>::make();
+            gc_heap_.Register(r.get());
+            r->set_property("value", Value::object(ObjectPtr(pair)));
+            r->set_property("done", Value::boolean(false));
+            return EvalResult::ok(Value::object(ObjectPtr(r)));
+        });
+        gc_heap_.Register(next_fn.get());
+        iter_obj->set_property("next", Value::object(ObjectPtr(next_fn)));
+        auto self_iter_fn = RcPtr<JSFunction>::make();
+        self_iter_fn->set_native_fn([](Value v, std::vector<Value>, bool) -> EvalResult {
+            return EvalResult::ok(v);
+        });
+        gc_heap_.Register(self_iter_fn.get());
+        iter_obj->set_property_by_symbol(symbol_table_.well_known_iterator,
+                                          Value::object(ObjectPtr(self_iter_fn)));
+        return EvalResult::ok(Value::object(ObjectPtr(iter_obj)));
+    });
+    gc_heap_.Register(entries_iter_fn.get());
+    array_prototype_->set_property("entries", Value::object(ObjectPtr(entries_iter_fn)));
+
     // Array.prototype.concat
     auto concat_fn = RcPtr<JSFunction>::make();
     concat_fn->set_name(std::string("concat"));

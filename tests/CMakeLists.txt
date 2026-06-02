@@ -66,6 +66,7 @@ add_executable(qppjs_unit_tests
     unit/global_json_test.cpp
     unit/symbol_eval_test.cpp
     unit/switch_test.cpp
+    unit/array_methods_test.cpp
     # unit/global_stubs_test.cpp  # FIXME: pre-existing compilation error (is_err not a member of EvalResult)
 )
 

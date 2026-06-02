@@ -4,6 +4,17 @@
 
 ## 1. 已完成任务
 
+- [x] **Array.prototype 缺失方法补充（entries/keys/values 迭代器 + findLast/findLastIndex + toSorted/toReversed/toSpliced/with）**（2026-06-02）：
+  - **背景**：补充 ES2016-ES2023 标准中 Array.prototype 已缺失的常用方法，无 AST/Parser 变更，仅在 interpreter.cpp 和 vm.cpp 的 array_prototype_ 注册区域各添加 9 个方法，Interp+VM 双路径对称。
+  - **entries()/keys()/values() 迭代器**：三个方法均返回 JSObject 迭代器，含 `__arr__`/`__idx__` 内部状态字段，`next()` native 方法（keys 返回索引数字；values 返回元素值；entries 返回 `[idx, elem]` pair 数组），以及 `[Symbol.iterator]() { return this; }` 使迭代器本身可迭代（支持 for...of 和展开）。
+  - **findLast / findLastIndex**：仿照 find/findIndex 实现，循环改为 `for (int64_t i = len-1; i >= 0; i--)` 从末尾向前遍历；hole 视为 undefined 传入 callback；Interpreter 侧用 `pending_throw_`，VM 侧用 `native_pending_throw_`。
+  - **toSorted**：复制 sort 的 Slot 排序逻辑，结果写入新分配的 kArray 对象而非原对象；`result->array_length_` 设为原数组 length。
+  - **toReversed**：遍历原数组从末尾到开头，将元素映射到新数组正向索引，hole 跳过。
+  - **toSpliced(start, deleteCount, ...items)**：解析 start/deleteCount（含负数/NaN 处理），分三段复制到新数组（前段 + items + 后段）。
+  - **with(index, value)**：支持负索引（`idx + len`），越界返回 RangeError，生成新数组并替换指定位置。
+  - **测试**：新建 `tests/unit/array_methods_test.cpp`（AM-01～AM-10 × Interp+VM = 34 个测试）；注册到 `tests/CMakeLists.txt`。
+  - **结果**：4804/4804 通过（coverage），0 LSan 泄漏（预期）。
+
 - [x] **switch 语句（switch/case/default/break/fallthrough）**（2026-06-02）：
   - **背景**：switch 语句完全未实现，导致 test262 的 propertyHelper.js harness 无法加载，间接导致大量使用 verifyProperty 的测试失败。
   - **Token/Lexer**：lexer.cpp 的 kKeywords 中添加 `"switch"→KwSwitch` 和 `"case"→KwCase`（"default" 保持 contextual keyword 以避免影响 `export default` 的解析）；token.cpp 中 `token_kind_name` 补充 KwSwitch/KwCase/KwDefault 三个 case；`is_keyword` 范围扩展到 KwDefault。
