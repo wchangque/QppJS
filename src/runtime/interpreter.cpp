@@ -5568,6 +5568,10 @@ void Interpreter::init_runtime() {
                 fn_decl->body, global_env_, false, fn_decl->rest_param));
         });
         gc_heap_.Register(fn_ctor.get());
+        // Function.prototype = function_prototype_
+        if (function_prototype_) {
+            fn_ctor->set_property("prototype", Value::object(ObjectPtr(function_prototype_)));
+        }
         global_env_->define_initialized("Function");
         global_env_->set("Function", Value::object(ObjectPtr(fn_ctor)));
     }

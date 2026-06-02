@@ -5746,6 +5746,10 @@ void VM::init_global_env() {
             return EvalResult::ok(binding->cell->value);
         });
         gc_heap_.Register(fn_ctor.get());
+        // Function.prototype = function_prototype_
+        if (function_prototype_) {
+            fn_ctor->set_property("prototype", Value::object(ObjectPtr(function_prototype_)));
+        }
         global_env_->define("Function", VarKind::Const);
         global_env_->initialize("Function", Value::object(ObjectPtr(fn_ctor)));
     }
