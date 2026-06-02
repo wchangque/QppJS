@@ -2,6 +2,7 @@
 
 #include "qppjs/base/error.h"
 #include "qppjs/frontend/ast.h"
+#include "qppjs/frontend/parser.h"
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/environment.h"
 #include "qppjs/runtime/for_of_iterator.h"
@@ -427,9 +428,22 @@ void Interpreter::init_runtime() {
     {
         auto fn = RcPtr<JSFunction>::make();
         fn->set_name(std::string("toString"));
-        fn->set_native_fn([](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+        fn->set_native_fn([this](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
             if (this_val.is_null()) return EvalResult::ok(Value::string("[object Null]"));
             if (this_val.is_undefined()) return EvalResult::ok(Value::string("[object Undefined]"));
+            // Check [Symbol.toStringTag]
+            if (this_val.is_object()) {
+                RcObject* raw = this_val.as_object_raw();
+                if (raw && raw->object_kind() != ObjectKind::kFunction) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    const JSObject::SymbolPropertyEntry* tag_entry =
+                        obj->find_symbol_entry(symbol_table_.well_known_to_string_tag);
+                    if (tag_entry && tag_entry->value.is_string()) {
+                        return EvalResult::ok(Value::string(
+                            "[object " + tag_entry->value.as_string() + "]"));
+                    }
+                }
+            }
             return EvalResult::ok(Value::string("[object Object]"));
         });
         gc_heap_.Register(fn.get());
@@ -4698,6 +4712,10 @@ void Interpreter::init_runtime() {
         Value::symbol(symbol_table_.well_known_has_instance));
     symbol_constructor_->set_property("toStringTag",
         Value::symbol(symbol_table_.well_known_to_string_tag));
+    symbol_constructor_->set_property("asyncIterator",
+        Value::symbol(symbol_table_.well_known_async_iterator));
+    symbol_constructor_->set_property("species",
+        Value::symbol(symbol_table_.well_known_species));
 
     gc_heap_.Register(symbol_constructor_.get());
     global_env_->define_initialized("Symbol");
@@ -5508,6 +5526,82 @@ void Interpreter::init_runtime() {
         gc_heap_.Register(qmt_fn.get());
         global_env_->define_initialized("queueMicrotask");
         global_env_->set("queueMicrotask", Value::object(ObjectPtr(qmt_fn)));
+    }
+
+    // ---- Function constructor ----
+    {
+        auto fn_ctor = RcPtr<JSFunction>::make();
+        fn_ctor->set_name(std::string("Function"));
+        fn_ctor->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+            // new Function([p1, p2, ...], body)
+            std::string params_str;
+            std::string body_str;
+            if (args.empty()) {
+                body_str = "";
+            } else {
+                body_str = to_string_val(args.back());
+                for (size_t i = 0; i + 1 < args.size(); ++i) {
+                    if (i > 0) params_str += ",";
+                    params_str += to_string_val(args[i]);
+                }
+            }
+            std::string src = "function __anon__(" + params_str + ") { " + body_str + " }";
+            auto parse_result = parse_program(src);
+            if (!parse_result.ok()) {
+                pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                    "Function constructor: " + parse_result.error().message());
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            const auto& body = parse_result.value().body;
+            if (body.empty()) {
+                pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                    "Function constructor: empty body");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            const auto* fn_decl = std::get_if<FunctionDeclaration>(&body[0].v);
+            if (!fn_decl) {
+                pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                    "Function constructor: parse error");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            return EvalResult::ok(make_function_value(std::nullopt, fn_decl->params,
+                fn_decl->body, global_env_, false, fn_decl->rest_param));
+        });
+        gc_heap_.Register(fn_ctor.get());
+        global_env_->define_initialized("Function");
+        global_env_->set("Function", Value::object(ObjectPtr(fn_ctor)));
+    }
+
+    // ---- eval ----
+    {
+        auto eval_fn = RcPtr<JSFunction>::make();
+        eval_fn->set_name(std::string("eval"));
+        eval_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+            if (args.empty() || !args[0].is_string()) {
+                return EvalResult::ok(args.empty() ? Value::undefined() : args[0]);
+            }
+            std::string code(args[0].sv());
+            auto parse_result = parse_program(code);
+            if (!parse_result.ok()) {
+                pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                    parse_result.error().message());
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            const auto& body = parse_result.value().body;
+            // Hoist var declarations and function declarations into the global env
+            hoist_vars(body, *global_env_);
+            Value last = Value::undefined();
+            for (const auto& stmt : body) {
+                auto r = eval_stmt(stmt);
+                if (!r.is_ok()) return EvalResult::err(r.error());
+                if (r.completion().is_return()) return EvalResult::ok(r.completion().value);
+                if (!r.completion().value.is_undefined()) last = r.completion().value;
+            }
+            return EvalResult::ok(last);
+        });
+        gc_heap_.Register(eval_fn.get());
+        global_env_->define_initialized("eval");
+        global_env_->set("eval", Value::object(ObjectPtr(eval_fn)));
     }
 
     // Register the global environment with GcHeap so user-created closures reachable
@@ -7429,6 +7523,22 @@ EvalResult Interpreter::eval_unary(const UnaryExpression& expr) {
         return EvalResult::ok(Value::number(-num_result.value().as_number()));
     }
     case UnaryOp::Plus: {
+        // Check [Symbol.toPrimitive] with "number" hint for objects
+        if (val.is_object()) {
+            RcObject* raw = val.as_object_raw();
+            if (raw && raw->object_kind() != ObjectKind::kFunction) {
+                auto* obj = static_cast<JSObject*>(raw);
+                const JSObject::SymbolPropertyEntry* entry =
+                    obj->find_symbol_entry(symbol_table_.well_known_to_primitive);
+                if (entry && !entry->value.is_undefined()) {
+                    Value hint = Value::string("number");
+                    auto result = call_function_val(entry->value, val,
+                                                    std::span<Value>(&hint, 1));
+                    if (!result.is_ok()) return result;
+                    return to_number(result.value());
+                }
+            }
+        }
         return to_number(val);
     }
     case UnaryOp::Bang:
@@ -7712,7 +7822,20 @@ EvalResult Interpreter::eval_binary(const BinaryExpression& expr) {
                 "Right-hand side of instanceof is not callable");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
+        // Check [Symbol.hasInstance] on the constructor
         auto* ctor_fn = static_cast<JSFunction*>(ctor_raw);
+        {
+            std::string sym_key = "__pfsym_" +
+                std::to_string(symbol_table_.well_known_has_instance) + "__";
+            Value has_inst_val = ctor_fn->get_property(sym_key);
+            if (!has_inst_val.is_undefined()) {
+                Value lv_copy = lv;
+                auto result = call_function_val(has_inst_val, rv,
+                                               std::span<Value>(&lv_copy, 1));
+                if (!result.is_ok()) return result;
+                return EvalResult::ok(Value::boolean(to_boolean(result.value())));
+            }
+        }
         const RcPtr<JSObject>& ctor_proto = ctor_fn->prototype_obj();
         if (!ctor_proto) {
             return EvalResult::ok(Value::boolean(false));
@@ -10673,7 +10796,24 @@ EvalResult Interpreter::eval_template_literal(const TemplateLiteral& node) {
         if (i < node.expressions.size()) {
             auto res = eval_expr(*node.expressions[i]);
             if (!res.is_ok()) return res;
-            result += to_string_val(res.value());
+            Value expr_val = res.value();
+            // Check [Symbol.toPrimitive] with "string" hint for objects
+            if (expr_val.is_object()) {
+                RcObject* raw = expr_val.as_object_raw();
+                if (raw && raw->object_kind() != ObjectKind::kFunction) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    const JSObject::SymbolPropertyEntry* entry =
+                        obj->find_symbol_entry(symbol_table_.well_known_to_primitive);
+                    if (entry && !entry->value.is_undefined()) {
+                        Value hint = Value::string("string");
+                        auto prim_res = call_function_val(entry->value, expr_val,
+                                                          std::span<Value>(&hint, 1));
+                        if (!prim_res.is_ok()) return prim_res;
+                        expr_val = prim_res.value();
+                    }
+                }
+            }
+            result += to_string_val(expr_val);
         }
     }
     return EvalResult::ok(Value::string(result));

@@ -2,6 +2,7 @@
 
 #include "qppjs/base/error.h"
 #include "qppjs/frontend/ast.h"
+#include "qppjs/frontend/parser.h"
 #include "qppjs/runtime/completion.h"
 #include "qppjs/runtime/for_of_iterator.h"
 #include "qppjs/runtime/environment.h"
@@ -443,9 +444,22 @@ void VM::init_global_env() {
     {
         auto fn = RcPtr<JSFunction>::make();
         fn->set_name(std::string("toString"));
-        fn->set_native_fn([](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+        fn->set_native_fn([this](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
             if (this_val.is_null()) return EvalResult::ok(Value::string("[object Null]"));
             if (this_val.is_undefined()) return EvalResult::ok(Value::string("[object Undefined]"));
+            // Check [Symbol.toStringTag]
+            if (this_val.is_object()) {
+                RcObject* raw = this_val.as_object_raw();
+                if (raw && raw->object_kind() != ObjectKind::kFunction) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    const JSObject::SymbolPropertyEntry* tag_entry =
+                        obj->find_symbol_entry(symbol_table_.well_known_to_string_tag);
+                    if (tag_entry && tag_entry->value.is_string()) {
+                        return EvalResult::ok(Value::string(
+                            "[object " + tag_entry->value.as_string() + "]"));
+                    }
+                }
+            }
             return EvalResult::ok(Value::string("[object Object]"));
         });
         gc_heap_.Register(fn.get());
@@ -4732,6 +4746,10 @@ void VM::init_global_env() {
         Value::symbol(symbol_table_.well_known_has_instance));
     symbol_constructor_->set_property("toStringTag",
         Value::symbol(symbol_table_.well_known_to_string_tag));
+    symbol_constructor_->set_property("asyncIterator",
+        Value::symbol(symbol_table_.well_known_async_iterator));
+    symbol_constructor_->set_property("species",
+        Value::symbol(symbol_table_.well_known_species));
 
     gc_heap_.Register(symbol_constructor_.get());
     global_env_->define("Symbol", VarKind::Const);
@@ -5667,6 +5685,113 @@ void VM::init_global_env() {
         gc_heap_.Register(vm_qmt_fn.get());
         global_env_->define_initialized("queueMicrotask");
         global_env_->set("queueMicrotask", Value::object(ObjectPtr(vm_qmt_fn)));
+    }
+
+    // ---- Function constructor ----
+    {
+        auto fn_ctor = RcPtr<JSFunction>::make();
+        fn_ctor->set_name(std::string("Function"));
+        fn_ctor->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+            std::string params_str;
+            std::string body_str;
+            if (args.empty()) {
+                body_str = "";
+            } else {
+                body_str = to_string_val(args.back());
+                for (size_t i = 0; i + 1 < args.size(); ++i) {
+                    if (i > 0) params_str += ",";
+                    params_str += to_string_val(args[i]);
+                }
+            }
+            std::string src = "function __anon__(" + params_str + ") { " + body_str + " }";
+            auto parse_result = parse_program(src);
+            if (!parse_result.ok()) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                    "Function constructor: " + parse_result.error().message());
+                return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+            }
+            const auto& body = parse_result.value().body;
+            if (body.empty()) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                    "Function constructor: empty body");
+                return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+            }
+            // Compile the program: the function declaration __anon__ will be hoisted
+            Compiler fn_compiler;
+            auto program_bc = fn_compiler.compile(parse_result.value());
+            // Pre-run the program to hoist __anon__ into a temp env
+            auto temp_env = RcPtr<Environment>::make(global_env_);
+            for (uint16_t idx : program_bc->var_decls) {
+                temp_env->define_initialized(program_bc->names[idx]);
+            }
+            for (uint16_t idx : program_bc->function_decls) {
+                temp_env->define_function(program_bc->names[idx]);
+            }
+            CallFrame fn_frame;
+            fn_frame.bytecode = program_bc.get();
+            fn_frame.pc = 0;
+            fn_frame.env = temp_env;
+            fn_frame.this_val = Value::undefined();
+            size_t fn_exit_depth = call_stack_.size();
+            call_stack_.push_back(std::move(fn_frame));
+            auto fn_run_result = run(fn_exit_depth);
+            if (!fn_run_result.is_ok()) return fn_run_result;
+            // Read the function from temp_env
+            auto* binding = temp_env->lookup("__anon__");
+            if (!binding || !binding->initialized) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                    "Function constructor: could not create function");
+                return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+            }
+            return EvalResult::ok(binding->cell->value);
+        });
+        gc_heap_.Register(fn_ctor.get());
+        global_env_->define("Function", VarKind::Const);
+        global_env_->initialize("Function", Value::object(ObjectPtr(fn_ctor)));
+    }
+
+    // ---- eval ----
+    {
+        auto eval_fn = RcPtr<JSFunction>::make();
+        eval_fn->set_name(std::string("eval"));
+        eval_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+            if (args.empty() || !args[0].is_string()) {
+                return EvalResult::ok(args.empty() ? Value::undefined() : args[0]);
+            }
+            std::string code(args[0].sv());
+            auto parse_result = parse_program(code);
+            if (!parse_result.ok()) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                    parse_result.error().message());
+                return EvalResult::err(Error{ErrorKind::Runtime, "__qppjs_pending_throw__"});
+            }
+            // Compile and execute the eval code using global_env_
+            Compiler eval_compiler;
+            auto bytecode = eval_compiler.compile(parse_result.value());
+            // Pre-define top-level var_decls and function_decls in global_env_
+            for (uint16_t idx : bytecode->var_decls) {
+                if (!global_env_->lookup(bytecode->names[idx])) {
+                    global_env_->define_initialized(bytecode->names[idx]);
+                }
+            }
+            for (uint16_t idx : bytecode->function_decls) {
+                if (!global_env_->lookup(bytecode->names[idx])) {
+                    global_env_->define_function(bytecode->names[idx]);
+                }
+            }
+            // Keep bytecode alive during run
+            CallFrame eval_frame;
+            eval_frame.bytecode = bytecode.get();
+            eval_frame.pc = 0;
+            eval_frame.env = global_env_;
+            eval_frame.this_val = Value::undefined();
+            size_t exit_depth = call_stack_.size();
+            call_stack_.push_back(std::move(eval_frame));
+            return run(exit_depth);
+        });
+        gc_heap_.Register(eval_fn.get());
+        global_env_->define("eval", VarKind::Const);
+        global_env_->initialize("eval", Value::object(ObjectPtr(eval_fn)));
     }
 }
 
@@ -9149,6 +9274,31 @@ EvalResult VM::run(size_t exit_depth) {
 
         case Opcode::kPos: {
             Value v = std::move(stack.back()); stack.pop_back();
+            // Check [Symbol.toPrimitive] with "number" hint for objects
+            if (v.is_object()) {
+                RcObject* raw = v.as_object_raw();
+                if (raw && raw->object_kind() != ObjectKind::kFunction) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    const JSObject::SymbolPropertyEntry* entry =
+                        obj->find_symbol_entry(symbol_table_.well_known_to_primitive);
+                    if (entry && !entry->value.is_undefined()) {
+                        Value hint = Value::string("number");
+                        auto prim_res = call_function_val(entry->value, v,
+                                                          std::span<Value>(&hint, 1));
+                        if (!prim_res.is_ok()) {
+                            if (native_pending_throw_.has_value()) {
+                                frame.pending_throw = std::move(*native_pending_throw_);
+                                native_pending_throw_.reset();
+                            } else {
+                                frame.pending_throw = make_error_value(
+                                    NativeErrorType::kTypeError, prim_res.error().message());
+                            }
+                            continue;
+                        }
+                        v = prim_res.value();
+                    }
+                }
+            }
             auto n = to_number(v); if (!n.is_ok()) return n;
             stack.push_back(n.value());
             break;
@@ -9396,6 +9546,29 @@ EvalResult VM::run(size_t exit_depth) {
                 continue;
             }
             auto* ctor_fn = static_cast<JSFunction*>(ctor_raw);
+            // Check [Symbol.hasInstance] on the constructor
+            {
+                std::string sym_key = "__pfsym_" +
+                    std::to_string(symbol_table_.well_known_has_instance) + "__";
+                Value has_inst_val = ctor_fn->get_property(sym_key);
+                if (!has_inst_val.is_undefined()) {
+                    Value obj_copy = obj_val;
+                    auto result = call_function_val(has_inst_val, ctor_val,
+                                                   std::span<Value>(&obj_copy, 1));
+                    if (!result.is_ok()) {
+                        if (native_pending_throw_.has_value()) {
+                            frame.pending_throw = std::move(*native_pending_throw_);
+                            native_pending_throw_.reset();
+                        } else {
+                            frame.pending_throw = make_error_value(
+                                NativeErrorType::kTypeError, result.error().message());
+                        }
+                        continue;
+                    }
+                    stack.push_back(Value::boolean(to_boolean(result.value())));
+                    break;
+                }
+            }
             const RcPtr<JSObject>& ctor_proto = ctor_fn->prototype_obj();
             if (!ctor_proto) {
                 stack.push_back(Value::boolean(false));
@@ -10109,9 +10282,37 @@ EvalResult VM::run(size_t exit_depth) {
         }
 
         case Opcode::kToString: {
-            Value& top = stack.back();
+            Value top = std::move(stack.back());
+            stack.pop_back();
             if (!top.is_string()) {
-                top = Value::string(to_string_val(top));
+                // Check [Symbol.toPrimitive] with "string" hint for objects
+                if (top.is_object()) {
+                    RcObject* raw = top.as_object_raw();
+                    if (raw && raw->object_kind() != ObjectKind::kFunction) {
+                        auto* obj = static_cast<JSObject*>(raw);
+                        const JSObject::SymbolPropertyEntry* entry =
+                            obj->find_symbol_entry(symbol_table_.well_known_to_primitive);
+                        if (entry && !entry->value.is_undefined()) {
+                            Value hint = Value::string("string");
+                            auto prim_res = call_function_val(entry->value, top,
+                                                              std::span<Value>(&hint, 1));
+                            if (!prim_res.is_ok()) {
+                                if (native_pending_throw_.has_value()) {
+                                    frame.pending_throw = std::move(*native_pending_throw_);
+                                    native_pending_throw_.reset();
+                                } else {
+                                    frame.pending_throw = make_error_value(
+                                        NativeErrorType::kTypeError, prim_res.error().message());
+                                }
+                                continue;
+                            }
+                            top = prim_res.value();
+                        }
+                    }
+                }
+                stack.push_back(Value::string(to_string_val(top)));
+            } else {
+                stack.push_back(std::move(top));
             }
             break;
         }

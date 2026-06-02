@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 4712/4712 通过（coverage），0 LSan 泄漏（预期） |
+| 测试计数 | 4746/4746 通过（coverage），0 LSan 泄漏（预期） |
 | 最近更新 | 2026-06-02 |
-| 下一步 | 下一批 test262 候选目标（eval / WeakRef 等） |
+| 下一步 | 下一批 test262 候选目标（WeakRef / Proxy 等） |
 | test262 | language/expressions class fields + private fields 实现后约 24%（expressions 32.4% 基线） |
 
 ## 已知遗留问题
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **3 组功能补充（Symbol WKS + Symbol.toPrimitive/hasInstance/toStringTag + Function constructor + eval）**（2026-06-02）：（A）`symbol_table_.h` 新增 `well_known_async_iterator` 和 `well_known_species`，在 interpreter.cpp 和 vm.cpp 注册 `Symbol.asyncIterator` 和 `Symbol.species`；（B）`Symbol.toPrimitive` 调用：interpreter `eval_unary(Plus)` 和 `eval_template_literal` 中检查 `[Symbol.toPrimitive]`，VM `kPos` opcode 和 `kToString` opcode 中对称实现；（C）`Symbol.hasInstance`：interpreter `eval_binary(Instanceof)` 和 vm `kInstanceof` 中通过 `__pfsym_<id>__` 键检查自定义 hasInstance；（D）`Object.prototype.toString` 检查 `[Symbol.toStringTag]`：interpreter 和 vm 两侧对称；（E）`Function` constructor（`new Function(params, body)`/`Function(body)`）：interpreter 侧 parse + make_function_value，vm 侧 parse + compile + run 临时 env；（F）`eval`（间接 eval 语义，global scope）：interpreter 侧 hoist_vars + eval_stmt 循环，vm 侧 compile + 直接创建 CallFrame + run；新增 `tests/unit/symbol_eval_test.cpp`（SE-01～SE-15 × Interp+VM = 34 个测试，含 SE-04b species + SE-15 两个变体）。4746/4746 通过（coverage），0 LSan 泄漏（预期）。
 
 - [x] **5 组内建功能补充（globalThis/Object 新方法/Array.at/JSON/queueMicrotask）**（2026-06-02）：（A）`globalThis`：全局 JSObject 自引用，`typeof globalThis === "object"` 和 `globalThis.globalThis === globalThis` 成立；（B）`Object.is`（SameValue 算法，NaN===NaN，+0!=-0）、`Object.setPrototypeOf`（设置 proto 或置 null）、`Object.hasOwn`（检查 own property，支持 kFunction 路径）；（C）`Array.prototype.at`（负索引支持，越界返回 undefined）；（D）`JSON.stringify`（完整序列化：null/bool/number/string/array/object，NaN/Infinity→null，循环引用→TypeError）+ `JSON.parse`（完整解析器：null/true/false/number/string含转义/array/object，无效 JSON→SyntaxError）；（E）`queueMicrotask`（入队 ReactionJob，exec() drain 后自动执行）；interpreter.cpp 和 vm.cpp 对称实现，vm.cpp 完整替换 JSON stub；新增 `tests/unit/global_json_test.cpp`（GJ-01～GJ-16 × Interp+VM = 32 个测试）。4712/4712 通过（coverage），0 LSan 泄漏（预期）。
 

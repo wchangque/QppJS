@@ -5,15 +5,19 @@ namespace qppjs {
 SymbolTable::SymbolTable() {
     // Pre-allocate Well-Known Symbols (no description stored in descriptions_,
     // they use a fixed naming convention when toString() is called).
-    well_known_iterator     = next_id_++;
-    well_known_to_primitive = next_id_++;
-    well_known_has_instance = next_id_++;
+    well_known_iterator      = next_id_++;
+    well_known_to_primitive  = next_id_++;
+    well_known_has_instance  = next_id_++;
     well_known_to_string_tag = next_id_++;
+    well_known_async_iterator = next_id_++;
+    well_known_species        = next_id_++;
 
-    descriptions_[well_known_iterator]      = "Symbol.iterator";
-    descriptions_[well_known_to_primitive]  = "Symbol.toPrimitive";
-    descriptions_[well_known_has_instance]  = "Symbol.hasInstance";
-    descriptions_[well_known_to_string_tag] = "Symbol.toStringTag";
+    descriptions_[well_known_iterator]       = "Symbol.iterator";
+    descriptions_[well_known_to_primitive]   = "Symbol.toPrimitive";
+    descriptions_[well_known_has_instance]   = "Symbol.hasInstance";
+    descriptions_[well_known_to_string_tag]  = "Symbol.toStringTag";
+    descriptions_[well_known_async_iterator] = "Symbol.asyncIterator";
+    descriptions_[well_known_species]        = "Symbol.species";
 }
 
 uint64_t SymbolTable::NewSymbol(std::optional<std::string> description) {

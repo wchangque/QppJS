@@ -29,6 +29,8 @@ public:
     uint64_t well_known_to_primitive;
     uint64_t well_known_has_instance;
     uint64_t well_known_to_string_tag;
+    uint64_t well_known_async_iterator;
+    uint64_t well_known_species;
 
 private:
     uint64_t next_id_ = 1;

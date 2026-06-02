@@ -4,6 +4,17 @@
 
 ## 1. 已完成任务
 
+- [x] **3 组功能补充（Symbol WKS + Symbol.toPrimitive/hasInstance/toStringTag + Function constructor + eval）**（2026-06-02）：
+  - **Symbol WKS 补充注册**：`include/qppjs/runtime/symbol_table.h` 新增 `well_known_async_iterator` 和 `well_known_species` 字段；`src/runtime/symbol_table.cpp` 在构造函数中分配 id 并填入 descriptions_；`interpreter.cpp` 和 `vm.cpp` 在 Symbol 构造函数注册区域补充 `Symbol.asyncIterator` 和 `Symbol.species` 属性。
+  - **Symbol.toPrimitive 调用**：interpreter.cpp `eval_unary(Plus)` 和 `eval_template_literal` 中，当操作数是对象时先通过 `find_symbol_entry(well_known_to_primitive)` 检查 `[Symbol.toPrimitive]`，若存在则调用（hint="number" 或 hint="string"）再转换；vm.cpp `kPos` opcode 和 `kToString` opcode 对称实现（`kToString` 改为弹栈后处理，避免悬空引用）。
+  - **Symbol.hasInstance 调用**：interpreter.cpp `eval_binary(Instanceof)` 和 vm.cpp `kInstanceof` 中，在走标准原型链检查之前，先通过 `"__pfsym_<id>__"` 键读取构造函数上的 `[Symbol.hasInstance]`，若存在则调用并返回布尔结果。
+  - **Object.prototype.toString 中的 Symbol.toStringTag**：interpreter.cpp 和 vm.cpp 的 `Object.prototype.toString` lambda 由无捕获改为 `[this]` 捕获，检查 `[Symbol.toStringTag]`，若对象有该符号属性（字符串值）则返回 `[object TAG]` 格式。
+  - **Function constructor**：interpreter.cpp 新增全局 `Function` native function，解析 `"function __anon__(params){body}"` 字符串并用 `make_function_value` 创建函数；vm.cpp 对称实现，通过 `Compiler::compile` + 临时 CallFrame 运行程序，从临时 env 中读取 `__anon__` 绑定。
+  - **eval**：interpreter.cpp 新增全局 `eval` native function，非字符串原值返回，字符串 parse + `hoist_vars` + 逐语句 `eval_stmt`（使用 global_env_ 作为 var target，间接 eval 语义）；vm.cpp 对称实现，compile + 预定义 var_decls/function_decls + 直接创建 CallFrame 推入 call_stack_ + 调用 `run(exit_depth)`（也使用 global_env_）。
+  - **测试**：新增 `tests/unit/symbol_eval_test.cpp`（SE-01～SE-15 × Interp+VM = 34 个测试，含 SE-04b species、SE-05 Symbol.toPrimitive number hint、SE-06 template string hint、SE-07/SE-08/SE-09 Function constructor、SE-10 SyntaxError、SE-11～SE-15 eval 基础用法）；`tests/CMakeLists.txt` 注册。
+  - **修改文件**：`include/qppjs/runtime/symbol_table.h`、`src/runtime/symbol_table.cpp`、`src/runtime/interpreter.cpp`（含新增 `#include "qppjs/frontend/parser.h"`）、`src/vm/vm.cpp`（含新增 `#include "qppjs/frontend/parser.h"`）、`tests/unit/symbol_eval_test.cpp`（新增）、`tests/CMakeLists.txt`（注册）。
+  - **测试结果**：4746/4746 通过（coverage），0 LSan 泄漏（预期）。
+
 - [x] **5 组内建功能补充（globalThis/Object 新方法/Array.at/JSON/queueMicrotask）**（2026-06-02）：
   - **globalThis**：`interpreter.cpp` + `vm.cpp` 在 `init_global_env` / `init_runtime` 阶段向全局对象自身注册 `globalThis` 属性（值为全局 JSObject 自身），使 `typeof globalThis === "object"` 和 `globalThis.globalThis === globalThis` 成立。
   - **Object.is**：实现 SameValue 算法（`Object.is(NaN, NaN)` → true，`Object.is(+0, -0)` → false，其余语义与 `===` 一致）；Interpreter + VM 对称。
