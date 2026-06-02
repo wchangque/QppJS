@@ -2085,16 +2085,29 @@ void VM::init_global_env() {
             return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
         }
         RcObject* raw = args[0].as_object_raw();
-        if (raw->object_kind() != ObjectKind::kOrdinary && raw->object_kind() != ObjectKind::kArray) {
-            return EvalResult::ok(Value::undefined());
-        }
-        auto* obj = static_cast<JSObject*>(raw);
         std::string key = args.size() >= 2 ? to_string_val(args[1]) : "undefined";
-        const JSObject::PropertyEntry* entry = obj->get_own_entry(key);
-        if (entry == nullptr) return EvalResult::ok(Value::undefined());
         auto desc_obj = RcPtr<JSObject>::make();
         gc_heap_.Register(desc_obj.get());
         desc_obj->set_proto(object_prototype_);
+        if (raw->object_kind() == ObjectKind::kFunction) {
+            auto* fn = static_cast<JSFunction*>(raw);
+            auto it = fn->own_properties().find(key);
+            if (it == fn->own_properties().end()) return EvalResult::ok(Value::undefined());
+            desc_obj->set_property("value", it->second);
+            desc_obj->set_property("writable", Value::boolean(true));
+            desc_obj->set_property("enumerable", Value::boolean(false));
+            desc_obj->set_property("configurable", Value::boolean(true));
+            return EvalResult::ok(Value::object(ObjectPtr(desc_obj)));
+        }
+        if (raw->object_kind() != ObjectKind::kOrdinary && raw->object_kind() != ObjectKind::kArray &&
+            raw->object_kind() != ObjectKind::kRegExp && raw->object_kind() != ObjectKind::kStringObject &&
+            raw->object_kind() != ObjectKind::kBooleanObject &&
+            raw->object_kind() != ObjectKind::kMap && raw->object_kind() != ObjectKind::kSet) {
+            return EvalResult::ok(Value::undefined());
+        }
+        auto* obj = static_cast<JSObject*>(raw);
+        const JSObject::PropertyEntry* entry = obj->get_own_entry(key);
+        if (entry == nullptr) return EvalResult::ok(Value::undefined());
         bool is_accessor = (entry->flags & kPropIsAccessor) != 0;
         if (is_accessor) {
             desc_obj->set_property("get", entry->getter.is_undefined() ? Value::undefined() : entry->getter);

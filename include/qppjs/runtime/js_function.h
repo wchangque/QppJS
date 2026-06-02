@@ -132,6 +132,7 @@ public:
     Value get_property(const std::string& key) const;
     bool has_property(const std::string& key) const;
     void clear_own_properties();
+    const std::unordered_map<std::string, Value>& own_properties() const { return own_properties_; }
 
 private:
     std::optional<std::string> name_;
