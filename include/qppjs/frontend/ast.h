@@ -281,16 +281,18 @@ struct ClassMethod {
     MethodKind method_kind = MethodKind::kMethod;
     bool is_static = false;
     bool computed = false;
+    bool is_private = false;                    // true = #method()
 };
 
 // class 字段声明（实例字段或静态字段）
 // 使用 shared_ptr 以支持复制到 JSFunction::instance_fields_
 struct ClassField {
-    std::string key;                              // 非 computed 时有效
+    std::string key;                              // 非 computed 时有效；私有字段含 # 前缀
     std::shared_ptr<ExprNode> key_expr;           // computed=true 时非空
     std::shared_ptr<ExprNode> initializer;        // = expr，可为 nullptr（初始值 undefined）
     bool is_static = false;
     bool computed = false;
+    bool is_private = false;                      // true = #x 私有字段
 };
 
 // class 声明语句 class Name [extends super] { body }
@@ -345,6 +347,20 @@ struct TaggedTemplateExpression {
     SourceRange range;
 };
 
+// 私有成员访问：obj.#x（obj 可为 this 或任意表达式）
+struct PrivateMemberExpression {
+    std::unique_ptr<ExprNode> object;
+    std::string field_name;  // "#x"（含 # 前缀）
+    SourceRange range;
+};
+
+// #x in obj（Ergonomic brand checks，ES2022）
+struct PrivateInExpression {
+    std::string field_name;  // "#x"（含 # 前缀）
+    std::unique_ptr<ExprNode> object;
+    SourceRange range;
+};
+
 // ---- ExprNode 完整定义（必须在所有表达式 struct 定义之后）----
 
 struct ExprNode {
@@ -357,7 +373,7 @@ struct ExprNode {
                  ArrowFunctionExpression, ConditionalExpression, SpreadElement,
                  DestructuringAssignmentExpression, OptionalChainExpression,
                  YieldExpression, ClassExpression, SuperCallExpression, SuperMemberExpression,
-                 TaggedTemplateExpression>
+                 TaggedTemplateExpression, PrivateMemberExpression, PrivateInExpression>
             v;
 
     bool is_parenthesized = false;  // set by Parser when wrapped in ( )

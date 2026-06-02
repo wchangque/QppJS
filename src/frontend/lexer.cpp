@@ -782,6 +782,20 @@ Token next_token(LexerState& state) {
             break;
     }
 
+    // 私有字段名 #identifier（pos 仍指向 '#'）
+    if (c == '#') {
+        ++state.pos;  // 消费 '#'
+        if (state.pos < len && is_ident_start(src[state.pos])) {
+            while (state.pos < len && is_ident_part(src[state.pos])) {
+                ++state.pos;
+            }
+            uint32_t tok_len = state.pos - start;
+            return {TokenKind::PrivateName, {start, tok_len}};
+        }
+        // 单独的 # 不合法
+        return {TokenKind::Invalid, {start, state.pos - start}};
+    }
+
     // 标识符与关键字
     if (is_ident_start(c)) {
         ++state.pos;

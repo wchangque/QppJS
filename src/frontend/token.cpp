@@ -198,6 +198,8 @@ std::string_view token_kind_name(TokenKind kind) {
             return "TemplateMiddle";
         case TokenKind::TemplateTail:
             return "TemplateTail";
+        case TokenKind::PrivateName:
+            return "PrivateName";
         case TokenKind::Invalid:
             return "Invalid";
     }

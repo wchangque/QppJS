@@ -409,6 +409,8 @@ static SourceRange expr_range(const ExprNode& e) {
                               [](const SuperCallExpression& n) { return n.range; },
                               [](const SuperMemberExpression& n) { return n.range; },
                               [](const TaggedTemplateExpression& n) { return n.range; },
+                              [](const PrivateMemberExpression& n) { return n.range; },
+                              [](const PrivateInExpression& n) { return n.range; },
                       },
                       e.v);
 }
@@ -456,6 +458,10 @@ struct Parser {
     // When true, the `in` identifier is not treated as a binary operator.
     // Set during the LHS of for...in to prevent ambiguity with the `in` keyword.
     bool no_in_ = false;
+    // Private name context: depth > 0 means we are inside a class body.
+    int in_class_depth_ = 0;
+    // Private field names declared in the innermost class (for SyntaxError checking).
+    std::unordered_set<std::string> current_class_private_names_;
 
     explicit Parser(std::string_view src, bool is_module = false)
         : source(src), lex(lexer_init(src)), cur{TokenKind::Eof, {0, 0}}, got_lf(false),
@@ -913,9 +919,10 @@ struct Parser {
                 UpdateOp uop = (tok.kind == TokenKind::PlusPlus) ? UpdateOp::Inc : UpdateOp::Dec;
                 auto operand = parse_expr(18);
                 if (!operand.ok()) return operand;
-                // operand must be a valid assignment target (Identifier or MemberExpression)
+                // operand must be a valid assignment target
                 if (!std::holds_alternative<Identifier>(operand.value().v) &&
-                    !std::holds_alternative<MemberExpression>(operand.value().v)) {
+                    !std::holds_alternative<MemberExpression>(operand.value().v) &&
+                    !std::holds_alternative<PrivateMemberExpression>(operand.value().v)) {
                     return ParseResult<ExprNode>::Err(
                         make_parse_error(source, tok,
                             "invalid left-hand side expression in prefix operation (expected assignment target)"));
@@ -1531,6 +1538,18 @@ struct Parser {
                 return ParseResult<ExprNode>::Ok(ExprNode{SpreadElement{
                     std::make_unique<ExprNode>(std::move(arg.value())), r}});
             }
+            case TokenKind::PrivateName: {
+                // #x in obj — PrivateName 只作为 `#x in` 的 LHS 使用
+                // 在 class body 外使用私有名 → SyntaxError
+                if (in_class_depth_ == 0) {
+                    return ParseResult<ExprNode>::Err(
+                        make_parse_error(source, tok,
+                            "SyntaxError: private field used outside class body"));
+                }
+                // 产生一个特殊 Identifier（name 含 # 前缀），供 led(in) 识别
+                std::string priv_name = std::string(token_text(tok));
+                return ParseResult<ExprNode>::Ok(ExprNode{Identifier{priv_name, tok.range}});
+            }
             default:
                 return ParseResult<ExprNode>::Err(make_parse_error(
                         source, tok,
@@ -1570,9 +1589,10 @@ struct Parser {
                     make_parse_error(source, op_tok,
                         "invalid left-hand side expression in postfix operation: optional chain is not a valid assignment target"));
             }
-            // left must be a valid assignment target (Identifier or MemberExpression)
+            // left must be a valid assignment target (Identifier, MemberExpression, or PrivateMemberExpression)
             if (!std::holds_alternative<Identifier>(left.v) &&
-                !std::holds_alternative<MemberExpression>(left.v)) {
+                !std::holds_alternative<MemberExpression>(left.v) &&
+                !std::holds_alternative<PrivateMemberExpression>(left.v)) {
                 return ParseResult<ExprNode>::Err(
                     make_parse_error(source, op_tok,
                         "invalid left-hand side expression in postfix operation (expected assignment target)"));
@@ -1683,9 +1703,25 @@ struct Parser {
                 tagged_range}});
         }
 
-        // 成员访问：obj.prop
+        // 成员访问：obj.prop 或 obj.#x（私有字段访问）
         // 属性名可以是标识符或关键字（如 obj.catch, obj.finally, obj.return 等）
         if (kind == TokenKind::Dot) {
+            if (cur.kind == TokenKind::PrivateName) {
+                // obj.#x → PrivateMemberExpression
+                if (in_class_depth_ == 0) {
+                    return ParseResult<ExprNode>::Err(
+                        make_parse_error(source, cur,
+                            "SyntaxError: private field accessed outside class body"));
+                }
+                std::string field_name = std::string(token_text(cur));
+                uint32_t end = range_end(cur.range);
+                advance();
+                uint32_t obj_start = expr_range(left).offset;
+                return ParseResult<ExprNode>::Ok(ExprNode{PrivateMemberExpression{
+                    std::make_unique<ExprNode>(std::move(left)),
+                    field_name,
+                    span(obj_start, end)}});
+            }
             bool is_prop_name = cur.kind == TokenKind::Ident || is_keyword(cur.kind);
             if (!is_prop_name) {
                 return ParseResult<ExprNode>::Err(
@@ -1959,6 +1995,41 @@ struct Parser {
                         mae_r,
                         mem_op}});
             }
+            // this.#x = v / this.#x += v / etc.: PrivateMemberExpression as LHS
+            if (std::holds_alternative<PrivateMemberExpression>(left.v)) {
+                auto& pme = std::get<PrivateMemberExpression>(left.v);
+                uint32_t left_start = pme.range.offset;
+                auto right = parse_expr(bp - 1);
+                if (!right.ok()) return right;
+                auto mae_r = span(left_start, range_end(expr_range(right.value())));
+                // Map assignment token to AssignOp
+                AssignOp mem_op = AssignOp::Assign;
+                if (kind == TokenKind::PlusEq)          mem_op = AssignOp::AddAssign;
+                else if (kind == TokenKind::MinusEq)    mem_op = AssignOp::SubAssign;
+                else if (kind == TokenKind::StarEq)     mem_op = AssignOp::MulAssign;
+                else if (kind == TokenKind::SlashEq)    mem_op = AssignOp::DivAssign;
+                else if (kind == TokenKind::PercentEq)  mem_op = AssignOp::ModAssign;
+                else if (kind == TokenKind::StarStarEq) mem_op = AssignOp::PowAssign;
+                else if (kind == TokenKind::AmpEq)      mem_op = AssignOp::BitAndAssign;
+                else if (kind == TokenKind::PipeEq)     mem_op = AssignOp::BitOrAssign;
+                else if (kind == TokenKind::CaretEq)    mem_op = AssignOp::BitXorAssign;
+                else if (kind == TokenKind::LShiftEq)   mem_op = AssignOp::ShlAssign;
+                else if (kind == TokenKind::RShiftEq)   mem_op = AssignOp::SarAssign;
+                else if (kind == TokenKind::URShiftEq)  mem_op = AssignOp::ShrAssign;
+                else if (kind == TokenKind::AmpAmpEq)   mem_op = AssignOp::LogicalAndAssign;
+                else if (kind == TokenKind::PipePipeEq) mem_op = AssignOp::LogicalOrAssign;
+                else if (kind == TokenKind::QuestionQuestionEq) mem_op = AssignOp::NullishAssign;
+                // Encode as MemberAssignmentExpression with a synthetic Identifier{#x} as property
+                SourceRange prop_range{pme.range.offset, pme.range.length};
+                auto prop_node = std::make_unique<ExprNode>(ExprNode{Identifier{pme.field_name, prop_range}});
+                return ParseResult<ExprNode>::Ok(ExprNode{MemberAssignmentExpression{
+                        std::move(pme.object),
+                        std::move(prop_node),
+                        /*computed=*/false,
+                        std::make_unique<ExprNode>(std::move(right.value())),
+                        mae_r,
+                        mem_op}});
+            }
             return ParseResult<ExprNode>::Err(
                     make_parse_error(source, op_tok, "invalid left-hand side in assignment"));
         }
@@ -2020,6 +2091,25 @@ struct Parser {
 
         // 'in' 运算符（contextual keyword，TokenKind::Ident，text=="in"）
         if (kind == TokenKind::Ident && token_text(op_tok) == "in") {
+            // 检查 LHS 是否为私有字段名 #x（Identifier 且 name 以 '#' 开头）
+            if (std::holds_alternative<Identifier>(left.v)) {
+                const auto& id = std::get<Identifier>(left.v);
+                if (!id.name.empty() && id.name[0] == '#') {
+                    // #x in obj → PrivateInExpression
+                    if (in_class_depth_ == 0) {
+                        return ParseResult<ExprNode>::Err(
+                            make_parse_error(source, op_tok,
+                                "SyntaxError: private field 'in' check outside class body"));
+                    }
+                    auto right = parse_expr(12);
+                    if (!right.ok()) return right;
+                    auto bin_r = span(id.range.offset, range_end(expr_range(right.value())));
+                    return ParseResult<ExprNode>::Ok(ExprNode{PrivateInExpression{
+                        id.name,
+                        std::make_unique<ExprNode>(std::move(right.value())),
+                        bin_r}});
+                }
+            }
             auto right = parse_expr(12);
             if (!right.ok()) return right;
             auto bin_r = span(expr_range(left).offset, range_end(expr_range(right.value())));
@@ -2794,6 +2884,7 @@ struct Parser {
         std::string key;
         std::unique_ptr<ExprNode> key_expr;
         bool computed = false;
+        bool is_private = false;  // true = #name 私有字段
         uint32_t start = 0;
     };
 
@@ -2809,6 +2900,11 @@ struct Parser {
             if (!rb.ok()) return ParseResult<ClassKeyResult>::Err(rb.error());
             res.computed = true;
             res.key_expr = std::make_unique<ExprNode>(std::move(ke.value()));
+        } else if (cur.kind == TokenKind::PrivateName) {
+            // 私有字段名 #identifier
+            res.key = std::string(token_text(cur));  // 含 # 前缀
+            res.is_private = true;
+            advance();
         } else if (cur.kind == TokenKind::Ident || cur.kind == TokenKind::String) {
             if (cur.kind == TokenKind::String) {
                 res.key = decode_string(token_text(cur));
@@ -2835,6 +2931,11 @@ struct Parser {
                                                            std::vector<ClassField>& out_fields) {
         auto lb = expect(TokenKind::LBrace);
         if (!lb.ok()) return ParseResult<std::vector<ClassMethod>>::Err(lb.error());
+
+        // 保存外层 class 私有名集合，进入新 class 作用域
+        std::unordered_set<std::string> saved_private_names = std::move(current_class_private_names_);
+        current_class_private_names_.clear();
+        ++in_class_depth_;
 
         std::vector<ClassMethod> methods;
         while (cur.kind != TokenKind::RBrace && cur.kind != TokenKind::Eof) {
@@ -3095,9 +3196,14 @@ struct Parser {
                 ClassField f;
                 f.key = key_res.value().key;
                 f.computed = key_res.value().computed;
+                f.is_private = key_res.value().is_private;
                 if (f.computed) {
                     // unique_ptr → shared_ptr
                     f.key_expr = std::shared_ptr<ExprNode>(std::move(key_res.value().key_expr));
+                }
+                if (f.is_private) {
+                    // 私有字段名注册（用于 SyntaxError 检查）
+                    current_class_private_names_.insert(f.key);
                 }
                 f.is_static = is_static;
                 if (cur.kind == TokenKind::Eq) {
@@ -3131,11 +3237,15 @@ struct Parser {
             ClassMethod m;
             m.key = key_res.value().key;
             m.computed = key_res.value().computed;
+            m.is_private = key_res.value().is_private;
             if (m.computed) m.key_expr = std::move(key_res.value().key_expr);
             // constructor 用 kData 标记（method_kind kData = constructor 入口）
-            bool is_ctor = (!m.computed && m.key == "constructor" && !is_static);
+            bool is_ctor = (!m.computed && !m.is_private && m.key == "constructor" && !is_static);
             m.method_kind = is_ctor ? MethodKind::kData : MethodKind::kMethod;
             m.is_static = is_static;
+            if (m.is_private) {
+                current_class_private_names_.insert(m.key);
+            }
             m.fn_expr = std::make_unique<ExprNode>(ExprNode{FunctionExpression{
                 m.computed ? std::optional<std::string>{} : std::optional<std::string>{m.key},
                 std::move(params_nm.value()), std::move(fn_rest_nm),
@@ -3145,6 +3255,9 @@ struct Parser {
         }
 
         auto rb = expect(TokenKind::RBrace);
+        // 恢复外层 class 私有名集合
+        --in_class_depth_;
+        current_class_private_names_ = std::move(saved_private_names);
         if (!rb.ok()) return ParseResult<std::vector<ClassMethod>>::Err(rb.error());
 
         return ParseResult<std::vector<ClassMethod>>::Ok(std::move(methods));

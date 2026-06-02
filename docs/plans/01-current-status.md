@@ -7,10 +7,10 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 4570/4570 通过（coverage），4568/4568 通过（run_ut ASAN），0 LSan 泄漏 |
-| 最近更新 | 2026-06-01 |
+| 测试计数 | 4590/4590 通过（coverage），run_ut ASAN 待确认，0 LSan 泄漏（预期） |
+| 最近更新 | 2026-06-02 |
 | 下一步 | 下一批 test262 候选目标（eval / Promise.all 等） |
-| test262 | language/expressions class fields 实现后约 23%（expressions 32.4% 基线） |
+| test262 | language/expressions class fields + private fields 实现后约 24%（expressions 32.4% 基线） |
 
 ## 已知遗留问题
 
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **ES2022 Class Private Fields（`#x`）**（2026-06-02）：Token `PrivateName`（`#identifier`）+ Lexer 扫描；AST `PrivateMemberExpression`/`PrivateInExpression` 节点；Parser `led(Dot)` 支持 `obj.#field` → PrivateMemberExpression，`led(KwIn)` 支持 `#name in obj` → PrivateInExpression，赋值（`=`/`+=` 等）LHS 为 PrivateMemberExpression 时转换为 MemberAssignmentExpression with `Identifier{#name}` 合成属性，`++`/`--` 支持 PrivateMemberExpression；Interpreter `eval_class_common` 分配私有字段 symbol 并注入 ctor 和所有方法函数的 `private_fields_` 映射；`eval_expr` 新增 PrivateMemberExpression（symbol 路径读取，kFunction 对象走字符串属性后备）和 PrivateInExpression（symbol in obj）handler；`eval_member_assign` 检测 `#name` Identifier 属性走私有字段读写路径（含复合赋值）；`eval_update_expr` 支持 PrivateMemberExpression（`++this.#x`）；`init_instance_fields` 私有字段使用 symbol key（`set_property_by_symbol`）；VM Compiler `hoist_vars_scan_expr` 扩展两个新节点；`compile_expr` 新增 PrivateMemberExpression（`kLoadString(Value::symbol) + kGetElem`）和 PrivateInExpression（`kLoadString(Value::symbol) + compile(obj) + kIn`）；`compile_member_assign` 检测 `#name` 私有字段走 symbol kSetElem 路径（含复合赋值）；`compile_update_expr` 内联 read-modify-write 序列；`compile_field_initializer` 私有字段用 symbol key；`compile_class_common` 收集私有字段到 `private_fields_stack_`，静态私有字段用 symbol kSetElem；vm.cpp kGetElem/kSetElem 新增 kFunction + symbol key 路径（`"__pfsym_<id>__"` 字符串代理存储）；compiler.h 新增 `SymbolTable` 和 `private_fields_stack_`；新增 `tests/unit/private_fields_test.cpp`（PF-01～PF-10 × Interp+VM = 20 个测试）。4590/4590 通过（coverage），0 LSan 泄漏（预期）。
 
 - [x] **Map、Set、WeakMap、WeakSet 内建对象**（2026-06-01）：新增 `js_map.h`/`js_map.cpp`（JSMap、JSSet、JSWeakMap、JSWeakSet + 迭代器类，SameValueZero 比较，TraceRefs/ClearRefs）；ObjectKind 新增 kMap/kSet/kWeakMap/kWeakSet/kMapIterator/kSetIterator；interpreter.cpp + vm.cpp 注册四个全局构造函数（prototype 方法体系 + Symbol.iterator 迭代器）；ObjectKind 白名单（kGetProp/kCallMethod/kForOfStart/spread_into 等）扩展支持新类型；GC roots/cleanup 四处同步更新；新增 90 个测试（MS-01～MS-45 × Interp+VM）。4570/4570 通过（coverage），4568/4568 通过（run_ut ASAN），0 LSan 泄漏。
 

@@ -108,6 +108,8 @@ enum class TokenKind {
 
     Regex,  // /pattern/flags
 
+    PrivateName,  // #identifier（私有字段名）
+
     // 模板字符串 token
     TemplateNoSub,   // `...`  (无插值完整模板)
     TemplateHead,    // `...${ (模板头)

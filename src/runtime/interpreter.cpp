@@ -5150,6 +5150,68 @@ EvalResult Interpreter::eval_expr(const ExprNode& expr) {
             [this](const SuperCallExpression& e) { return eval_super_call(e); },
             [this](const SuperMemberExpression& e) { return eval_super_member(e); },
             [this](const TaggedTemplateExpression& e) { return eval_tagged_template_expr(e); },
+            [this](const PrivateMemberExpression& pme) -> EvalResult {
+                auto obj_r = eval_expr(*pme.object);
+                if (!obj_r.is_ok()) return obj_r;
+                Value obj_val = obj_r.value();
+                if (!obj_val.is_object()) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                        "Cannot read private member from non-object");
+                    return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                }
+                // Look up symbol id in current function's private_fields_ mapping
+                uint64_t sym_id = 0;
+                if (current_function_) {
+                    sym_id = current_function_->get_private_field_sym(pme.field_name);
+                }
+                if (sym_id == 0) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                        "Cannot read private member '" + pme.field_name + "' of object whose class did not declare it");
+                    return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                }
+                RcObject* raw = obj_val.as_object_raw();
+                // JSFunction stores static private fields as string properties with #name key
+                if (raw->object_kind() == ObjectKind::kFunction) {
+                    auto* fn = static_cast<JSFunction*>(raw);
+                    return EvalResult::ok(fn->get_property(pme.field_name));
+                }
+                auto* obj = static_cast<JSObject*>(raw);
+                const JSObject::SymbolPropertyEntry* entry = obj->find_symbol_entry(sym_id);
+                if (!entry) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                        "Cannot read private member '" + pme.field_name + "' of object whose class did not declare it");
+                    return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                }
+                if (entry->is_accessor) {
+                    if (entry->getter.is_undefined() || entry->getter.is_null()) {
+                        return EvalResult::ok(Value::undefined());
+                    }
+                    Value getter_copy = entry->getter;
+                    return call_function_val(getter_copy, obj_val, {});
+                }
+                return EvalResult::ok(entry->value);
+            },
+            [this](const PrivateInExpression& pie) -> EvalResult {
+                auto obj_r = eval_expr(*pie.object);
+                if (!obj_r.is_ok()) return obj_r;
+                Value obj_val = obj_r.value();
+                if (!obj_val.is_object()) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                        "Right side of 'in' must be an object");
+                    return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                }
+                uint64_t sym_id = 0;
+                if (current_function_) {
+                    sym_id = current_function_->get_private_field_sym(pie.field_name);
+                }
+                if (sym_id == 0) return EvalResult::ok(Value::boolean(false));
+                RcObject* raw = obj_val.as_object_raw();
+                if (raw->object_kind() == ObjectKind::kFunction) {
+                    return EvalResult::ok(Value::boolean(false));
+                }
+                auto* obj = static_cast<JSObject*>(raw);
+                return EvalResult::ok(Value::boolean(obj->find_symbol_entry(sym_id) != nullptr));
+            },
         },
         expr.v);
 }
@@ -6801,6 +6863,104 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
         pending_throw_ = make_error_value(NativeErrorType::kTypeError,
             "Cannot set properties of non-object");
         return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+    }
+
+    // Private field assignment: property is a synthetic Identifier with #name
+    if (!expr.computed && std::holds_alternative<Identifier>(expr.property->v)) {
+        const auto& id = std::get<Identifier>(expr.property->v);
+        if (!id.name.empty() && id.name[0] == '#') {
+            uint64_t sym_id = current_function_ ? current_function_->get_private_field_sym(id.name) : 0;
+            if (sym_id == 0) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Cannot set private member '" + id.name + "' of object whose class did not declare it");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            RcObject* raw_pf = obj_val.as_object_raw();
+            bool is_fn_obj = (raw_pf->object_kind() == ObjectKind::kFunction);
+            JSObject* obj_pf = is_fn_obj ? nullptr : static_cast<JSObject*>(raw_pf);
+            JSFunction* fn_pf = is_fn_obj ? static_cast<JSFunction*>(raw_pf) : nullptr;
+            // Helper: read current private field value
+            auto read_pf = [&]() -> Value {
+                if (fn_pf) return fn_pf->get_property(id.name);  // static: string key
+                if (!obj_pf) return Value::undefined();
+                const JSObject::SymbolPropertyEntry* e = obj_pf->find_symbol_entry(sym_id);
+                if (e && !e->is_accessor) return e->value;
+                return Value::undefined();
+            };
+            // Helper: write private field value
+            auto write_pf = [&](Value write_val) -> EvalResult {
+                if (fn_pf) {
+                    fn_pf->set_property(id.name, write_val);  // static: string key
+                } else if (obj_pf) {
+                    const JSObject::SymbolPropertyEntry* entry = obj_pf->find_symbol_entry(sym_id);
+                    if (entry && entry->is_accessor) {
+                        if (!entry->setter.is_undefined() && !entry->setter.is_null()) {
+                            Value setter_copy = entry->setter;
+                            std::vector<Value> setter_args = {write_val};
+                            auto sres = call_function_val(setter_copy, obj_val, setter_args);
+                            if (!sres.is_ok()) return sres;
+                        }
+                    } else {
+                        obj_pf->set_property_by_symbol(sym_id, write_val);
+                    }
+                }
+                return EvalResult::ok(write_val);
+            };
+
+            if (expr.op == AssignOp::Assign) {
+                auto val_result = eval_expr(*expr.value);
+                if (!val_result.is_ok()) return val_result;
+                return write_pf(val_result.value());
+            }
+            // Compound assignment: read-modify-write
+            Value cur = read_pf();
+            auto rhs = eval_expr(*expr.value);
+            if (!rhs.is_ok()) return rhs;
+            Value new_v;
+            auto apply_arith = [&](auto op_fn) -> EvalResult {
+                auto ln = to_number(cur); if (!ln.is_ok()) return ln;
+                auto rn = to_number(rhs.value()); if (!rn.is_ok()) return rn;
+                new_v = Value::number(op_fn(ln.value().as_number(), rn.value().as_number()));
+                return EvalResult::ok(new_v);
+            };
+            EvalResult op_res = EvalResult::ok(Value::undefined());
+            switch (expr.op) {
+                case AssignOp::AddAssign:
+                    if (cur.is_string() || rhs.value().is_string()) {
+                        new_v = Value::string(to_string_val(cur) + to_string_val(rhs.value()));
+                        op_res = EvalResult::ok(new_v);
+                    } else {
+                        op_res = apply_arith([](double a, double b) { return a + b; });
+                    }
+                    break;
+                case AssignOp::SubAssign:  op_res = apply_arith([](double a, double b) { return a - b; }); break;
+                case AssignOp::MulAssign:  op_res = apply_arith([](double a, double b) { return a * b; }); break;
+                case AssignOp::DivAssign:  op_res = apply_arith([](double a, double b) { return a / b; }); break;
+                case AssignOp::ModAssign:  op_res = apply_arith([](double a, double b) { return std::fmod(a, b); }); break;
+                case AssignOp::PowAssign:  op_res = apply_arith([](double a, double b) { return std::pow(a, b); }); break;
+                case AssignOp::BitAndAssign: { auto ln = to_number(cur); if (!ln.is_ok()) return ln; auto rn = to_number(rhs.value()); if (!rn.is_ok()) return rn; new_v = Value::number(static_cast<double>(to_int32_bits(ln.value().as_number()) & to_int32_bits(rn.value().as_number()))); op_res = EvalResult::ok(new_v); break; }
+                case AssignOp::BitOrAssign:  { auto ln = to_number(cur); if (!ln.is_ok()) return ln; auto rn = to_number(rhs.value()); if (!rn.is_ok()) return rn; new_v = Value::number(static_cast<double>(to_int32_bits(ln.value().as_number()) | to_int32_bits(rn.value().as_number()))); op_res = EvalResult::ok(new_v); break; }
+                case AssignOp::BitXorAssign: { auto ln = to_number(cur); if (!ln.is_ok()) return ln; auto rn = to_number(rhs.value()); if (!rn.is_ok()) return rn; new_v = Value::number(static_cast<double>(to_int32_bits(ln.value().as_number()) ^ to_int32_bits(rn.value().as_number()))); op_res = EvalResult::ok(new_v); break; }
+                case AssignOp::ShlAssign: { auto ln = to_number(cur); if (!ln.is_ok()) return ln; auto rn = to_number(rhs.value()); if (!rn.is_ok()) return rn; new_v = Value::number(static_cast<double>(to_int32_bits(ln.value().as_number()) << (to_uint32_bits(rn.value().as_number()) & 0x1F))); op_res = EvalResult::ok(new_v); break; }
+                case AssignOp::SarAssign: { auto ln = to_number(cur); if (!ln.is_ok()) return ln; auto rn = to_number(rhs.value()); if (!rn.is_ok()) return rn; new_v = Value::number(static_cast<double>(to_int32_bits(ln.value().as_number()) >> (to_uint32_bits(rn.value().as_number()) & 0x1F))); op_res = EvalResult::ok(new_v); break; }
+                case AssignOp::ShrAssign: { auto ln = to_number(cur); if (!ln.is_ok()) return ln; auto rn = to_number(rhs.value()); if (!rn.is_ok()) return rn; new_v = Value::number(static_cast<double>(to_uint32_bits(ln.value().as_number()) >> (to_uint32_bits(rn.value().as_number()) & 0x1F))); op_res = EvalResult::ok(new_v); break; }
+                case AssignOp::LogicalAndAssign: {
+                    if (!to_boolean(cur)) return EvalResult::ok(cur);
+                    return write_pf(rhs.value());
+                }
+                case AssignOp::LogicalOrAssign: {
+                    if (to_boolean(cur)) return EvalResult::ok(cur);
+                    return write_pf(rhs.value());
+                }
+                case AssignOp::NullishAssign: {
+                    if (!cur.is_null() && !cur.is_undefined()) return EvalResult::ok(cur);
+                    return write_pf(rhs.value());
+                }
+                default: break;
+            }
+            if (!op_res.is_ok()) return op_res;
+            return write_pf(new_v);
+        }
     }
 
     auto key_result = eval_expr(*expr.property);
@@ -8879,6 +9039,49 @@ EvalResult Interpreter::eval_update_expr(const UpdateExpression& expr) {
         return EvalResult::ok(Value::number(expr.prefix ? new_d : old_d));
     }
 
+    // PrivateMemberExpression: e.g., ++this.#count or ++C.#staticCount
+    if (std::holds_alternative<PrivateMemberExpression>(expr.operand->v)) {
+        const auto& pme = std::get<PrivateMemberExpression>(expr.operand->v);
+        auto obj_r = eval_expr(*pme.object);
+        if (!obj_r.is_ok()) return obj_r;
+        Value obj_val = obj_r.value();
+        if (!obj_val.is_object()) {
+            return EvalResult::ok(Value::number(std::numeric_limits<double>::quiet_NaN()));
+        }
+        uint64_t sym_id = current_function_ ? current_function_->get_private_field_sym(pme.field_name) : 0;
+        if (sym_id == 0) {
+            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "Private field '" + pme.field_name + "' not found");
+            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        RcObject* raw_upd = obj_val.as_object_raw();
+        Value old_val;
+        if (raw_upd->object_kind() == ObjectKind::kFunction) {
+            // Static private field: stored as string property on JSFunction
+            old_val = static_cast<JSFunction*>(raw_upd)->get_property(pme.field_name);
+        } else {
+            auto* obj_pf = static_cast<JSObject*>(raw_upd);
+            const JSObject::SymbolPropertyEntry* entry = obj_pf->find_symbol_entry(sym_id);
+            old_val = (entry && !entry->is_accessor) ? entry->value : Value::undefined();
+        }
+        double old_d;
+        if (!old_val.is_number()) {
+            auto n = to_number(old_val);
+            if (!n.is_ok()) return n;
+            old_d = n.value().as_number();
+        } else {
+            old_d = old_val.as_number();
+        }
+        double delta = (expr.op == UpdateOp::Inc) ? 1.0 : -1.0;
+        double new_d = old_d + delta;
+        if (raw_upd->object_kind() == ObjectKind::kFunction) {
+            static_cast<JSFunction*>(raw_upd)->set_property(pme.field_name, Value::number(new_d));
+        } else {
+            static_cast<JSObject*>(raw_upd)->set_property_by_symbol(sym_id, Value::number(new_d));
+        }
+        return EvalResult::ok(Value::number(expr.prefix ? new_d : old_d));
+    }
+
     const auto& ident = std::get<Identifier>(expr.operand->v);
     auto get_result = current_env_->get(ident.name);
     if (!get_result.is_ok()) {
@@ -9812,6 +10015,30 @@ EvalResult Interpreter::eval_class_common(
     JSFunction* super_fn = nullptr;
     RcPtr<JSObject> super_proto;
 
+    // 0. 为私有字段分配 symbol（编译/执行期唯一性由 SymbolTable 保证）
+    std::unordered_map<std::string, uint64_t> private_fields_map;
+    for (const auto& f : fields) {
+        if (f.is_private) {
+            private_fields_map[f.key] = symbol_table_.NewSymbol(f.key);
+        }
+    }
+    for (const auto& m : methods) {
+        if (m.is_private) {
+            private_fields_map[m.key] = symbol_table_.NewSymbol(m.key);
+        }
+    }
+
+    // Helper: inject private_fields_map into a function
+    auto inject_private_fields = [&](Value& fn_val) {
+        if (!fn_val.is_object()) return;
+        RcObject* raw = fn_val.as_object_raw();
+        if (raw->object_kind() != ObjectKind::kFunction) return;
+        auto* fn = static_cast<JSFunction*>(raw);
+        for (const auto& [name, sym_id] : private_fields_map) {
+            fn->set_private_field(name, sym_id);
+        }
+    };
+
     // 1. 求 super class
     if (has_super) {
         auto super_r = eval_expr(*super_class_opt->get());
@@ -9878,6 +10105,8 @@ EvalResult Interpreter::eval_class_common(
     if (super_fn) {
         ctor_fn->set_fn_ctor_proto(super_fn);
     }
+    // Inject private fields mapping into ctor
+    inject_private_fields(ctor_fn_val);
 
     // 5. 设置 prototype 和 constructor 属性
     ctor_fn->set_prototype_obj(proto_obj);
@@ -9917,6 +10146,9 @@ EvalResult Interpreter::eval_class_common(
         } else {
             method_val = Value::undefined();
         }
+
+        // Inject private fields mapping into method
+        inject_private_fields(method_val);
 
         // 设置 home_object
         if (method_val.is_object() && method_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
@@ -9979,6 +10211,9 @@ EvalResult Interpreter::eval_class_common(
         } else {
             method_val = Value::undefined();
         }
+
+        // Inject private fields mapping into static method
+        inject_private_fields(method_val);
 
         ctor_fn->set_property(key, method_val);
     }
@@ -10050,14 +10285,6 @@ EvalResult Interpreter::init_instance_fields(JSFunction* ctor_fn, Value& this_va
     const auto& fields = ctor_fn->instance_fields();
     if (!fields) return EvalResult::ok(Value::undefined());
     for (const auto& f : *fields) {
-        std::string key;
-        if (f.computed) {
-            auto key_r = eval_expr(*f.key_expr);
-            if (!key_r.is_ok()) return key_r;
-            key = to_string_val(key_r.value());
-        } else {
-            key = f.key;
-        }
         Value init_val = Value::undefined();
         if (f.initializer != nullptr) {
             auto init_r = eval_expr(*f.initializer);
@@ -10065,11 +10292,33 @@ EvalResult Interpreter::init_instance_fields(JSFunction* ctor_fn, Value& this_va
             init_val = init_r.value();
         }
         if (this_val.is_object() && this_val.as_object_raw() != nullptr) {
-            if (this_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
-                static_cast<JSFunction*>(this_val.as_object_raw())->set_property(key, init_val);
+            if (f.is_private) {
+                // Private field: use symbol key from ctor's private_fields_ mapping
+                uint64_t sym_id = ctor_fn->get_private_field_sym(f.key);
+                if (sym_id != 0) {
+                    JSObject* obj = nullptr;
+                    if (this_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                        obj = static_cast<JSObject*>(this_val.as_object_raw());
+                    } else {
+                        obj = static_cast<JSObject*>(this_val.as_object_raw());
+                    }
+                    obj->set_property_by_symbol(sym_id, init_val);
+                }
             } else {
-                auto* obj = static_cast<JSObject*>(this_val.as_object_raw());
-                obj->set_property(key, init_val);
+                std::string key;
+                if (f.computed) {
+                    auto key_r = eval_expr(*f.key_expr);
+                    if (!key_r.is_ok()) return key_r;
+                    key = to_string_val(key_r.value());
+                } else {
+                    key = f.key;
+                }
+                if (this_val.as_object_raw()->object_kind() == ObjectKind::kFunction) {
+                    static_cast<JSFunction*>(this_val.as_object_raw())->set_property(key, init_val);
+                } else {
+                    auto* obj = static_cast<JSObject*>(this_val.as_object_raw());
+                    obj->set_property(key, init_val);
+                }
             }
         }
     }

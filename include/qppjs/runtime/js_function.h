@@ -114,6 +114,19 @@ public:
     const std::shared_ptr<BytecodeFunction>& field_initializer() const { return field_initializer_; }
     void set_field_initializer(std::shared_ptr<BytecodeFunction> v) { field_initializer_ = std::move(v); }
 
+    // Private field name → symbol id mapping (only set on class constructors)
+    // Key is "#name" (with # prefix), value is the symbol id from SymbolTable.
+    const std::unordered_map<std::string, uint64_t>& private_fields() const { return private_fields_; }
+    void set_private_field(const std::string& name, uint64_t sym_id) { private_fields_[name] = sym_id; }
+    bool has_private_field(const std::string& name) const {
+        return private_fields_.find(name) != private_fields_.end();
+    }
+    uint64_t get_private_field_sym(const std::string& name) const {
+        auto it = private_fields_.find(name);
+        if (it != private_fields_.end()) return it->second;
+        return 0;
+    }
+
     // Static properties on the function object itself (e.g., Object.keys, Array.isArray).
     void set_property(const std::string& key, Value value);
     Value get_property(const std::string& key) const;
@@ -169,6 +182,9 @@ private:
 
     // Field initializer bytecode function for class constructors (VM path)
     std::shared_ptr<BytecodeFunction> field_initializer_;
+
+    // Private field name → symbol id mapping (set at class creation time)
+    std::unordered_map<std::string, uint64_t> private_fields_;
 };
 
 }  // namespace qppjs

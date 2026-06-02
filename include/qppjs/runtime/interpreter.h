@@ -256,6 +256,7 @@ private:
     bool derived_this_initialized_ = false;           // true after super() called in derived ctor
     Value last_new_this_ = Value::undefined();        // set by eval_super_call, read by eval_new_expr
 
+
     // Error prototype cache: indexed by NativeErrorType
     std::array<RcPtr<JSObject>, static_cast<size_t>(NativeErrorType::kCount)> error_protos_;
 

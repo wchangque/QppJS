@@ -410,6 +410,14 @@ std::string dump_expr(const ExprNode& node, int indent) {
                            result += prefix + "  tag:\n";
                            result += dump_expr(*tte.tag, indent + 2);
                        },
+                       [&](const PrivateMemberExpression& pm) {
+                           result = prefix + "PrivateMember(" + pm.field_name + ")\n";
+                           result += dump_expr(*pm.object, indent + 1);
+                       },
+                       [&](const PrivateInExpression& pi) {
+                           result = prefix + "PrivateIn(" + pi.field_name + ")\n";
+                           result += dump_expr(*pi.object, indent + 1);
+                       },
                },
                node.v);
 

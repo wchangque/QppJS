@@ -6627,6 +6627,12 @@ EvalResult VM::run(size_t exit_depth) {
                         } else {
                             stack.push_back(Value::undefined());
                         }
+                    } else if (raw_sym->object_kind() == ObjectKind::kFunction) {
+                        // Static private field on JSFunction: use sym_id as string key prefix
+                        auto* fn_sym = static_cast<JSFunction*>(raw_sym);
+                        std::string sym_key = "__pfsym_" + std::to_string(sym_id) + "__";
+                        Value v = fn_sym->get_property(sym_key);
+                        stack.push_back(std::move(v));
                     } else {
                         stack.push_back(Value::undefined());
                     }
@@ -6723,10 +6729,10 @@ EvalResult VM::run(size_t exit_depth) {
             if (key_val.is_symbol()) {
                 if (obj_val.is_object()) {
                     RcObject* raw_sym = obj_val.as_object_raw();
+                    uint64_t sym_id = key_val.as_symbol_id();
                     if (raw_sym->object_kind() == ObjectKind::kOrdinary ||
                         raw_sym->object_kind() == ObjectKind::kArray) {
                         auto* js_obj_sym = static_cast<JSObject*>(raw_sym);
-                        uint64_t sym_id = key_val.as_symbol_id();
                         const JSObject::SymbolPropertyEntry* sym_entry = js_obj_sym->find_symbol_entry(sym_id);
                         if (sym_entry != nullptr && sym_entry->is_accessor) {
                             if (!sym_entry->setter.is_undefined() && !sym_entry->setter.is_null()) {
@@ -6751,6 +6757,11 @@ EvalResult VM::run(size_t exit_depth) {
                             break;
                         }
                         js_obj_sym->set_property_by_symbol(sym_id, val);
+                    } else if (raw_sym->object_kind() == ObjectKind::kFunction) {
+                        // Static private field on JSFunction: use sym_id as string key prefix
+                        auto* fn_sym = static_cast<JSFunction*>(raw_sym);
+                        std::string sym_key = "__pfsym_" + std::to_string(sym_id) + "__";
+                        fn_sym->set_property(sym_key, val);
                     }
                 }
                 stack.push_back(std::move(val));

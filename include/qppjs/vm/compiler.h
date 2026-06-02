@@ -1,6 +1,7 @@
 #pragma once
 
 #include "qppjs/frontend/ast.h"
+#include "qppjs/runtime/symbol_table.h"
 #include "qppjs/vm/bytecode.h"
 #include "qppjs/vm/opcode.h"
 
@@ -47,6 +48,10 @@ private:
     // Phase 7: loop and finally tracking
     std::vector<LoopEnv> loop_env_stack_;
     std::vector<FinallyInfo> finally_info_stack_;  // active finally blocks being compiled (innermost last)
+
+    // Private fields: stack of maps from #name → symbol_id, pushed per class body
+    std::vector<std::unordered_map<std::string, uint64_t>> private_fields_stack_;
+    SymbolTable symbol_table_;  // used to allocate private field symbols at compile time
 
     // Compile a function body (params + statements). Creates a new BytecodeFunction.
     std::shared_ptr<BytecodeFunction> compile_function(std::optional<std::string> name,

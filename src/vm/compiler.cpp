@@ -358,6 +358,12 @@ void Compiler::hoist_vars_scan_expr(const ExprNode& expr) {
                 hoist_vars_scan_expr(*e.tag);
                 for (const auto& ex : e.tmpl.expressions) hoist_vars_scan_expr(*ex);
             },
+            [this](const PrivateMemberExpression& e) {
+                hoist_vars_scan_expr(*e.object);
+            },
+            [this](const PrivateInExpression& e) {
+                hoist_vars_scan_expr(*e.object);
+            },
         },
         expr.v);
 }
@@ -1090,6 +1096,44 @@ void Compiler::compile_expr(const ExprNode& expr) {
                 }
             },
             [this](const TaggedTemplateExpression& e) { compile_tagged_template_expr(e); },
+            [this](const PrivateMemberExpression& pme) {
+                // Look up sym_id from private_fields_stack_
+                uint64_t sym_id = 0;
+                for (auto it = private_fields_stack_.rbegin(); it != private_fields_stack_.rend(); ++it) {
+                    auto fit = it->find(pme.field_name);
+                    if (fit != it->end()) { sym_id = fit->second; break; }
+                }
+                if (sym_id == 0) {
+                    // Unknown private field: emit a throw
+                    uint16_t msg_idx = add_constant(Value::string(
+                        "Private field '" + pme.field_name + "' not found"));
+                    emit(Opcode::kLoadString);
+                    emit_u16(msg_idx);
+                    emit(Opcode::kThrow);
+                    return;
+                }
+                compile_expr(*pme.object);                    // push obj
+                uint16_t sym_idx = add_constant(Value::symbol(sym_id));  // symbol value in constants
+                emit(Opcode::kLoadString);                    // kLoadString reuses constants pool
+                emit_u16(sym_idx);
+                emit(Opcode::kGetElem);                       // obj[symbol]
+            },
+            [this](const PrivateInExpression& pie) {
+                uint64_t sym_id = 0;
+                for (auto it = private_fields_stack_.rbegin(); it != private_fields_stack_.rend(); ++it) {
+                    auto fit = it->find(pie.field_name);
+                    if (fit != it->end()) { sym_id = fit->second; break; }
+                }
+                if (sym_id == 0) {
+                    emit(Opcode::kLoadFalse);
+                    return;
+                }
+                uint16_t sym_idx = add_constant(Value::symbol(sym_id));
+                emit(Opcode::kLoadString);
+                emit_u16(sym_idx);
+                compile_expr(*pie.object);                    // push obj
+                emit(Opcode::kIn);                            // symbol in obj
+            },
         },
         expr.v);
 }
@@ -1445,6 +1489,56 @@ void Compiler::compile_member_expr(const MemberExpression& expr) {
 }
 
 void Compiler::compile_member_assign(const MemberAssignmentExpression& expr) {
+    // Private field assignment: property is a synthetic Identifier with #name (from Parser)
+    if (!expr.computed && std::holds_alternative<Identifier>(expr.property->v)) {
+        const auto& id = std::get<Identifier>(expr.property->v);
+        if (!id.name.empty() && id.name[0] == '#') {
+            uint64_t sym_id = 0;
+            for (auto it = private_fields_stack_.rbegin(); it != private_fields_stack_.rend(); ++it) {
+                auto fit = it->find(id.name);
+                if (fit != it->end()) { sym_id = fit->second; break; }
+            }
+            if (sym_id != 0) {
+                uint16_t sym_idx = add_constant(Value::symbol(sym_id));
+                if (expr.op == AssignOp::Assign) {
+                    compile_expr(*expr.object);   // [obj]
+                    compile_expr(*expr.value);    // [obj, val]
+                    emit(Opcode::kLoadString);    // [obj, val, sym]
+                    emit_u16(sym_idx);
+                    emit(Opcode::kSetElem);       // [val]
+                } else {
+                    // Compound assignment: [obj] → Dup → sym → GetElem → cur_val
+                    compile_expr(*expr.object);   // [obj]
+                    emit(Opcode::kDup);           // [obj, obj]
+                    emit(Opcode::kLoadString);    // [obj, obj, sym]
+                    emit_u16(sym_idx);
+                    emit(Opcode::kGetElem);       // [obj, cur_val]
+                    compile_expr(*expr.value);    // [obj, cur_val, rhs]
+                    switch (expr.op) {
+                    case AssignOp::AddAssign:    emit(Opcode::kAdd);    break;
+                    case AssignOp::SubAssign:    emit(Opcode::kSub);    break;
+                    case AssignOp::MulAssign:    emit(Opcode::kMul);    break;
+                    case AssignOp::DivAssign:    emit(Opcode::kDiv);    break;
+                    case AssignOp::ModAssign:    emit(Opcode::kMod);    break;
+                    case AssignOp::PowAssign:    emit(Opcode::kPow);    break;
+                    case AssignOp::BitAndAssign: emit(Opcode::kBitAnd); break;
+                    case AssignOp::BitOrAssign:  emit(Opcode::kBitOr);  break;
+                    case AssignOp::BitXorAssign: emit(Opcode::kBitXor); break;
+                    case AssignOp::ShlAssign:    emit(Opcode::kShl);    break;
+                    case AssignOp::SarAssign:    emit(Opcode::kSar);    break;
+                    case AssignOp::ShrAssign:    emit(Opcode::kShr);    break;
+                    default: break;
+                    }
+                    // Stack: [obj, new_val] → [obj, new_val, sym] → kSetElem → [new_val]
+                    emit(Opcode::kLoadString);
+                    emit_u16(sym_idx);
+                    emit(Opcode::kSetElem);
+                }
+                return;
+            }
+        }
+    }
+
     if (expr.op == AssignOp::LogicalAndAssign || expr.op == AssignOp::LogicalOrAssign ||
         expr.op == AssignOp::NullishAssign) {
         // Logical member assignment (short-circuit):
@@ -2302,6 +2396,97 @@ void Compiler::compile_update_expr(const UpdateExpression& expr) {
         emit(Opcode::kThrow);
         return;
     }
+    // PrivateMemberExpression: ++this.#x / this.#x++ → inline read-modify-write via symbol key
+    if (std::holds_alternative<PrivateMemberExpression>(expr.operand->v)) {
+        const auto& pme = std::get<PrivateMemberExpression>(expr.operand->v);
+        uint64_t sym_id = 0;
+        for (auto it = private_fields_stack_.rbegin(); it != private_fields_stack_.rend(); ++it) {
+            auto fit = it->find(pme.field_name);
+            if (fit != it->end()) { sym_id = fit->second; break; }
+        }
+        if (sym_id == 0) {
+            uint16_t msg_idx = add_constant(Value::string("Private field '" + pme.field_name + "' not found"));
+            emit(Opcode::kLoadString); emit_u16(msg_idx);
+            emit(Opcode::kThrow);
+            return;
+        }
+        uint16_t sym_idx = add_constant(Value::symbol(sym_id));
+        uint16_t one_idx = add_constant(Value::number(1.0));
+
+        // prefix: obj → Dup → sym → GetElem(old_num) → 1 → op → [obj, new_val]
+        //         → [obj, new_val, sym] → SetElem → [new_val]
+        // postfix: obj → Dup → sym → GetElem(old_num) → Dup(old_num_copy) → 1 → op
+        //         → [obj, old_num, new_val, sym] → SetElem → [old_num, new_val_result=new_val]
+        //         → Pop(new_val) → [old_num]
+        // Wait: postfix needs to return old_num AFTER the SetElem.
+        // Let me trace postfix carefully:
+        // [obj] → Dup → [obj, obj] → sym → GetElem → [obj, old_num]
+        // → Pos(ToNumber) → [obj, old_num]
+        // → Dup → [obj, old_num, old_num_copy]
+        // → 1 → [obj, old_num, old_num_copy, 1]
+        // → Add/Sub → [obj, old_num, new_val]
+        // → LoadStr sym → [obj, old_num, new_val, sym]
+        // → SetElem: pops sym(key), new_val(val), old_num(obj=WRONG!)
+        // SetElem uses TOS-2 as obj. TOS-2 = old_num, not obj. Wrong!
+        //
+        // Correct layout for SetElem: [..., obj, new_val, sym]
+        // For postfix: we need [old_num] on stack after SetElem([obj, new_val, sym])
+        // So we need: [..., old_num, obj, new_val, sym] — old_num under obj
+        // But old_num comes from obj[sym], so we'd need to compute it first, save it,
+        // then re-read obj... This is circular.
+        //
+        // SIMPLER: for postfix, compute:
+        // [obj] → Dup → sym → GetElem → Pos(old_num) → Dup → 1 → op(new_val) → Swap
+        // After Swap: [obj, new_val, old_num] ... still obj is buried.
+        //
+        // Alternative: compile object once as a local var expression (not possible here).
+        //
+        // PRAGMATIC: For private field update expressions in class methods,
+        // use the assignment trick: evaluate as assignment expression.
+        // ++this.#x === (this.#x = this.#x + 1)
+        // this.#x++ === ((old = this.#x), this.#x = old + 1, old)
+        //
+        // The cleanest approach: for prefix, emit exactly:
+        //   obj → Dup → sym → GetElem → Pos → 1 → op → [obj, new_val] → LoadStr sym → SetElem
+        // For postfix, we can't easily do it without a temp variable.
+        // Use Swap to move old_num to safe location:
+        //   obj → Dup → sym → GetElem → Pos → [obj, old_num] → Swap → [old_num, obj]
+        //   → Dup → [old_num, obj, obj] → LoadStr sym → GetElem → Pos → 1 → op
+        //   → [old_num, obj, new_val] → LoadStr sym → SetElem
+        //   SetElem: pops sym(key), new_val(val), obj(obj) → pushes new_val
+        //   Stack: [old_num, new_val] → Pop → [old_num]  ✓
+
+        if (expr.prefix) {
+            compile_expr(*pme.object);                       // [obj]
+            emit(Opcode::kDup);                              // [obj, obj]
+            emit(Opcode::kLoadString); emit_u16(sym_idx);   // [obj, obj, sym]
+            emit(Opcode::kGetElem);                          // [obj, old_num]
+            emit(Opcode::kPos);                              // [obj, old_num] (ToNumber)
+            emit(Opcode::kLoadNumber); emit_u16(one_idx);   // [obj, old_num, 1]
+            emit(expr.op == UpdateOp::Inc ? Opcode::kAdd : Opcode::kSub);  // [obj, new_val]
+            emit(Opcode::kLoadString); emit_u16(sym_idx);   // [obj, new_val, sym]
+            emit(Opcode::kSetElem);                          // [new_val]
+        } else {
+            // postfix: return old_num
+            compile_expr(*pme.object);                       // [obj]
+            emit(Opcode::kDup);                              // [obj, obj]
+            emit(Opcode::kLoadString); emit_u16(sym_idx);   // [obj, obj, sym]
+            emit(Opcode::kGetElem);                          // [obj, old_num]
+            emit(Opcode::kPos);                              // [obj, old_num] (ToNumber)
+            emit(Opcode::kSwap);                             // [old_num, obj]
+            emit(Opcode::kDup);                              // [old_num, obj, obj]
+            emit(Opcode::kLoadString); emit_u16(sym_idx);   // [old_num, obj, obj, sym]
+            emit(Opcode::kGetElem);                          // [old_num, obj, old_num2]
+            emit(Opcode::kPos);                              // [old_num, obj, old_num2]
+            emit(Opcode::kLoadNumber); emit_u16(one_idx);   // [old_num, obj, old_num2, 1]
+            emit(expr.op == UpdateOp::Inc ? Opcode::kAdd : Opcode::kSub);  // [old_num, obj, new_val]
+            emit(Opcode::kLoadString); emit_u16(sym_idx);   // [old_num, obj, new_val, sym]
+            emit(Opcode::kSetElem);                          // [old_num, new_val]
+            emit(Opcode::kPop);                              // [old_num]
+        }
+        return;
+    }
+
     auto is_member = std::holds_alternative<MemberExpression>(expr.operand->v);
 
     if (is_member) {
@@ -2572,7 +2757,28 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_field_initializer(
 
     for (const auto& f : fields) {
         if (f.is_static) continue;
-        if (f.computed) {
+        if (f.is_private) {
+            // Private instance field: use symbol key
+            // stack: kLoadThis → init_or_undef → symbol → kSetElem → kPop
+            uint64_t sym_id = 0;
+            for (auto it = private_fields_stack_.rbegin(); it != private_fields_stack_.rend(); ++it) {
+                auto fit = it->find(f.key);
+                if (fit != it->end()) { sym_id = fit->second; break; }
+            }
+            if (sym_id != 0) {
+                emit(Opcode::kLoadThis);
+                if (f.initializer != nullptr) {
+                    compile_expr(*f.initializer);
+                } else {
+                    emit(Opcode::kLoadUndefined);
+                }
+                uint16_t sym_idx = add_constant(Value::symbol(sym_id));
+                emit(Opcode::kLoadString);
+                emit_u16(sym_idx);
+                emit(Opcode::kSetElem);
+                emit(Opcode::kPop);
+            }
+        } else if (f.computed) {
             // stack: kLoadThis(obj) → init_or_undef(val) → key_expr(key) → kSetElem → kPop
             emit(Opcode::kLoadThis);
             if (f.initializer != nullptr) {
@@ -2611,6 +2817,20 @@ void Compiler::compile_class_common(
     const std::vector<ClassMethod>& methods,
     const std::vector<ClassField>& fields,
     const std::optional<std::string>& class_name) {
+
+    // Collect private fields/methods, allocate compile-time symbols
+    std::unordered_map<std::string, uint64_t> class_private_fields;
+    for (const auto& f : fields) {
+        if (f.is_private) {
+            class_private_fields[f.key] = symbol_table_.NewSymbol(f.key);
+        }
+    }
+    for (const auto& m : methods) {
+        if (m.is_private) {
+            class_private_fields[m.key] = symbol_table_.NewSymbol(m.key);
+        }
+    }
+    private_fields_stack_.push_back(class_private_fields);
 
     bool has_super = super_class.has_value();
 
@@ -2811,7 +3031,28 @@ void Compiler::compile_class_common(
     // 7. static fields: [ctor] → Dup → init_val → kSetProp/kSetElem → Pop → [ctor]
     for (const auto& f : fields) {
         if (!f.is_static) continue;
-        if (f.computed) {
+        if (f.is_private) {
+            // Static private field: use symbol key via kSetElem
+            // kSetElem on kFunction with symbol key stores as "__pfsym_<id>__" in own_properties_
+            uint64_t sym_id = 0;
+            for (auto it = private_fields_stack_.rbegin(); it != private_fields_stack_.rend(); ++it) {
+                auto fit = it->find(f.key);
+                if (fit != it->end()) { sym_id = fit->second; break; }
+            }
+            if (sym_id != 0) {
+                emit(Opcode::kDup);
+                if (f.initializer != nullptr) {
+                    compile_expr(*f.initializer);
+                } else {
+                    emit(Opcode::kLoadUndefined);
+                }
+                uint16_t sym_idx = add_constant(Value::symbol(sym_id));
+                emit(Opcode::kLoadString);
+                emit_u16(sym_idx);
+                emit(Opcode::kSetElem);
+                emit(Opcode::kPop);
+            }
+        } else if (f.computed) {
             // [ctor] → Dup → key_expr → init_or_undef → SetElem → Pop
             emit(Opcode::kDup);
             if (f.initializer != nullptr) {
@@ -2837,6 +3078,7 @@ void Compiler::compile_class_common(
         }
     }
     // Stack: [ctor]
+    private_fields_stack_.pop_back();
 }
 
 void Compiler::compile_class_expr(const ClassExpression& expr) {
