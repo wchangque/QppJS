@@ -19,6 +19,7 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -169,6 +170,12 @@ private:
     // Spread all elements of `iterable` into `out`. Returns true on success;
     // on failure, sets pending_throw_ and returns false.
     bool spread_into(const Value& iterable, std::vector<Value>& out);
+
+    // JSON helpers
+    // Returns false if value should be omitted (undefined/function/symbol).
+    // Sets pending_throw_ on circular reference error.
+    bool json_stringify_value(const Value& val, std::string& out, std::set<RcObject*>& seen);
+    EvalResult json_parse_value(const std::string& text, size_t& pos);
 
     // Execute async body from stmt_index. On suspend, enqueues resume/reject via PerformThen.
     // On completion, fulfills/rejects outer_promise.

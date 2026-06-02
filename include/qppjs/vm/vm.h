@@ -21,6 +21,7 @@
 #include <deque>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -129,6 +130,10 @@ private:
 
     // Execute RegExp exec() on input string. Returns result array or null.
     EvalResult vm_regexp_exec(JSRegExp* rx, const std::string& input);
+
+    // JSON helpers
+    bool vm_json_stringify_value(const Value& val, std::string& out, std::set<RcObject*>& seen);
+    EvalResult vm_json_parse_value(const std::string& text, size_t& pos);
 
     GcHeap gc_heap_;
     ModuleLoader module_loader_;

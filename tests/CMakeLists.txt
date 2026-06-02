@@ -63,6 +63,7 @@ add_executable(qppjs_unit_tests
     unit/private_fields_test.cpp
     unit/promise_array_object_test.cpp
     unit/number_string_methods_test.cpp
+    unit/global_json_test.cpp
     # unit/global_stubs_test.cpp  # FIXME: pre-existing compilation error (is_err not a member of EvalResult)
 )
 

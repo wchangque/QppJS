@@ -4,6 +4,19 @@
 
 ## 1. 已完成任务
 
+- [x] **5 组内建功能补充（globalThis/Object 新方法/Array.at/JSON/queueMicrotask）**（2026-06-02）：
+  - **globalThis**：`interpreter.cpp` + `vm.cpp` 在 `init_global_env` / `init_runtime` 阶段向全局对象自身注册 `globalThis` 属性（值为全局 JSObject 自身），使 `typeof globalThis === "object"` 和 `globalThis.globalThis === globalThis` 成立。
+  - **Object.is**：实现 SameValue 算法（`Object.is(NaN, NaN)` → true，`Object.is(+0, -0)` → false，其余语义与 `===` 一致）；Interpreter + VM 对称。
+  - **Object.setPrototypeOf**：接受目标对象和原型（null 或对象），在 `JSObject::proto_` 上设置原型链；非对象目标或非对象/null 原型均抛 TypeError；Interpreter + VM 对称。
+  - **Object.hasOwn**：等价于 `Object.prototype.hasOwnProperty.call(obj, key)`，支持 kFunction 对象路径（通过 `JSFunction::has_property` 检查）；Interpreter + VM 对称。
+  - **Array.prototype.at**：负索引支持（`arr.at(-1)` 返回最后一个元素），越界返回 undefined；UTF-16 语义与 String.prototype.at 一致；Interpreter + VM 对称。
+  - **JSON.stringify**：完整序列化：null → `"null"`，bool → `"true"`/`"false"`，number（NaN/Infinity → `"null"`，整数无小数点），string（六类转义字符 `\"`/`\\`/`\/`/`\b`/`\f`/`\n`/`\r`/`\t`/`\uXXXX` 控制字符），array（递归序列化各元素），object（递归序列化 enumerable string 键值对）；循环引用检测（抛 `TypeError: cyclic object value`）；vm.cpp 完整替换原有 JSON stub。
+  - **JSON.parse**：完整解析器：null/true/false/number/string（含 `\"` / `\\` / `\/` / `\b` / `\f` / `\n` / `\r` / `\t` / `\uXXXX` 六类转义）/array/object；无效 JSON 抛 SyntaxError；Interpreter 在 `interpreter.h` 声明 `json_stringify_value`/`json_parse_value`，vm.h 声明 `vm_json_stringify`/`vm_json_parse`。
+  - **queueMicrotask**：全局函数，接受一个 callback，将其包装为 ReactionJob 入队 `job_queue_`；`exec()` 末尾 `drain_job_queue` 时自动执行；Interpreter + VM 对称。
+  - **测试**：新增 `tests/unit/global_json_test.cpp`（GJ-01～GJ-16 × Interp+VM = 32 个测试，覆盖 globalThis 类型/自引用/属性赋值、Object.is NaN/+0-0/原始值/引用、Object.setPrototypeOf 基础/null/TypeError、Object.hasOwn own/inherited/不存在、Array.at 正负索引/越界、JSON.stringify null/bool/number/NaN/string/array/object/循环引用、JSON.parse 基础类型/嵌套/转义字符/无效JSON、queueMicrotask 基础/多次排队顺序）；`tests/CMakeLists.txt` 注册。
+  - **修改文件**：`include/qppjs/runtime/interpreter.h`（json_stringify_value/json_parse_value 声明）、`include/qppjs/vm/vm.h`（vm_json_stringify/vm_json_parse 声明）、`src/runtime/interpreter.cpp`（globalThis/Object.is/setPrototypeOf/hasOwn/Array.at/JSON.stringify+parse/queueMicrotask）、`src/vm/vm.cpp`（对称实现，完整替换 JSON stub）、`tests/unit/global_json_test.cpp`（新增）、`tests/CMakeLists.txt`（注册）。
+  - **测试结果**：4712/4712 通过（coverage），0 LSan 泄漏（预期）。test262 通过率：String 23.3% → 28.0%，Number 提升至 47.1%。
+
 - [x] **Number.prototype 方法（toFixed/toString/toExponential/toPrecision/valueOf）+ String.prototype 缺失方法（at/replaceAll/replace/search/padStart/padEnd/repeat/startsWith/endsWith/includes/matchAll）**（2026-06-02）：
   - **Number.prototype 5 个方法**：`interpreter.cpp` + `vm.cpp` 向 `number_prototype_` 注册 `toFixed`（格式化小数位数，返回字符串）、`toString`（支持 radix 参数，默认 10 进制）、`toExponential`（科学计数法格式）、`toPrecision`（指定有效位数）、`valueOf`（返回原始数值）；两侧在 `eval_member_expr`/`eval_call_expr`/`kGetProp`/`kCallMethod` 添加数字原始值 prototype 查找路径（`is_number()` 分支查 `number_prototype_`），使 `(3.14159).toFixed(2)` 等调用正确路由。
   - **String.prototype 11 个缺失方法**：`interpreter.cpp` + `vm.cpp` 向 `string_prototype_` 补充注册：`at`（UTF-16 code unit 语义，负索引从末尾倒数）、`replaceAll`（全局替换字符串/正则，支持函数替换器）、`replace`（单次/全局替换，支持 string/regexp/函数替换器，`$&`/`$1` 等反向引用模式）、`search`（返回匹配起始索引，无匹配 -1）、`padStart`（左填充到指定长度）、`padEnd`（右填充到指定长度）、`repeat`（重复字符串 n 次）、`startsWith`（前缀检查，支持 position 参数）、`endsWith`（后缀检查，支持 endPosition 参数）、`includes`（子串存在检查，支持 position 参数）、`matchAll`（返回所有匹配的迭代器对象，要求正则含 `g` flag）。

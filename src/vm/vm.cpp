@@ -1648,6 +1648,33 @@ void VM::init_global_env() {
     });
     array_prototype_->set_property("lastIndexOf", Value::object(ObjectPtr(lastindexof_fn)));
 
+    // Array.prototype.at(index)
+    {
+        auto vm_at_fn = RcPtr<JSFunction>::make();
+        vm_at_fn->set_name(std::string("at"));
+        vm_at_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kArray) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                         "Array.prototype.at called on non-array");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            auto* arr = static_cast<JSObject*>(this_val.as_object_raw());
+            uint32_t len = arr->array_length_;
+            double idx_d = args.empty() ? 0.0 : to_number_double_vm(args[0]);
+            if (std::isnan(idx_d) || std::isinf(idx_d)) idx_d = 0.0;
+            double truncated = std::trunc(idx_d);
+            if (truncated < 0.0) truncated = static_cast<double>(len) + truncated;
+            if (truncated < 0.0 || truncated >= static_cast<double>(len))
+                return EvalResult::ok(Value::undefined());
+            uint32_t actual = static_cast<uint32_t>(truncated);
+            auto it = arr->elements_.find(actual);
+            if (it == arr->elements_.end()) return EvalResult::ok(Value::undefined());
+            return EvalResult::ok(it->second);
+        });
+        gc_heap_.Register(vm_at_fn.get());
+        array_prototype_->set_property("at", Value::object(ObjectPtr(vm_at_fn)));
+    }
+
     // Build Array constructor
     auto array_constructor = RcPtr<JSFunction>::make();
     array_constructor->set_name(std::string("Array"));
@@ -2258,6 +2285,75 @@ void VM::init_global_env() {
     });
     gc_heap_.Register(vm_get_own_prop_names_fn.get());
 
+    // Object.is(a, b) — SameValue algorithm
+    auto vm_object_is_fn = RcPtr<JSFunction>::make();
+    vm_object_is_fn->set_name(std::string("is"));
+    vm_object_is_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+        Value a = args.size() > 0 ? args[0] : Value::undefined();
+        Value b = args.size() > 1 ? args[1] : Value::undefined();
+        if (a.is_number() && b.is_number()) {
+            double da = a.as_number();
+            double db = b.as_number();
+            if (std::isnan(da) && std::isnan(db)) return EvalResult::ok(Value::boolean(true));
+            if (da == 0.0 && db == 0.0)
+                return EvalResult::ok(Value::boolean(std::signbit(da) == std::signbit(db)));
+            return EvalResult::ok(Value::boolean(da == db));
+        }
+        if (a.is_undefined() && b.is_undefined()) return EvalResult::ok(Value::boolean(true));
+        if (a.is_null() && b.is_null()) return EvalResult::ok(Value::boolean(true));
+        if (a.is_bool() && b.is_bool()) return EvalResult::ok(Value::boolean(a.as_bool() == b.as_bool()));
+        if (a.is_string() && b.is_string()) return EvalResult::ok(Value::boolean(a.sv() == b.sv()));
+        if (a.is_object() && b.is_object())
+            return EvalResult::ok(Value::boolean(a.as_object_raw() == b.as_object_raw()));
+        return EvalResult::ok(Value::boolean(false));
+    });
+    gc_heap_.Register(vm_object_is_fn.get());
+
+    // Object.setPrototypeOf(obj, proto)
+    auto vm_object_set_proto_fn = RcPtr<JSFunction>::make();
+    vm_object_set_proto_fn->set_name(std::string("setPrototypeOf"));
+    vm_object_set_proto_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+        if (args.size() < 2 || !args[0].is_object()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "Object.setPrototypeOf: first argument must be an object");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        Value& proto_val = args[1];
+        if (!proto_val.is_null() && !proto_val.is_object()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "Object.setPrototypeOf: proto must be an object or null");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        auto* obj = static_cast<JSObject*>(args[0].as_object_raw());
+        if (proto_val.is_null()) {
+            obj->set_proto(RcPtr<JSObject>{});
+        } else {
+            obj->set_proto(RcPtr<JSObject>(static_cast<JSObject*>(proto_val.as_object_raw())));
+        }
+        return EvalResult::ok(args[0]);
+    });
+    gc_heap_.Register(vm_object_set_proto_fn.get());
+
+    // Object.hasOwn(obj, key)
+    auto vm_object_has_own_fn = RcPtr<JSFunction>::make();
+    vm_object_has_own_fn->set_name(std::string("hasOwn"));
+    vm_object_has_own_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+        if (args.size() < 2 || !args[0].is_object()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                     "Object.hasOwn: first argument must be an object");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        std::string key = to_string_val(args[1]);
+        auto* raw = args[0].as_object_raw();
+        if (raw->object_kind() == ObjectKind::kFunction) {
+            auto* fn = static_cast<JSFunction*>(raw);
+            return EvalResult::ok(Value::boolean(fn->has_property(key)));
+        }
+        auto* obj = static_cast<JSObject*>(raw);
+        return EvalResult::ok(Value::boolean(obj->get_own_entry(key) != nullptr));
+    });
+    gc_heap_.Register(vm_object_has_own_fn.get());
+
     object_constructor_->set_property("keys", Value::object(ObjectPtr(keys_fn)));
     object_constructor_->set_property("assign", Value::object(ObjectPtr(assign_fn)));
     object_constructor_->set_property("create", Value::object(ObjectPtr(create_fn)));
@@ -2269,6 +2365,9 @@ void VM::init_global_env() {
     object_constructor_->set_property("entries", Value::object(ObjectPtr(vm_entries_fn)));
     object_constructor_->set_property("fromEntries", Value::object(ObjectPtr(vm_from_entries_fn)));
     object_constructor_->set_property("getOwnPropertyNames", Value::object(ObjectPtr(vm_get_own_prop_names_fn)));
+    object_constructor_->set_property("is", Value::object(ObjectPtr(vm_object_is_fn)));
+    object_constructor_->set_property("setPrototypeOf", Value::object(ObjectPtr(vm_object_set_proto_fn)));
+    object_constructor_->set_property("hasOwn", Value::object(ObjectPtr(vm_object_has_own_fn)));
 
     global_env_->define_initialized("Object");
     global_env_->set("Object", Value::object(ObjectPtr(object_constructor_)));
@@ -5465,6 +5564,16 @@ void VM::init_global_env() {
         global_env_->initialize("WeakSet", Value::object(ObjectPtr(ws_ctor)));
     }
 
+    // ---- globalThis ----
+    {
+        auto gt_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(gt_obj.get());
+        gt_obj->set_proto(object_prototype_);
+        gt_obj->set_property("globalThis", Value::object(ObjectPtr(gt_obj)));
+        global_env_->define_initialized("globalThis");
+        global_env_->set("globalThis", Value::object(ObjectPtr(gt_obj)));
+    }
+
     // Register the global environment with GcHeap.
     gc_heap_.Register(global_env_.get());
 
@@ -5490,41 +5599,378 @@ void VM::init_global_env() {
         global_env_->initialize("Date", Value::object(ObjectPtr(date_fn)));
     }
 
-    // ---- JSON object stub ----
+    // ---- JSON object ----
     {
         auto json_obj = RcPtr<JSObject>::make();
         json_obj->set_proto(object_prototype_);
-
-        auto stringify_fn = RcPtr<JSFunction>::make();
-        stringify_fn->set_name(std::string("stringify"));
-        stringify_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
-            if (args.empty()) return EvalResult::ok(Value::undefined());
-            const auto& v = args[0];
-            if (v.is_string()) {
-                std::string s = v.as_string();
-                return EvalResult::ok(Value::string("\"" + s + "\""));
-            }
-            if (v.is_number()) {
-                return EvalResult::ok(Value::string(VM::to_string_val(v)));
-            }
-            return EvalResult::ok(Value::string("{}"));
-        });
-        json_obj->set_property("stringify", Value::object(ObjectPtr(stringify_fn)));
-
-        auto parse_fn = RcPtr<JSFunction>::make();
-        parse_fn->set_name(std::string("parse"));
-        parse_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> /*args*/, bool) -> EvalResult {
-            return EvalResult::err(Error{ErrorKind::Runtime, "JSON.parse not implemented"});
-        });
-        json_obj->set_property("parse", Value::object(ObjectPtr(parse_fn)));
-
         gc_heap_.Register(json_obj.get());
+
+        auto vm_stringify_fn = RcPtr<JSFunction>::make();
+        vm_stringify_fn->set_name(std::string("stringify"));
+        vm_stringify_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+            if (args.empty()) return EvalResult::ok(Value::undefined());
+            std::set<RcObject*> seen;
+            std::string result;
+            if (!vm_json_stringify_value(args[0], result, seen)) {
+                if (native_pending_throw_.has_value())
+                    return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+                return EvalResult::ok(Value::undefined());
+            }
+            return EvalResult::ok(Value::string(result));
+        });
+        gc_heap_.Register(vm_stringify_fn.get());
+        json_obj->set_property("stringify", Value::object(ObjectPtr(vm_stringify_fn)));
+
+        auto vm_parse_fn = RcPtr<JSFunction>::make();
+        vm_parse_fn->set_name(std::string("parse"));
+        vm_parse_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+            if (args.empty() || args[0].is_undefined()) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                                                         "JSON.parse: unexpected end of JSON input");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            std::string text = to_string_val(args[0]);
+            size_t pos = 0;
+            auto result = vm_json_parse_value(text, pos);
+            if (!result.is_ok()) return result;
+            while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' ||
+                                         text[pos] == '\n' || text[pos] == '\r')) ++pos;
+            if (pos != text.size()) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                    "JSON.parse: unexpected non-whitespace character after JSON data");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            return result;
+        });
+        gc_heap_.Register(vm_parse_fn.get());
+        json_obj->set_property("parse", Value::object(ObjectPtr(vm_parse_fn)));
+
         global_env_->define("JSON", VarKind::Const);
         global_env_->initialize("JSON", Value::object(ObjectPtr(json_obj)));
+    }
+
+    // ---- queueMicrotask ----
+    {
+        auto vm_qmt_fn = RcPtr<JSFunction>::make();
+        vm_qmt_fn->set_name(std::string("queueMicrotask"));
+        vm_qmt_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+            if (args.empty() || !args[0].is_object() ||
+                args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                         "queueMicrotask: argument must be a function");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            Value fn_val = args[0];
+            job_queue_.Enqueue(ReactionJob{fn_val, Value::undefined(), Value::undefined(), true});
+            return EvalResult::ok(Value::undefined());
+        });
+        gc_heap_.Register(vm_qmt_fn.get());
+        global_env_->define_initialized("queueMicrotask");
+        global_env_->set("queueMicrotask", Value::object(ObjectPtr(vm_qmt_fn)));
     }
 }
 
 // ---- VM Promise helpers ----
+
+// ---- JSON helpers ----
+
+static std::string vm_json_escape_string(std::string_view sv) {
+    std::string out;
+    out.reserve(sv.size() + 2);
+    out += '"';
+    for (unsigned char c : sv) {
+        switch (c) {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\b': out += "\\b";  break;
+        case '\f': out += "\\f";  break;
+        case '\n': out += "\\n";  break;
+        case '\r': out += "\\r";  break;
+        case '\t': out += "\\t";  break;
+        default:
+            if (c < 0x20) {
+                char buf[7];
+                std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                out += buf;
+            } else {
+                out += static_cast<char>(c);
+            }
+        }
+    }
+    out += '"';
+    return out;
+}
+
+bool VM::vm_json_stringify_value(const Value& val, std::string& out, std::set<RcObject*>& seen) {
+    if (val.is_null()) { out += "null"; return true; }
+    if (val.is_bool()) { out += val.as_bool() ? "true" : "false"; return true; }
+    if (val.is_number()) {
+        double d = val.as_number();
+        if (std::isnan(d) || std::isinf(d)) { out += "null"; return true; }
+        std::ostringstream oss;
+        if (d == std::trunc(d) && std::abs(d) < 1e15) {
+            oss << static_cast<long long>(d);
+        } else {
+            oss << d;
+        }
+        out += oss.str();
+        return true;
+    }
+    if (val.is_string()) { out += vm_json_escape_string(val.sv()); return true; }
+    if (val.is_undefined() || val.is_symbol()) return false;
+    if (!val.is_object()) return false;
+
+    RcObject* raw = val.as_object_raw();
+    if (raw->object_kind() == ObjectKind::kFunction) return false;
+
+    if (seen.count(raw)) {
+        native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                 "JSON.stringify: circular reference");
+        return false;
+    }
+    seen.insert(raw);
+
+    if (raw->object_kind() == ObjectKind::kArray) {
+        auto* arr = static_cast<JSObject*>(raw);
+        out += '[';
+        uint32_t len = arr->array_length_;
+        for (uint32_t i = 0; i < len; ++i) {
+            if (i > 0) out += ',';
+            auto it = arr->elements_.find(i);
+            if (it == arr->elements_.end() || it->second.is_undefined() ||
+                it->second.is_symbol() ||
+                (it->second.is_object() && it->second.as_object_raw()->object_kind() == ObjectKind::kFunction)) {
+                out += "null";
+            } else {
+                if (!vm_json_stringify_value(it->second, out, seen)) {
+                    if (native_pending_throw_.has_value()) { seen.erase(raw); return false; }
+                    out += "null";
+                }
+            }
+        }
+        out += ']';
+    } else {
+        auto* obj = static_cast<JSObject*>(raw);
+        auto keys = obj->own_enumerable_string_keys();
+        out += '{';
+        bool first = true;
+        for (const auto& key : keys) {
+            Value prop = obj->get_property(key);
+            if (prop.is_undefined() || prop.is_symbol() ||
+                (prop.is_object() && prop.as_object_raw()->object_kind() == ObjectKind::kFunction))
+                continue;
+            std::string prop_str;
+            if (!vm_json_stringify_value(prop, prop_str, seen)) {
+                if (native_pending_throw_.has_value()) { seen.erase(raw); return false; }
+                continue;
+            }
+            if (!first) out += ',';
+            first = false;
+            out += vm_json_escape_string(key);
+            out += ':';
+            out += prop_str;
+        }
+        out += '}';
+    }
+    seen.erase(raw);
+    return true;
+}
+
+EvalResult VM::vm_json_parse_value(const std::string& text, size_t& pos) {
+    while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' ||
+                                  text[pos] == '\n' || text[pos] == '\r')) ++pos;
+    if (pos >= text.size()) {
+        native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                                                  "JSON.parse: unexpected end of JSON input");
+        return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+    }
+
+    char c = text[pos];
+
+    if (c == 'n') {
+        if (text.substr(pos, 4) == "null") { pos += 4; return EvalResult::ok(Value::null()); }
+        native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError, "JSON.parse: unexpected token");
+        return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+    }
+    if (c == 't') {
+        if (text.substr(pos, 4) == "true") { pos += 4; return EvalResult::ok(Value::boolean(true)); }
+        native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError, "JSON.parse: unexpected token");
+        return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+    }
+    if (c == 'f') {
+        if (text.substr(pos, 5) == "false") { pos += 5; return EvalResult::ok(Value::boolean(false)); }
+        native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError, "JSON.parse: unexpected token");
+        return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+    }
+    if (c == '"') {
+        ++pos;
+        std::string str;
+        while (pos < text.size() && text[pos] != '"') {
+            if (text[pos] == '\\') {
+                ++pos;
+                if (pos >= text.size()) break;
+                switch (text[pos]) {
+                case '"':  str += '"';  ++pos; break;
+                case '\\': str += '\\'; ++pos; break;
+                case '/':  str += '/';  ++pos; break;
+                case 'b':  str += '\b'; ++pos; break;
+                case 'f':  str += '\f'; ++pos; break;
+                case 'n':  str += '\n'; ++pos; break;
+                case 'r':  str += '\r'; ++pos; break;
+                case 't':  str += '\t'; ++pos; break;
+                case 'u': {
+                    ++pos;
+                    if (pos + 4 > text.size()) {
+                        native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                                                                  "JSON.parse: invalid unicode escape");
+                        return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+                    }
+                    unsigned int code = 0;
+                    for (int j = 0; j < 4; ++j) {
+                        char h = text[pos + j];
+                        int digit = 0;
+                        if (h >= '0' && h <= '9') digit = h - '0';
+                        else if (h >= 'a' && h <= 'f') digit = h - 'a' + 10;
+                        else if (h >= 'A' && h <= 'F') digit = h - 'A' + 10;
+                        else {
+                            native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                                                                      "JSON.parse: invalid unicode escape");
+                            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+                        }
+                        code = code * 16 + static_cast<unsigned int>(digit);
+                    }
+                    pos += 4;
+                    if (code < 0x80) {
+                        str += static_cast<char>(code);
+                    } else if (code < 0x800) {
+                        str += static_cast<char>(0xC0 | (code >> 6));
+                        str += static_cast<char>(0x80 | (code & 0x3F));
+                    } else {
+                        str += static_cast<char>(0xE0 | (code >> 12));
+                        str += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                        str += static_cast<char>(0x80 | (code & 0x3F));
+                    }
+                    break;
+                }
+                default:
+                    native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                                                              "JSON.parse: invalid escape sequence");
+                    return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+                }
+            } else {
+                if (static_cast<unsigned char>(text[pos]) < 0x20) {
+                    native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                                                              "JSON.parse: invalid control character in string");
+                    return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+                }
+                str += text[pos++];
+            }
+        }
+        if (pos >= text.size()) {
+            native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                                                      "JSON.parse: unterminated string");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+        }
+        ++pos;
+        return EvalResult::ok(Value::string(str));
+    }
+    if (c == '-' || (c >= '0' && c <= '9')) {
+        size_t start = pos;
+        if (text[pos] == '-') ++pos;
+        if (pos < text.size() && text[pos] == '0') {
+            ++pos;
+        } else {
+            while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') ++pos;
+        }
+        if (pos < text.size() && text[pos] == '.') {
+            ++pos;
+            while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') ++pos;
+        }
+        if (pos < text.size() && (text[pos] == 'e' || text[pos] == 'E')) {
+            ++pos;
+            if (pos < text.size() && (text[pos] == '+' || text[pos] == '-')) ++pos;
+            while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') ++pos;
+        }
+        std::string num_str = text.substr(start, pos - start);
+        double d = std::strtod(num_str.c_str(), nullptr);
+        return EvalResult::ok(Value::number(d));
+    }
+    if (c == '[') {
+        ++pos;
+        auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(arr.get());
+        arr->set_proto(array_prototype_);
+        while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' ||
+                                      text[pos] == '\n' || text[pos] == '\r')) ++pos;
+        if (pos < text.size() && text[pos] == ']') { ++pos; return EvalResult::ok(Value::object(ObjectPtr(arr))); }
+        uint32_t idx = 0;
+        while (true) {
+            auto elem = vm_json_parse_value(text, pos);
+            if (!elem.is_ok()) return elem;
+            arr->elements_[idx] = elem.value();
+            ++idx;
+            arr->array_length_ = idx;
+            while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' ||
+                                          text[pos] == '\n' || text[pos] == '\r')) ++pos;
+            if (pos >= text.size()) break;
+            if (text[pos] == ']') { ++pos; break; }
+            if (text[pos] != ',') {
+                native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                                                          "JSON.parse: expected ',' or ']'");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            ++pos;
+        }
+        return EvalResult::ok(Value::object(ObjectPtr(arr)));
+    }
+    if (c == '{') {
+        ++pos;
+        auto obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(obj.get());
+        obj->set_proto(object_prototype_);
+        while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' ||
+                                      text[pos] == '\n' || text[pos] == '\r')) ++pos;
+        if (pos < text.size() && text[pos] == '}') { ++pos; return EvalResult::ok(Value::object(ObjectPtr(obj))); }
+        while (true) {
+            while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' ||
+                                          text[pos] == '\n' || text[pos] == '\r')) ++pos;
+            if (pos >= text.size() || text[pos] != '"') {
+                native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                                                          "JSON.parse: expected string key");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            auto key_result = vm_json_parse_value(text, pos);
+            if (!key_result.is_ok()) return key_result;
+            std::string key = key_result.value().is_string() ? std::string(key_result.value().sv()) : "";
+            while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' ||
+                                          text[pos] == '\n' || text[pos] == '\r')) ++pos;
+            if (pos >= text.size() || text[pos] != ':') {
+                native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                                                          "JSON.parse: expected ':'");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            ++pos;
+            auto val_result = vm_json_parse_value(text, pos);
+            if (!val_result.is_ok()) return val_result;
+            obj->set_property(key, val_result.value());
+            while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' ||
+                                          text[pos] == '\n' || text[pos] == '\r')) ++pos;
+            if (pos >= text.size()) break;
+            if (text[pos] == '}') { ++pos; break; }
+            if (text[pos] != ',') {
+                native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                                                          "JSON.parse: expected ',' or '}'");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            ++pos;
+        }
+        return EvalResult::ok(Value::object(ObjectPtr(obj)));
+    }
+
+    native_pending_throw_ = make_error_value(NativeErrorType::kSyntaxError,
+                                              "JSON.parse: unexpected token");
+    return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+}
 
 // ---- RegExp runtime ----
 

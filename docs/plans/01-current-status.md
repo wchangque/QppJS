@@ -7,7 +7,7 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 4680/4680 通过（coverage），0 LSan 泄漏（预期） |
+| 测试计数 | 4712/4712 通过（coverage），0 LSan 泄漏（预期） |
 | 最近更新 | 2026-06-02 |
 | 下一步 | 下一批 test262 候选目标（eval / WeakRef 等） |
 | test262 | language/expressions class fields + private fields 实现后约 24%（expressions 32.4% 基线） |
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **5 组内建功能补充（globalThis/Object 新方法/Array.at/JSON/queueMicrotask）**（2026-06-02）：（A）`globalThis`：全局 JSObject 自引用，`typeof globalThis === "object"` 和 `globalThis.globalThis === globalThis` 成立；（B）`Object.is`（SameValue 算法，NaN===NaN，+0!=-0）、`Object.setPrototypeOf`（设置 proto 或置 null）、`Object.hasOwn`（检查 own property，支持 kFunction 路径）；（C）`Array.prototype.at`（负索引支持，越界返回 undefined）；（D）`JSON.stringify`（完整序列化：null/bool/number/string/array/object，NaN/Infinity→null，循环引用→TypeError）+ `JSON.parse`（完整解析器：null/true/false/number/string含转义/array/object，无效 JSON→SyntaxError）；（E）`queueMicrotask`（入队 ReactionJob，exec() drain 后自动执行）；interpreter.cpp 和 vm.cpp 对称实现，vm.cpp 完整替换 JSON stub；新增 `tests/unit/global_json_test.cpp`（GJ-01～GJ-16 × Interp+VM = 32 个测试）。4712/4712 通过（coverage），0 LSan 泄漏（预期）。
 
 - [x] **Number.prototype 方法（toFixed/toString/toExponential/toPrecision/valueOf）+ String.prototype 缺失方法（at/replaceAll/replace/search/padStart/padEnd/repeat/startsWith/endsWith/includes/matchAll）**（2026-06-02）：interpreter.cpp 和 vm.cpp 向 `number_prototype_` 注册 5 个方法，并在 `eval_member_expr`/`eval_call_expr`/`kGetProp` 添加数字原始值 prototype 查找路径；向 `string_prototype_` 注册 11 个缺失方法（at 用 UTF-16 code unit 语义，matchAll 返回迭代器对象，replace 支持 string/regexp/函数替换器，replaceAll 支持全局替换）；新增 `tests/unit/number_string_methods_test.cpp`（NS-01～NS-25 × Interp+VM = 50 个测试）。4680/4680 通过（coverage），0 LSan 泄漏（预期）。
 
