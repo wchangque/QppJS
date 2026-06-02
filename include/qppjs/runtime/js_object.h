@@ -65,6 +65,9 @@ public:
     bool has_property_by_symbol(uint64_t symbol_id) const;
     void clear_function_properties();
     std::vector<std::string> own_enumerable_string_keys() const;
+    // All own string property names (including non-enumerable), excluding Symbol keys.
+    // Used by Object.getOwnPropertyNames.
+    std::vector<std::string> own_all_string_keys() const;
     // Enumerate all string keys reachable via this object and its prototype chain,
     // including only enumerable properties, deduplicating by name.
     std::vector<std::string> enumerate_properties() const;

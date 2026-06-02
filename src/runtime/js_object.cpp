@@ -496,6 +496,19 @@ std::vector<std::string> JSObject::own_enumerable_string_keys() const {
     return result;
 }
 
+std::vector<std::string> JSObject::own_all_string_keys() const {
+    std::vector<std::string> result;
+    // Preserve insertion order by iterating properties_ in order.
+    for (size_t i = 0; i < properties_.size(); ++i) {
+        const auto& entry = properties_[i];
+        auto it = index_map_.find(entry.key);
+        if (it != index_map_.end() && it->second == i) {
+            result.push_back(entry.key);
+        }
+    }
+    return result;
+}
+
 std::vector<std::string> JSObject::enumerate_properties() const {
     // P1 fast path: no prototype chain, just return own keys directly.
     if (proto_ == nullptr) {

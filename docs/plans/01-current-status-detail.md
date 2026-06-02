@@ -4,6 +4,15 @@
 
 ## 1. 已完成任务
 
+- [x] **Promise 静态方法（all/race/allSettled/any）+ Array.from 完整 + Array.of + Object.entries/values/fromEntries/getOwnPropertyNames**（2026-06-02）：
+  - **Promise 静态方法**：`interpreter.cpp` + `vm.cpp` 新增 `Promise.all`（收集全部 resolve 结果到保序数组，任一 reject 立即短路 reject 整体）；`Promise.race`（注册全部 Promise 的 onFulfilled/onRejected，第一个 settle 的结果赢）；`Promise.allSettled`（等待所有 settle，返回 `{status:"fulfilled",value}` / `{status:"rejected",reason}` 数组）；`Promise.any`（任一 resolve 赢，若全部 reject 则 reject AggregateError，带 `errors` 数组）；四个方法均遍历传入可迭代数组，通过 `PerformThen` / native callback 正确接入微任务队列，count 原子递减归零时触发最终 resolve/reject。
+  - **Array.from 完整版**：`interpreter.cpp` 补全 `Array.from` 第二参数 `mapFn`（对每个元素调用 callback，结果写入结果数组）和 array-like 路径（对象含 `length` 属性则按索引读取）；`vm.cpp` 全面改进 `Array.from`（mapFn + array-like + string 路径，统一 iterable 消费逻辑）。
+  - **Array.of**：`interpreter.cpp` + `vm.cpp` 各新增 `Array.of`（将全部参数原样转为数组，`Array.of(1,2,3)` → `[1,2,3]`）。
+  - **Object 静态方法**：两侧新增 `Object.entries`（返回 `[[k,v],...]` 数组）；`Object.values`（返回值数组）；`Object.fromEntries`（接受 iterable/array/Map → 对象，通过 `Symbol.iterator` 或数组路径读取 `[key,value]` 对）；`Object.getOwnPropertyNames`（返回含非枚举属性的所有字符串键，调用 `own_all_string_keys()` 方法）。
+  - **JSObject 扩展**：`js_object.h` 声明 + `js_object.cpp` 实现 `own_all_string_keys()` 方法（遍历 `index_map_` 含非枚举属性，用于 `Object.getOwnPropertyNames`；与 `own_enumerable_string_keys()` 对称但不过滤 enumerable 标志）。
+  - **测试**：新增 `tests/unit/promise_array_object_test.cpp`（PAO-01～PAO-20 × Interp+VM = 40 个测试，覆盖 Promise.all 保序/短路 reject/空数组、Promise.race 第一 resolve/第一 reject、Promise.allSettled 混合结果/空数组、Promise.any 第一 resolve/全部 reject AggregateError、Array.from 可迭代/array-like/mapFn、Array.of 基础/单元素/无参数、Object.entries/values 顺序/空对象、Object.fromEntries 二维数组/Map/空输入、Object.getOwnPropertyNames 含非枚举/空对象）；`tests/CMakeLists.txt` 注册。
+  - **测试结果**：4630/4630 通过（coverage），0 LSan 泄漏（预期）。
+
 - [x] **ES2022 Class Private Fields（`#x`）**（2026-06-02）：
   - **Token/Lexer**：新增 `TokenKind::PrivateName`；`lexer.cpp` 在 `case '#'` 识别 `#identifier` 扫描为 PrivateName token；`token.cpp` 补全 `to_string` 分支。
   - **AST**：新增 `PrivateMemberExpression{object, name, range}` 和 `PrivateInExpression{name, object, range}` 节点加入 `ExprNode` variant；`ClassMethod` / `ClassField` 新增 `is_private: bool` 字段；`ast_dump.cpp` 扩展两个新节点输出。

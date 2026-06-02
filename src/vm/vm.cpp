@@ -1662,10 +1662,10 @@ void VM::init_global_env() {
         array_constructor->set_property("isArray", Value::object(ObjectPtr(isarray_fn)));
     }
     {
-        // Array.from(iterable[, mapFn]) — minimal: iterate via Symbol.iterator, collect elements
+        // Array.from(arrayLike[, mapFn])
         auto from_fn = RcPtr<JSFunction>::make();
         from_fn->set_name(std::string("from"));
-        from_fn->set_property("length", Value::number(1));
+        from_fn->set_property("length", Value::number(1.0));
         from_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
             if (args.empty()) {
                 native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
@@ -1673,73 +1673,147 @@ void VM::init_global_env() {
                 return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
             }
             Value iterable = args[0];
-            // Build result array
+            Value map_fn = args.size() >= 2 ? args[1] : Value::undefined();
+            bool has_map = map_fn.is_object() && map_fn.as_object_raw() &&
+                           map_fn.as_object_raw()->object_kind() == ObjectKind::kFunction;
             auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
             gc_heap_.Register(arr.get());
             arr->set_proto(array_prototype_);
-            // Fast path: array
-            if (iterable.is_object() && iterable.as_object_raw()->object_kind() == ObjectKind::kArray) {
-                auto* src = static_cast<JSObject*>(iterable.as_object_raw());
-                for (uint32_t i = 0; i < src->array_length_; ++i) {
-                    auto it = src->elements_.find(i);
-                    arr->elements_[i] = (it != src->elements_.end()) ? it->second : Value::undefined();
+            // array-like path: object with .length but no Symbol.iterator
+            if (iterable.is_object()) {
+                RcObject* raw = iterable.as_object_raw();
+                Value iter_factory = Value::undefined();
+                if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray ||
+                    raw->object_kind() == ObjectKind::kGenerator ||
+                    raw->object_kind() == ObjectKind::kMap || raw->object_kind() == ObjectKind::kSet) {
+                    iter_factory = static_cast<JSObject*>(raw)->get_property_by_symbol(
+                        symbol_table_.well_known_iterator);
                 }
-                arr->array_length_ = src->array_length_;
+                if (iter_factory.is_undefined() && raw->object_kind() == ObjectKind::kOrdinary) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    Value len_val = obj->get_property("length");
+                    double len_num = len_val.is_number() ? len_val.as_number() : 0.0;
+                    uint32_t len = 0;
+                    if (!std::isnan(len_num) && len_num > 0.0) {
+                        len = static_cast<uint32_t>(std::min(len_num, static_cast<double>(UINT32_MAX)));
+                    }
+                    for (uint32_t i = 0; i < len; ++i) {
+                        Value elem = obj->get_property(std::to_string(i));
+                        if (has_map) {
+                            std::vector<Value> map_args = {elem, Value::number(static_cast<double>(i))};
+                            auto res = call_function_val(map_fn, Value::undefined(),
+                                std::span<Value>(map_args.data(), map_args.size()));
+                            if (!res.is_ok()) return res;
+                            elem = res.value();
+                        }
+                        arr->elements_[i] = std::move(elem);
+                    }
+                    arr->array_length_ = len;
+                    return EvalResult::ok(Value::object(ObjectPtr(arr)));
+                }
+                // iterable path: consume via Symbol.iterator
+                if (!iter_factory.is_undefined()) {
+                    auto iter_r = call_function_val(iter_factory, iterable, {});
+                    if (!iter_r.is_ok()) return iter_r;
+                    Value iterator = iter_r.value();
+                    if (!iterator.is_object()) {
+                        native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                            "iterator must be an object");
+                        return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+                    }
+                    Value next_method = Value::undefined();
+                    ObjectKind ik = iterator.as_object_raw()->object_kind();
+                    if (ik == ObjectKind::kOrdinary || ik == ObjectKind::kArray ||
+                        ik == ObjectKind::kGenerator ||
+                        ik == ObjectKind::kMap || ik == ObjectKind::kSet) {
+                        next_method = static_cast<JSObject*>(iterator.as_object_raw())->get_property("next");
+                    }
+                    uint32_t idx = 0;
+                    while (true) {
+                        auto next_r = call_function_val(next_method, iterator, {});
+                        if (!next_r.is_ok()) return next_r;
+                        Value result = next_r.value();
+                        if (!result.is_object()) break;
+                        auto* res_obj = static_cast<JSObject*>(result.as_object_raw());
+                        if (to_boolean(res_obj->get_property("done"))) break;
+                        Value elem = res_obj->get_property("value");
+                        if (has_map) {
+                            std::vector<Value> map_args = {elem, Value::number(static_cast<double>(idx))};
+                            auto res = call_function_val(map_fn, Value::undefined(),
+                                std::span<Value>(map_args.data(), map_args.size()));
+                            if (!res.is_ok()) return res;
+                            elem = res.value();
+                        }
+                        arr->elements_[idx++] = std::move(elem);
+                    }
+                    arr->array_length_ = idx;
+                    return EvalResult::ok(Value::object(ObjectPtr(arr)));
+                }
+                // kArray fast path (also supports mapFn)
+                if (raw->object_kind() == ObjectKind::kArray) {
+                    auto* src = static_cast<JSObject*>(raw);
+                    for (uint32_t i = 0; i < src->array_length_; ++i) {
+                        auto it = src->elements_.find(i);
+                        Value elem = (it != src->elements_.end()) ? it->second : Value::undefined();
+                        if (has_map) {
+                            std::vector<Value> map_args = {elem, Value::number(static_cast<double>(i))};
+                            auto res = call_function_val(map_fn, Value::undefined(),
+                                std::span<Value>(map_args.data(), map_args.size()));
+                            if (!res.is_ok()) return res;
+                            elem = res.value();
+                        }
+                        arr->elements_[i] = std::move(elem);
+                    }
+                    arr->array_length_ = src->array_length_;
+                    return EvalResult::ok(Value::object(ObjectPtr(arr)));
+                }
+            }
+            // String path
+            if (iterable.is_string()) {
+                std::string_view sv = iterable.sv();
+                size_t pos = 0;
+                uint32_t idx = 0;
+                while (pos < sv.size()) {
+                    unsigned char c0 = static_cast<unsigned char>(sv[pos]);
+                    size_t cp_bytes = (c0 < 0x80) ? 1 : (c0 < 0xE0) ? 2 : (c0 < 0xF0) ? 3 : 4;
+                    if (pos + cp_bytes > sv.size()) cp_bytes = sv.size() - pos;
+                    Value elem = Value::string(std::string(sv.data() + pos, cp_bytes));
+                    if (has_map) {
+                        std::vector<Value> map_args = {elem, Value::number(static_cast<double>(idx))};
+                        auto res = call_function_val(map_fn, Value::undefined(),
+                            std::span<Value>(map_args.data(), map_args.size()));
+                        if (!res.is_ok()) return res;
+                        elem = res.value();
+                    }
+                    arr->elements_[idx++] = std::move(elem);
+                    pos += cp_bytes;
+                }
+                arr->array_length_ = idx;
                 return EvalResult::ok(Value::object(ObjectPtr(arr)));
             }
-            // Generic path: Symbol.iterator
-            if (!iterable.is_object()) {
-                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
-                    "value is not iterable");
-                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
-            }
-            RcObject* raw = iterable.as_object_raw();
-            Value iter_factory = Value::undefined();
-            if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray ||
-                raw->object_kind() == ObjectKind::kGenerator ||
-                raw->object_kind() == ObjectKind::kMap || raw->object_kind() == ObjectKind::kSet) {
-                iter_factory = static_cast<JSObject*>(raw)->get_property_by_symbol(
-                    symbol_table_.well_known_iterator);
-            }
-            if (iter_factory.is_undefined()) {
-                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
-                    "value is not iterable");
-                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
-            }
-            auto iter_r = call_function_val(iter_factory, iterable, {});
-            if (!iter_r.is_ok()) return iter_r;
-            Value iterator = iter_r.value();
-            if (!iterator.is_object()) {
-                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
-                    "iterator must be an object");
-                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
-            }
-            Value next_method = Value::undefined();
-            ObjectKind ik = iterator.as_object_raw()->object_kind();
-            if (ik == ObjectKind::kOrdinary || ik == ObjectKind::kArray ||
-                ik == ObjectKind::kGenerator ||
-                ik == ObjectKind::kMap || ik == ObjectKind::kSet) {
-                next_method = static_cast<JSObject*>(iterator.as_object_raw())->get_property("next");
-            }
-            while (true) {
-                auto next_r = call_function_val(next_method, iterator, {});
-                if (!next_r.is_ok()) return next_r;
-                Value result = next_r.value();
-                if (!result.is_object()) {
-                    native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
-                        "iterator result must be an object");
-                    return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
-                }
-                auto* res_obj = static_cast<JSObject*>(result.as_object_raw());
-                Value done_val = res_obj->get_property("done");
-                Value value_val = res_obj->get_property("value");
-                if (to_boolean(done_val)) break;
-                arr->elements_[arr->array_length_++] = std::move(value_val);
-            }
-            return EvalResult::ok(Value::object(ObjectPtr(arr)));
+            native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                "value is not iterable");
+            return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
         });
         gc_heap_.Register(from_fn.get());
         array_constructor->set_property("from", Value::object(ObjectPtr(from_fn)));
+    }
+    // Array.of(...items)
+    {
+        auto of_fn = RcPtr<JSFunction>::make();
+        of_fn->set_name(std::string("of"));
+        of_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+            auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+            gc_heap_.Register(arr.get());
+            arr->set_proto(array_prototype_);
+            for (size_t i = 0; i < args.size(); ++i) {
+                arr->elements_[static_cast<uint32_t>(i)] = std::move(args[i]);
+            }
+            arr->array_length_ = static_cast<uint32_t>(args.size());
+            return EvalResult::ok(Value::object(ObjectPtr(arr)));
+        });
+        gc_heap_.Register(of_fn.get());
+        array_constructor->set_property("of", Value::object(ObjectPtr(of_fn)));
     }
     array_constructor->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
         auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
@@ -2031,6 +2105,158 @@ void VM::init_global_env() {
     });
     gc_heap_.Register(get_proto_vm_fn.get());
 
+    // Object.values(obj)
+    auto vm_values_fn = RcPtr<JSFunction>::make();
+    vm_values_fn->set_name(std::string("values"));
+    vm_values_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_object()) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: Object.values called on non-object"});
+        }
+        RcObject* raw = args[0].as_object_raw();
+        auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(arr.get());
+        arr->set_proto(array_prototype_);
+        if (raw->object_kind() != ObjectKind::kFunction) {
+            auto* obj = static_cast<JSObject*>(raw);
+            auto keys = obj->own_enumerable_string_keys();
+            for (size_t i = 0; i < keys.size(); ++i) {
+                arr->elements_[static_cast<uint32_t>(i)] = obj->get_property(keys[i]);
+            }
+            arr->array_length_ = static_cast<uint32_t>(keys.size());
+        }
+        return EvalResult::ok(Value::object(ObjectPtr(arr)));
+    });
+    gc_heap_.Register(vm_values_fn.get());
+
+    // Object.entries(obj)
+    auto vm_entries_fn = RcPtr<JSFunction>::make();
+    vm_entries_fn->set_name(std::string("entries"));
+    vm_entries_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_object()) {
+            return EvalResult::err(Error{ErrorKind::Runtime, "TypeError: Object.entries called on non-object"});
+        }
+        RcObject* raw = args[0].as_object_raw();
+        auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(arr.get());
+        arr->set_proto(array_prototype_);
+        if (raw->object_kind() != ObjectKind::kFunction) {
+            auto* obj = static_cast<JSObject*>(raw);
+            auto keys = obj->own_enumerable_string_keys();
+            for (size_t i = 0; i < keys.size(); ++i) {
+                auto pair = RcPtr<JSObject>::make(ObjectKind::kArray);
+                gc_heap_.Register(pair.get());
+                pair->set_proto(array_prototype_);
+                pair->elements_[0] = Value::string(keys[i]);
+                pair->elements_[1] = obj->get_property(keys[i]);
+                pair->array_length_ = 2;
+                arr->elements_[static_cast<uint32_t>(i)] = Value::object(ObjectPtr(pair));
+            }
+            arr->array_length_ = static_cast<uint32_t>(keys.size());
+        }
+        return EvalResult::ok(Value::object(ObjectPtr(arr)));
+    });
+    gc_heap_.Register(vm_entries_fn.get());
+
+    // Object.fromEntries(iterable)
+    auto vm_from_entries_fn = RcPtr<JSFunction>::make();
+    vm_from_entries_fn->set_name(std::string("fromEntries"));
+    vm_from_entries_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty()) {
+            return EvalResult::err(Error{ErrorKind::Runtime,
+                "TypeError: Object.fromEntries requires an iterable argument"});
+        }
+        Value iterable = args[0];
+        auto new_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(new_obj.get());
+        new_obj->set_proto(object_prototype_);
+        // Consume via Symbol.iterator if available, otherwise assume array
+        auto process_item = [&](const Value& item) {
+            if (!item.is_object()) return;
+            RcObject* raw = item.as_object_raw();
+            if (raw->object_kind() == ObjectKind::kArray) {
+                auto* pair = static_cast<JSObject*>(raw);
+                Value key_val = (pair->array_length_ > 0 && pair->elements_.count(0))
+                    ? pair->elements_.at(0) : Value::undefined();
+                Value val_val = (pair->array_length_ > 1 && pair->elements_.count(1))
+                    ? pair->elements_.at(1) : Value::undefined();
+                new_obj->set_property(to_string_val(key_val), val_val);
+            } else if (raw->object_kind() == ObjectKind::kOrdinary) {
+                auto* pair = static_cast<JSObject*>(raw);
+                Value key_val = pair->get_property("0");
+                Value val_val = pair->get_property("1");
+                new_obj->set_property(to_string_val(key_val), val_val);
+            }
+        };
+        if (iterable.is_object()) {
+            RcObject* raw = iterable.as_object_raw();
+            if (raw->object_kind() == ObjectKind::kArray) {
+                auto* arr = static_cast<JSObject*>(raw);
+                for (uint32_t k = 0; k < arr->array_length_; ++k) {
+                    auto it = arr->elements_.find(k);
+                    if (it != arr->elements_.end()) process_item(it->second);
+                }
+            } else {
+                Value iter_factory = Value::undefined();
+                if (raw->object_kind() == ObjectKind::kOrdinary ||
+                    raw->object_kind() == ObjectKind::kMap || raw->object_kind() == ObjectKind::kSet) {
+                    iter_factory = static_cast<JSObject*>(raw)->get_property_by_symbol(
+                        symbol_table_.well_known_iterator);
+                }
+                if (!iter_factory.is_undefined()) {
+                    auto iter_r = call_function_val(iter_factory, iterable, {});
+                    if (!iter_r.is_ok()) return iter_r;
+                    Value iterator = iter_r.value();
+                    if (!iterator.is_object()) {
+                        return EvalResult::err(Error{ErrorKind::Runtime,
+                            "TypeError: Object.fromEntries: iterator is not an object"});
+                    }
+                    Value next_method = Value::undefined();
+                    ObjectKind ik = iterator.as_object_raw()->object_kind();
+                    if (ik == ObjectKind::kOrdinary || ik == ObjectKind::kArray ||
+                        ik == ObjectKind::kGenerator ||
+                        ik == ObjectKind::kMap || ik == ObjectKind::kSet) {
+                        next_method = static_cast<JSObject*>(iterator.as_object_raw())->get_property("next");
+                    }
+                    while (true) {
+                        auto next_r = call_function_val(next_method, iterator, {});
+                        if (!next_r.is_ok()) return next_r;
+                        Value result = next_r.value();
+                        if (!result.is_object()) break;
+                        auto* res_obj = static_cast<JSObject*>(result.as_object_raw());
+                        if (to_boolean(res_obj->get_property("done"))) break;
+                        process_item(res_obj->get_property("value"));
+                    }
+                }
+            }
+        }
+        return EvalResult::ok(Value::object(ObjectPtr(new_obj)));
+    });
+    gc_heap_.Register(vm_from_entries_fn.get());
+
+    // Object.getOwnPropertyNames(obj)
+    auto vm_get_own_prop_names_fn = RcPtr<JSFunction>::make();
+    vm_get_own_prop_names_fn->set_name(std::string("getOwnPropertyNames"));
+    vm_get_own_prop_names_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_object()) {
+            return EvalResult::err(Error{ErrorKind::Runtime,
+                "TypeError: Object.getOwnPropertyNames called on non-object"});
+        }
+        RcObject* raw = args[0].as_object_raw();
+        auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(arr.get());
+        arr->set_proto(array_prototype_);
+        if (raw->object_kind() != ObjectKind::kFunction) {
+            auto* obj = static_cast<JSObject*>(raw);
+            auto all_keys = obj->own_all_string_keys();
+            for (size_t i = 0; i < all_keys.size(); ++i) {
+                arr->elements_[static_cast<uint32_t>(i)] = Value::string(all_keys[i]);
+            }
+            arr->array_length_ = static_cast<uint32_t>(all_keys.size());
+        }
+        return EvalResult::ok(Value::object(ObjectPtr(arr)));
+    });
+    gc_heap_.Register(vm_get_own_prop_names_fn.get());
+
     object_constructor_->set_property("keys", Value::object(ObjectPtr(keys_fn)));
     object_constructor_->set_property("assign", Value::object(ObjectPtr(assign_fn)));
     object_constructor_->set_property("create", Value::object(ObjectPtr(create_fn)));
@@ -2038,6 +2264,10 @@ void VM::init_global_env() {
     object_constructor_->set_property("getOwnPropertyDescriptor", Value::object(ObjectPtr(get_own_prop_desc_fn)));
     object_constructor_->set_property("preventExtensions", Value::object(ObjectPtr(prevent_extensions_fn)));
     object_constructor_->set_property("getPrototypeOf", Value::object(ObjectPtr(get_proto_vm_fn)));
+    object_constructor_->set_property("values", Value::object(ObjectPtr(vm_values_fn)));
+    object_constructor_->set_property("entries", Value::object(ObjectPtr(vm_entries_fn)));
+    object_constructor_->set_property("fromEntries", Value::object(ObjectPtr(vm_from_entries_fn)));
+    object_constructor_->set_property("getOwnPropertyNames", Value::object(ObjectPtr(vm_get_own_prop_names_fn)));
 
     global_env_->define_initialized("Object");
     global_env_->set("Object", Value::object(ObjectPtr(object_constructor_)));
@@ -2419,6 +2649,281 @@ void VM::init_global_env() {
 
     // P2-B: Promise.prototype must be accessible via Promise.prototype
     vm_promise_ctor->set_property("prototype", Value::object(ObjectPtr(promise_prototype_)));
+
+    // Promise.all(iterable)
+    {
+        auto all_fn = RcPtr<JSFunction>::make();
+        all_fn->set_name(std::string("all"));
+        all_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+            std::vector<Value> items;
+            if (!args.empty() && args[0].is_object()) {
+                Value iterable_arg = args[0];
+                RcObject* iterable_raw = iterable_arg.as_object_raw();
+                if (iterable_raw->object_kind() == ObjectKind::kArray) {
+                    auto* arr_src = static_cast<JSObject*>(iterable_raw);
+                    for (uint32_t k = 0; k < arr_src->array_length_; ++k) {
+                        auto it = arr_src->elements_.find(k);
+                        items.push_back(it != arr_src->elements_.end() ? it->second : Value::undefined());
+                    }
+                }
+            }
+            auto result_promise = RcPtr<JSPromise>::make();
+            gc_heap_.Register(result_promise.get());
+            if (items.empty()) {
+                auto results_arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+                gc_heap_.Register(results_arr.get());
+                results_arr->set_proto(array_prototype_);
+                result_promise->Fulfill(Value::object(ObjectPtr(results_arr)), job_queue_);
+                return EvalResult::ok(Value::object(ObjectPtr(result_promise)));
+            }
+            auto results = std::make_shared<std::vector<Value>>(items.size(), Value::undefined());
+            auto remaining = std::make_shared<int>(static_cast<int>(items.size()));
+            for (size_t i = 0; i < items.size(); ++i) {
+                auto p = vm_promise_resolve(items[i]);
+                auto on_fulfill = RcPtr<JSFunction>::make();
+                on_fulfill->set_native_fn([this, results, remaining, i, result_promise](
+                        Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    (*results)[i] = a.empty() ? Value::undefined() : a[0];
+                    if (--(*remaining) == 0) {
+                        auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+                        gc_heap_.Register(arr.get());
+                        arr->set_proto(array_prototype_);
+                        for (size_t j = 0; j < results->size(); ++j) {
+                            arr->elements_[static_cast<uint32_t>(j)] = (*results)[j];
+                        }
+                        arr->array_length_ = static_cast<uint32_t>(results->size());
+                        result_promise->Fulfill(Value::object(ObjectPtr(arr)), job_queue_);
+                    }
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(on_fulfill.get());
+                auto on_reject = RcPtr<JSFunction>::make();
+                on_reject->set_native_fn([this, result_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    Value r = a.empty() ? Value::undefined() : a[0];
+                    result_promise->Reject(r, job_queue_);
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(on_reject.get());
+                JSPromise::PerformThen(p,
+                    Value::object(ObjectPtr(on_fulfill)),
+                    Value::object(ObjectPtr(on_reject)),
+                    job_queue_);
+            }
+            return EvalResult::ok(Value::object(ObjectPtr(result_promise)));
+        });
+        gc_heap_.Register(all_fn.get());
+        vm_promise_ctor->set_property("all", Value::object(ObjectPtr(all_fn)));
+    }
+
+    // Promise.race(iterable)
+    {
+        auto race_fn = RcPtr<JSFunction>::make();
+        race_fn->set_name(std::string("race"));
+        race_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+            std::vector<Value> items;
+            if (!args.empty() && args[0].is_object()) {
+                Value iterable_arg = args[0];
+                RcObject* iterable_raw = iterable_arg.as_object_raw();
+                if (iterable_raw->object_kind() == ObjectKind::kArray) {
+                    auto* arr_src = static_cast<JSObject*>(iterable_raw);
+                    for (uint32_t k = 0; k < arr_src->array_length_; ++k) {
+                        auto it = arr_src->elements_.find(k);
+                        items.push_back(it != arr_src->elements_.end() ? it->second : Value::undefined());
+                    }
+                }
+            }
+            auto result_promise = RcPtr<JSPromise>::make();
+            gc_heap_.Register(result_promise.get());
+            for (auto& item : items) {
+                auto p = vm_promise_resolve(item);
+                auto on_fulfill = RcPtr<JSFunction>::make();
+                on_fulfill->set_native_fn([this, result_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    Value v = a.empty() ? Value::undefined() : a[0];
+                    result_promise->Fulfill(v, job_queue_);
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(on_fulfill.get());
+                auto on_reject = RcPtr<JSFunction>::make();
+                on_reject->set_native_fn([this, result_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    Value r = a.empty() ? Value::undefined() : a[0];
+                    result_promise->Reject(r, job_queue_);
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(on_reject.get());
+                JSPromise::PerformThen(p,
+                    Value::object(ObjectPtr(on_fulfill)),
+                    Value::object(ObjectPtr(on_reject)),
+                    job_queue_);
+            }
+            return EvalResult::ok(Value::object(ObjectPtr(result_promise)));
+        });
+        gc_heap_.Register(race_fn.get());
+        vm_promise_ctor->set_property("race", Value::object(ObjectPtr(race_fn)));
+    }
+
+    // Promise.allSettled(iterable)
+    {
+        auto all_settled_fn = RcPtr<JSFunction>::make();
+        all_settled_fn->set_name(std::string("allSettled"));
+        all_settled_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+            std::vector<Value> items;
+            if (!args.empty() && args[0].is_object()) {
+                Value iterable_arg = args[0];
+                RcObject* iterable_raw = iterable_arg.as_object_raw();
+                if (iterable_raw->object_kind() == ObjectKind::kArray) {
+                    auto* arr_src = static_cast<JSObject*>(iterable_raw);
+                    for (uint32_t k = 0; k < arr_src->array_length_; ++k) {
+                        auto it = arr_src->elements_.find(k);
+                        items.push_back(it != arr_src->elements_.end() ? it->second : Value::undefined());
+                    }
+                }
+            }
+            auto result_promise = RcPtr<JSPromise>::make();
+            gc_heap_.Register(result_promise.get());
+            if (items.empty()) {
+                auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+                gc_heap_.Register(arr.get());
+                arr->set_proto(array_prototype_);
+                result_promise->Fulfill(Value::object(ObjectPtr(arr)), job_queue_);
+                return EvalResult::ok(Value::object(ObjectPtr(result_promise)));
+            }
+            auto results = std::make_shared<std::vector<Value>>(items.size(), Value::undefined());
+            auto remaining = std::make_shared<int>(static_cast<int>(items.size()));
+            for (size_t i = 0; i < items.size(); ++i) {
+                auto p = vm_promise_resolve(items[i]);
+                auto on_fulfill = RcPtr<JSFunction>::make();
+                on_fulfill->set_native_fn([this, results, remaining, i, result_promise](
+                        Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    Value v = a.empty() ? Value::undefined() : a[0];
+                    auto entry = RcPtr<JSObject>::make();
+                    gc_heap_.Register(entry.get());
+                    entry->set_proto(object_prototype_);
+                    entry->set_property("status", Value::string("fulfilled"));
+                    entry->set_property("value", v);
+                    (*results)[i] = Value::object(ObjectPtr(entry));
+                    if (--(*remaining) == 0) {
+                        auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+                        gc_heap_.Register(arr.get());
+                        arr->set_proto(array_prototype_);
+                        for (size_t j = 0; j < results->size(); ++j) {
+                            arr->elements_[static_cast<uint32_t>(j)] = (*results)[j];
+                        }
+                        arr->array_length_ = static_cast<uint32_t>(results->size());
+                        result_promise->Fulfill(Value::object(ObjectPtr(arr)), job_queue_);
+                    }
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(on_fulfill.get());
+                auto on_reject = RcPtr<JSFunction>::make();
+                on_reject->set_native_fn([this, results, remaining, i, result_promise](
+                        Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    Value r = a.empty() ? Value::undefined() : a[0];
+                    auto entry = RcPtr<JSObject>::make();
+                    gc_heap_.Register(entry.get());
+                    entry->set_proto(object_prototype_);
+                    entry->set_property("status", Value::string("rejected"));
+                    entry->set_property("reason", r);
+                    (*results)[i] = Value::object(ObjectPtr(entry));
+                    if (--(*remaining) == 0) {
+                        auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+                        gc_heap_.Register(arr.get());
+                        arr->set_proto(array_prototype_);
+                        for (size_t j = 0; j < results->size(); ++j) {
+                            arr->elements_[static_cast<uint32_t>(j)] = (*results)[j];
+                        }
+                        arr->array_length_ = static_cast<uint32_t>(results->size());
+                        result_promise->Fulfill(Value::object(ObjectPtr(arr)), job_queue_);
+                    }
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(on_reject.get());
+                JSPromise::PerformThen(p,
+                    Value::object(ObjectPtr(on_fulfill)),
+                    Value::object(ObjectPtr(on_reject)),
+                    job_queue_);
+            }
+            return EvalResult::ok(Value::object(ObjectPtr(result_promise)));
+        });
+        gc_heap_.Register(all_settled_fn.get());
+        vm_promise_ctor->set_property("allSettled", Value::object(ObjectPtr(all_settled_fn)));
+    }
+
+    // Promise.any(iterable)
+    {
+        auto any_fn = RcPtr<JSFunction>::make();
+        any_fn->set_name(std::string("any"));
+        any_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+            std::vector<Value> items;
+            if (!args.empty() && args[0].is_object()) {
+                Value iterable_arg = args[0];
+                RcObject* iterable_raw = iterable_arg.as_object_raw();
+                if (iterable_raw->object_kind() == ObjectKind::kArray) {
+                    auto* arr_src = static_cast<JSObject*>(iterable_raw);
+                    for (uint32_t k = 0; k < arr_src->array_length_; ++k) {
+                        auto it = arr_src->elements_.find(k);
+                        items.push_back(it != arr_src->elements_.end() ? it->second : Value::undefined());
+                    }
+                }
+            }
+            auto result_promise = RcPtr<JSPromise>::make();
+            gc_heap_.Register(result_promise.get());
+            if (items.empty()) {
+                auto errors_arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+                gc_heap_.Register(errors_arr.get());
+                errors_arr->set_proto(array_prototype_);
+                auto agg_err = make_error_value(NativeErrorType::kTypeError,
+                    "All promises were rejected");
+                if (agg_err.is_object()) {
+                    static_cast<JSObject*>(agg_err.as_object_raw())->set_property(
+                        "errors", Value::object(ObjectPtr(errors_arr)));
+                }
+                result_promise->Reject(agg_err, job_queue_);
+                return EvalResult::ok(Value::object(ObjectPtr(result_promise)));
+            }
+            auto errors = std::make_shared<std::vector<Value>>(items.size(), Value::undefined());
+            auto remaining = std::make_shared<int>(static_cast<int>(items.size()));
+            for (size_t i = 0; i < items.size(); ++i) {
+                auto p = vm_promise_resolve(items[i]);
+                auto on_fulfill = RcPtr<JSFunction>::make();
+                on_fulfill->set_native_fn([this, result_promise](Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    Value v = a.empty() ? Value::undefined() : a[0];
+                    result_promise->Fulfill(v, job_queue_);
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(on_fulfill.get());
+                auto on_reject = RcPtr<JSFunction>::make();
+                on_reject->set_native_fn([this, errors, remaining, i, result_promise](
+                        Value, std::vector<Value> a, bool) mutable -> EvalResult {
+                    (*errors)[i] = a.empty() ? Value::undefined() : a[0];
+                    if (--(*remaining) == 0) {
+                        auto errors_arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+                        gc_heap_.Register(errors_arr.get());
+                        errors_arr->set_proto(array_prototype_);
+                        for (size_t j = 0; j < errors->size(); ++j) {
+                            errors_arr->elements_[static_cast<uint32_t>(j)] = (*errors)[j];
+                        }
+                        errors_arr->array_length_ = static_cast<uint32_t>(errors->size());
+                        auto agg_err = make_error_value(NativeErrorType::kTypeError,
+                            "All promises were rejected");
+                        if (agg_err.is_object()) {
+                            static_cast<JSObject*>(agg_err.as_object_raw())->set_property(
+                                "errors", Value::object(ObjectPtr(errors_arr)));
+                        }
+                        result_promise->Reject(agg_err, job_queue_);
+                    }
+                    return EvalResult::ok(Value::undefined());
+                });
+                gc_heap_.Register(on_reject.get());
+                JSPromise::PerformThen(p,
+                    Value::object(ObjectPtr(on_fulfill)),
+                    Value::object(ObjectPtr(on_reject)),
+                    job_queue_);
+            }
+            return EvalResult::ok(Value::object(ObjectPtr(result_promise)));
+        });
+        gc_heap_.Register(any_fn.get());
+        vm_promise_ctor->set_property("any", Value::object(ObjectPtr(any_fn)));
+    }
 
     gc_heap_.Register(vm_promise_ctor.get());
     global_env_->define("Promise", VarKind::Const);
