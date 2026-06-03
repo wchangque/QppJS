@@ -4200,6 +4200,20 @@ void VM::init_global_env() {
 
     // Number.parseInt === global parseInt (same object)
     number_constructor_->set_property("parseInt", vm_parse_int_val);
+    // Number.parseFloat === global parseFloat
+    number_constructor_->set_property("parseFloat", Value::object(ObjectPtr(vm_parse_float_fn)));
+    // Number.isSafeInteger
+    {
+        auto vm_is_safe_int_fn = RcPtr<JSFunction>::make();
+        vm_is_safe_int_fn->set_name(std::string("isSafeInteger"));
+        vm_is_safe_int_fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+            if (args.empty() || !args[0].is_number()) return EvalResult::ok(Value::boolean(false));
+            double v = args[0].as_number();
+            return EvalResult::ok(Value::boolean(std::isfinite(v) && v == std::trunc(v) && std::abs(v) <= 9007199254740991.0));
+        });
+        gc_heap_.Register(vm_is_safe_int_fn.get());
+        number_constructor_->set_property("isSafeInteger", Value::object(ObjectPtr(vm_is_safe_int_fn)));
+    }
 
     // Number static value properties
     number_constructor_->set_property("MAX_VALUE", Value::number(std::numeric_limits<double>::max()));
