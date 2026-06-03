@@ -2955,6 +2955,41 @@ void VM::init_global_env() {
     object_constructor_->set_property("create", Value::object(ObjectPtr(create_fn)));
     object_constructor_->set_property("defineProperty", Value::object(ObjectPtr(define_property_fn)));
     object_constructor_->set_property("getOwnPropertyDescriptor", Value::object(ObjectPtr(get_own_prop_desc_fn)));
+    // Object.getOwnPropertyDescriptors
+    {
+        auto vm_gopds_fn = RcPtr<JSFunction>::make();
+        vm_gopds_fn->set_name(std::string("getOwnPropertyDescriptors"));
+        vm_gopds_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+            auto result = RcPtr<JSObject>::make();
+            gc_heap_.Register(result.get());
+            result->set_proto(object_prototype_);
+            if (args.empty() || !args[0].is_object()) return EvalResult::ok(Value::object(ObjectPtr(result)));
+            auto* raw = args[0].as_object_raw();
+            if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                auto* obj = static_cast<JSObject*>(raw);
+                for (const auto& key : obj->own_all_string_keys()) {
+                    const JSObject::PropertyEntry* entry = obj->get_own_entry(key);
+                    if (!entry) continue;
+                    auto desc = RcPtr<JSObject>::make();
+                    gc_heap_.Register(desc.get());
+                    desc->set_proto(object_prototype_);
+                    if (entry->flags & kPropIsAccessor) {
+                        desc->set_property("get", entry->getter);
+                        desc->set_property("set", entry->setter);
+                    } else {
+                        desc->set_property("value", entry->value);
+                        desc->set_property("writable", Value::boolean((entry->flags & kPropWritable) != 0));
+                    }
+                    desc->set_property("enumerable", Value::boolean((entry->flags & kPropEnumerable) != 0));
+                    desc->set_property("configurable", Value::boolean((entry->flags & kPropConfigurable) != 0));
+                    result->set_property(key, Value::object(ObjectPtr(desc)));
+                }
+            }
+            return EvalResult::ok(Value::object(ObjectPtr(result)));
+        });
+        gc_heap_.Register(vm_gopds_fn.get());
+        object_constructor_->set_property("getOwnPropertyDescriptors", Value::object(ObjectPtr(vm_gopds_fn)));
+    }
     object_constructor_->set_property("preventExtensions", Value::object(ObjectPtr(prevent_extensions_fn)));
     object_constructor_->set_property("freeze", Value::object(ObjectPtr(vm_freeze_fn)));
     object_constructor_->set_property("isFrozen", Value::object(ObjectPtr(vm_is_frozen_fn)));
