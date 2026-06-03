@@ -51,6 +51,7 @@
 31. ~~**3 组功能补充（Symbol WKS + Symbol.toPrimitive/hasInstance/toStringTag + Function constructor + eval）** — 已完成（2026-06-02，34 个新测试（SE-01～SE-15 × Interp+VM），4746/4746 通过（coverage），0 LSan 泄漏（预期））~~
 32. ~~**switch 语句（switch/case/default/break/fallthrough 语义）** — 已完成（2026-06-02，24 个新测试（SW-01～SW-12 × Interp+VM），4770/4770 通过（coverage），0 LSan 泄漏（预期））~~
 33. ~~**批量 bug 修复 + 高频缺失方法（无 AST/Parser 变更）** — 已完成（2026-06-03，40 个新测试（MF-01～MF-12 × Interp+VM），4844/4844 通过（coverage），0 LSan 泄漏）~~（含 Array.prototype.constructor、Object.prototype.toString 类型区分、String.fromCodePoint、String.prototype.codePointAt/charCodeAt/charAt、Object.getOwnPropertySymbols）
+34. ~~**Object.prototype 等高频缺失方法补充（无 AST/Parser 变更）** — 已完成（2026-06-03，14 个新测试（MF-13～MF-18 × Interp+VM），4856/4856 通过（coverage），0 LSan 泄漏）~~（含 Object.prototype.propertyIsEnumerable、Function.prototype.toString、String.prototype.normalize、Number.prototype.toLocaleString）
 
 ## 3. 进入前提
 

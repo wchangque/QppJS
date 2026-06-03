@@ -316,4 +316,150 @@ TEST(MiscFixes, MF12_ArrayFromStringVM) {
     EXPECT_TRUE(v.is_bool() && v.as_bool());
 }
 
+// ============================================================
+// MF-13: Object.prototype.propertyIsEnumerable
+// ============================================================
+
+TEST(MiscFixes, MF13_PropertyIsEnumerableInterp) {
+    auto v = interp_ok(R"(
+        var o = {x: 1};
+        var r1 = o.propertyIsEnumerable("x");
+        var o2 = Object.defineProperty({}, "x", {value:1, enumerable:false, configurable:true, writable:true});
+        var r2 = o2.propertyIsEnumerable("x");
+        var r3 = o.propertyIsEnumerable("y");
+        r1 === true && r2 === false && r3 === false
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
+TEST(MiscFixes, MF13_PropertyIsEnumerableVM) {
+    auto v = vm_ok(R"(
+        var o = {x: 1};
+        var r1 = o.propertyIsEnumerable("x");
+        var o2 = Object.defineProperty({}, "x", {value:1, enumerable:false, configurable:true, writable:true});
+        var r2 = o2.propertyIsEnumerable("x");
+        var r3 = o.propertyIsEnumerable("y");
+        r1 === true && r2 === false && r3 === false
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
+// ============================================================
+// MF-14: Function.prototype.toString
+// ============================================================
+
+TEST(MiscFixes, MF14_FunctionToStringInterp) {
+    auto v = interp_ok(R"(
+        var s = (function foo() {}).toString();
+        typeof s === "string" && s.indexOf("function") !== -1 && s.indexOf("foo") !== -1
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
+TEST(MiscFixes, MF14_FunctionToStringVM) {
+    auto v = vm_ok(R"(
+        var s = (function foo() {}).toString();
+        typeof s === "string" && s.indexOf("function") !== -1 && s.indexOf("foo") !== -1
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
+// ============================================================
+// MF-15: String.prototype.normalize
+// ============================================================
+
+TEST(MiscFixes, MF15_StringNormalizeInterp) {
+    auto v = interp_ok(R"(
+        var s = "hello".normalize();
+        var s2 = "hello".normalize("NFC");
+        s === "hello" && s2 === "hello"
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
+TEST(MiscFixes, MF15_StringNormalizeVM) {
+    auto v = vm_ok(R"(
+        var s = "hello".normalize();
+        var s2 = "hello".normalize("NFC");
+        s === "hello" && s2 === "hello"
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
+TEST(MiscFixes, MF15b_StringNormalizeRangeErrorInterp) {
+    auto v = interp_ok(R"(
+        var threw = false;
+        try { "x".normalize("INVALID"); } catch(e) { threw = e instanceof RangeError; }
+        threw
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
+TEST(MiscFixes, MF15b_StringNormalizeRangeErrorVM) {
+    auto v = vm_ok(R"(
+        var threw = false;
+        try { "x".normalize("INVALID"); } catch(e) { threw = e instanceof RangeError; }
+        threw
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
+// ============================================================
+// MF-16: Number.prototype.toLocaleString
+// ============================================================
+
+TEST(MiscFixes, MF16_NumberToLocaleStringInterp) {
+    auto v = interp_ok(R"(
+        var s = (42).toLocaleString();
+        typeof s === "string" && s.length > 0
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
+TEST(MiscFixes, MF16_NumberToLocaleStringVM) {
+    auto v = vm_ok(R"(
+        var s = (42).toLocaleString();
+        typeof s === "string" && s.length > 0
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
+// ============================================================
+// MF-17: Array.prototype.toString
+// ============================================================
+
+TEST(MiscFixes, MF17_ArrayToStringInterp) {
+    auto v = interp_ok(R"(
+        [1, 2, 3].toString() === "1,2,3" && [].toString() === ""
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
+TEST(MiscFixes, MF17_ArrayToStringVM) {
+    auto v = vm_ok(R"(
+        [1, 2, 3].toString() === "1,2,3" && [].toString() === ""
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
+// ============================================================
+// MF-18: Object.keys on function returns []
+// ============================================================
+
+TEST(MiscFixes, MF18_ObjectKeysFunctionInterp) {
+    auto v = interp_ok(R"(
+        var keys = Object.keys(Array);
+        keys.length === 0
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
+TEST(MiscFixes, MF18_ObjectKeysFunctionVM) {
+    auto v = vm_ok(R"(
+        var keys = Object.keys(Array);
+        keys.length === 0
+    )");
+    EXPECT_TRUE(v.is_bool() && v.as_bool());
+}
+
 }  // namespace

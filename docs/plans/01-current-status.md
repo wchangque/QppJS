@@ -7,7 +7,7 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 4844/4844 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 4856/4856 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-06-03 |
 | 下一步 | 下一批 test262 候选目标（WeakRef / Proxy 等） |
 | test262 | language/expressions class fields + private fields 实现后约 24%（expressions 32.4% 基线） |
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **Object.prototype 等高频缺失方法补充（无 AST/Parser 变更）**（2026-06-03）：（A）`Object.prototype.propertyIsEnumerable`（检查自有属性可枚举性，get_own_entry + kPropEnumerable flag，kFunction 返回 false，Interp+VM 对称）；（B）`Function.prototype.toString`（返回 `"function <name>() { [native code] }"`，非函数 TypeError，Interp+VM 对称）；（C）`String.prototype.normalize`（ASCII/BMP 直接返回原字符串，参数校验 NFC/NFD/NFKC/NFKD，非法参数 RangeError，Interp+VM 对称）；（D）`Number.prototype.toLocaleString`（简化实现委托 to_string_val，Interp+VM 对称）；验证 `Array.prototype.toString` 和 `Object.keys(fn)` 已正确（无需改动）；新增 MF-13～MF-18 × Interp+VM = 14 个测试，追加至 `tests/unit/misc_fixes_test.cpp`。4856/4856 通过（coverage），0 LSan 泄漏。
 
 - [x] **批量 bug 修复 + 高频缺失方法（无 AST/Parser 变更）**（2026-06-03）：（A）`Array.prototype.constructor` 修复（interpreter.cpp + vm.cpp 各添加 `set_property("constructor", ...)` + `gc_heap_.Register`）；（B）`Object.prototype.toString` 区分类型（Array/RegExp/Promise/Map/Set/WeakMap/WeakSet/StringObject/BooleanObject/Function + Symbol.toStringTag，Interp+VM 对称）；（C）`String.fromCodePoint`（UTF-8 编码 + SMP 4 字节序列 + RangeError）+ `String.prototype.codePointAt`（UTF-8 解码，OOB→undefined）；（D）`Object.getOwnPropertySymbols`（js_object.h 新增 `own_symbol_ids()` 公共方法，Interp+VM 使用）；（E）`String.prototype.charCodeAt`（UTF-16 码元，OOB→NaN）+ `String.prototype.charAt`（UTF-8 子串，OOB→""）；更新 CP48 旧占位测试为正确期望；新增 `tests/unit/misc_fixes_test.cpp`（MF-01～MF-12 × Interp+VM = 40 个测试）。4844/4844 通过（coverage），0 LSan 泄漏。
 

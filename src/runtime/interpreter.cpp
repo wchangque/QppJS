@@ -518,6 +518,23 @@ void Interpreter::init_runtime() {
         gc_heap_.Register(fn.get());
         object_prototype_->define_builtin_property("isPrototypeOf", Value::object(ObjectPtr(fn)));
     }
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("propertyIsEnumerable"));
+        fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            if (!this_val.is_object()) return EvalResult::ok(Value::boolean(false));
+            auto* raw = this_val.as_object_raw();
+            if (!raw || raw->object_kind() == ObjectKind::kFunction)
+                return EvalResult::ok(Value::boolean(false));
+            std::string key = args.empty() ? "undefined" : to_string_val(args[0]);
+            auto* obj = static_cast<JSObject*>(raw);
+            const JSObject::PropertyEntry* entry = obj->get_own_entry(key);
+            if (!entry) return EvalResult::ok(Value::boolean(false));
+            return EvalResult::ok(Value::boolean((entry->flags & kPropEnumerable) != 0));
+        });
+        gc_heap_.Register(fn.get());
+        object_prototype_->define_builtin_property("propertyIsEnumerable", Value::object(ObjectPtr(fn)));
+    }
 
     // Build Error.prototype
     auto error_proto = RcPtr<JSObject>::make();
@@ -2987,6 +3004,31 @@ void Interpreter::init_runtime() {
     });
     function_prototype_->set_property("bind", Value::object(ObjectPtr(bind_fn)));
 
+    // Function.prototype.toString
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("toString"));
+        fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+            if (!this_val.is_object() || !this_val.as_object_raw() ||
+                this_val.as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Function.prototype.toString requires a function");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            auto* fn_raw = static_cast<JSFunction*>(this_val.as_object_raw());
+            std::string name;
+            Value name_prop = fn_raw->get_property("name");
+            if (name_prop.is_string()) {
+                name = std::string(name_prop.sv());
+            } else if (fn_raw->name().has_value()) {
+                name = fn_raw->name().value();
+            }
+            return EvalResult::ok(Value::string("function " + name + "() { [native code] }"));
+        });
+        gc_heap_.Register(fn.get());
+        function_prototype_->set_property("toString", Value::object(ObjectPtr(fn)));
+    }
+
     // ---- Promise ----
 
     // Build Promise.prototype
@@ -4155,6 +4197,33 @@ void Interpreter::init_runtime() {
     gc_heap_.Register(num_toprec_fn.get());
     number_prototype_->set_property("toPrecision", Value::object(ObjectPtr(num_toprec_fn)));
 
+    // Number.prototype.toLocaleString — simplified: delegate to toString
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("toLocaleString"));
+        fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+            double val = 0.0;
+            if (this_val.is_number()) {
+                val = this_val.as_number();
+            } else if (this_val.is_object()) {
+                RcObject* raw = this_val.as_object_raw();
+                if (!raw || raw->object_kind() != ObjectKind::kOrdinary) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                        "Number.prototype.toLocaleString requires a number");
+                    return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                }
+                val = static_cast<JSObject*>(raw)->wrapped_value().as_number();
+            } else {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Number.prototype.toLocaleString requires a number");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            return EvalResult::ok(Value::string(to_string_val(Value::number(val))));
+        });
+        gc_heap_.Register(fn.get());
+        number_prototype_->set_property("toLocaleString", Value::object(ObjectPtr(fn)));
+    }
+
     gc_heap_.Register(number_constructor_.get());
     global_env_->define_initialized("Number");
     global_env_->set("Number", Value::object(ObjectPtr(number_constructor_)));
@@ -5276,6 +5345,32 @@ void Interpreter::init_runtime() {
         });
         gc_heap_.Register(fn.get());
         if (string_prototype_) string_prototype_->set_property("codePointAt", Value::object(ObjectPtr(fn)));
+    }
+
+    // ---- String.prototype.normalize ----
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("normalize"));
+        fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            if (this_val.is_null() || this_val.is_undefined()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "String.prototype.normalize requires a string");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            Value sv = string_this_value(this_val);
+            std::string form = "NFC";
+            if (!args.empty() && !args[0].is_undefined()) {
+                form = to_string_val(args[0]);
+            }
+            if (form != "NFC" && form != "NFD" && form != "NFKC" && form != "NFKD") {
+                pending_throw_ = make_error_value(NativeErrorType::kRangeError,
+                    "The normalization form should be one of NFC, NFD, NFKC, NFKD");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            return EvalResult::ok(sv);
+        });
+        gc_heap_.Register(fn.get());
+        if (string_prototype_) string_prototype_->set_property("normalize", Value::object(ObjectPtr(fn)));
     }
 
     // ---- Symbol ----
