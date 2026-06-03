@@ -7388,6 +7388,24 @@ StmtResult Interpreter::eval_expression_stmt(const ExpressionStatement& stmt) {
     return StmtResult::ok(Completion::normal(result.value()));
 }
 
+// Infer function/class name from variable assignment (ES2015+ name inference)
+static void infer_function_name_if_anon(Value& val, const std::string& name) {
+    if (!val.is_object()) return;
+    auto* raw = val.as_object_raw();
+    if (!raw || raw->object_kind() != ObjectKind::kFunction) return;
+    auto* fn = static_cast<JSFunction*>(raw);
+    // If function has no name or empty name, infer from variable
+    Value existing = fn->get_property("name");
+    if ((existing.is_string() && existing.sv().empty()) || existing.is_undefined()) {
+        fn->set_name(name);
+        // Also update own_properties_["name"] since it takes precedence in get_property
+        auto it = fn->own_properties().find("name");
+        if (it != fn->own_properties().end() && it->second.is_string() && it->second.sv().empty()) {
+            fn->set_property("name", Value::string(name));
+        }
+    }
+}
+
 StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
     if (decl.kind == VarKind::Var) {
         // var: binding already hoisted; just assign if there is an initializer
@@ -7396,6 +7414,7 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
             if (!init_result.is_ok()) {
                 return StmtResult::err(init_result.error());
             }
+            infer_function_name_if_anon(init_result.value(), decl.name);
             auto set_result = current_env_->set(decl.name, init_result.value());
             if (!set_result.is_ok()) {
                 return StmtResult::err(set_result.error());
@@ -7412,6 +7431,7 @@ StmtResult Interpreter::eval_var_decl(const VariableDeclaration& decl) {
             if (!init_result.is_ok()) {
                 return StmtResult::err(init_result.error());
             }
+            infer_function_name_if_anon(init_result.value(), decl.name);
             auto init_env_result = current_env_->initialize(decl.name, init_result.value());
             if (!init_env_result.is_ok()) {
                 return StmtResult::err(init_env_result.error());

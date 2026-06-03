@@ -474,8 +474,8 @@ TEST(InterpFunctionBuiltin, FB_E09_bind_anonymous_name) {
         f.bind(null).name;
     )");
     EXPECT_TRUE(v.is_string());
-    // anonymous target name is empty → "bound "
-    EXPECT_EQ(v.as_string(), "bound ");
+    // var f = function(){} infers name "f", so bind → "bound f"
+    EXPECT_EQ(v.as_string(), "bound f");
 }
 
 // FB-E10: apply on non-function → TypeError (direct error path)
