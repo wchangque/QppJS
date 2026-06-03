@@ -52,11 +52,18 @@ Value JSFunction::get_property(const std::string& key) const {
     if (it != own_properties_.end()) {
         return it->second;
     }
+    // Expose name_ as .name property (if not overridden in own_properties_)
+    if (key == "name") {
+        if (name_.has_value()) return Value::string(*name_);
+        return Value::string("");
+    }
     return Value::undefined();
 }
 
 bool JSFunction::has_property(const std::string& key) const {
-    return own_properties_.count(key) > 0;
+    if (own_properties_.count(key) > 0) return true;
+    if (key == "name") return true;  // Always has .name
+    return false;
 }
 
 void JSFunction::clear_own_properties() {
