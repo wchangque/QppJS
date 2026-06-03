@@ -259,12 +259,23 @@ static Token scan_string(LexerState& state, uint32_t start) {
                 }
                 state.pos += 2;
             } else if (esc == 'u') {
-                // \uNNNN：必须恰好四位十六进制
-                if (state.pos + 4 > len || !is_hex_digit(src[state.pos]) || !is_hex_digit(src[state.pos + 1]) ||
-                    !is_hex_digit(src[state.pos + 2]) || !is_hex_digit(src[state.pos + 3])) {
+                // \uNNNN or \u{H...H}
+                if (state.pos < len && src[state.pos] == '{') {
+                    // \u{hex...} form
+                    ++state.pos;  // consume '{'
+                    while (state.pos < len && src[state.pos] != '}') {
+                        if (!is_hex_digit(src[state.pos])) return make_invalid();
+                        ++state.pos;
+                    }
+                    if (state.pos >= len) return make_invalid();  // no closing '}'
+                    ++state.pos;  // consume '}'
+                } else if (state.pos + 4 <= len && is_hex_digit(src[state.pos]) && is_hex_digit(src[state.pos + 1]) &&
+                    is_hex_digit(src[state.pos + 2]) && is_hex_digit(src[state.pos + 3])) {
+                    // \uNNNN：必须恰好四位十六进制
+                    state.pos += 4;
+                } else {
                     return make_invalid();
                 }
-                state.pos += 4;
             } else if (esc == '0') {
                 // \0 后跟数字 -> Invalid（遗留八进制）
                 if (state.pos < len && is_dec_digit(src[state.pos])) {

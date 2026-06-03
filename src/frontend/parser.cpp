@@ -85,7 +85,7 @@ static std::string decode_string(std::string_view raw) {
                 break;
             }
             case 'u': {
-                // \uNNNN
+                // \uNNNN or \u{H...H}
                 auto read_hex4 = [&](std::size_t pos) -> int {
                     if (pos + 4 > end) return -1;
                     if (!is_hex_digit_char(raw[pos]) || !is_hex_digit_char(raw[pos + 1]) ||
@@ -94,16 +94,30 @@ static std::string decode_string(std::string_view raw) {
                     return hex_val(raw[pos]) << 12 | hex_val(raw[pos + 1]) << 8 | hex_val(raw[pos + 2]) << 4 |
                            hex_val(raw[pos + 3]);
                 };
-                int hi = read_hex4(i);
-                if (hi < 0) break;
-                i += 4;
-                uint32_t cp = static_cast<uint32_t>(hi);
-                // 高代理：尝试消费后续 \uNNNN 低代理，合并为非 BMP 码点
-                if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < end && raw[i] == '\\' && raw[i + 1] == 'u') {
-                    int lo = read_hex4(i + 2);
-                    if (lo >= 0xDC00 && lo <= 0xDFFF) {
-                        cp = 0x10000 + ((cp - 0xD800) << 10) + (static_cast<uint32_t>(lo) - 0xDC00);
-                        i += 6;  // 消费 \uNNNN
+                uint32_t cp;
+                if (i < end && raw[i] == '{') {
+                    // \u{H...H} form
+                    ++i;  // skip '{'
+                    uint32_t val = 0;
+                    while (i < end && raw[i] != '}') {
+                        if (!is_hex_digit_char(raw[i])) break;
+                        val = val * 16 + static_cast<uint32_t>(hex_val(raw[i]));
+                        ++i;
+                    }
+                    if (i < end) ++i;  // skip '}'
+                    cp = val;
+                } else {
+                    int hi = read_hex4(i);
+                    if (hi < 0) break;
+                    i += 4;
+                    cp = static_cast<uint32_t>(hi);
+                    // 高代理：尝试消费后续 \uNNNN 低代理，合并为非 BMP 码点
+                    if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < end && raw[i] == '\\' && raw[i + 1] == 'u') {
+                        int lo = read_hex4(i + 2);
+                        if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                            cp = 0x10000 + ((cp - 0xD800) << 10) + (static_cast<uint32_t>(lo) - 0xDC00);
+                            i += 6;
+                        }
                     }
                 }
                 // 编码为 UTF-8
