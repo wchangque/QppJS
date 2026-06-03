@@ -5409,6 +5409,40 @@ void Interpreter::init_runtime() {
         if (string_prototype_) string_prototype_->set_property("normalize", Value::object(ObjectPtr(fn)));
     }
 
+    // concat(), trimLeft/trimRight aliases, localeCompare
+    {
+        // String.prototype.concat(...args) → join args into this + args
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("concat"));
+        fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            std::string result = std::string(string_this_value(this_val).sv());
+            for (auto& a : args) result += to_string_val(a);
+            return EvalResult::ok(Value::string(result));
+        });
+        if (string_prototype_) string_prototype_->set_property("concat", Value::object(ObjectPtr(fn)));
+    }
+    {
+        // trimLeft = trimStart, trimRight = trimEnd
+        Value ts = string_prototype_ ? string_prototype_->get_property("trimStart") : Value::undefined();
+        Value te = string_prototype_ ? string_prototype_->get_property("trimEnd") : Value::undefined();
+        if (string_prototype_) {
+            string_prototype_->set_property("trimLeft", ts);
+            string_prototype_->set_property("trimRight", te);
+        }
+    }
+    {
+        // localeCompare(compareStr) → -1/0/1
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("localeCompare"));
+        fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            std::string a = std::string(string_this_value(this_val).sv());
+            std::string b = args.empty() ? "undefined" : to_string_val(args[0]);
+            int cmp = a.compare(b);
+            return EvalResult::ok(Value::number(cmp < 0 ? -1.0 : (cmp > 0 ? 1.0 : 0.0)));
+        });
+        if (string_prototype_) string_prototype_->set_property("localeCompare", Value::object(ObjectPtr(fn)));
+    }
+
     // ---- Symbol ----
 
     symbol_prototype_ = RcPtr<JSObject>::make();

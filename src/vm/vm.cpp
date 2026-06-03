@@ -5438,6 +5438,39 @@ void VM::init_global_env() {
         if (string_prototype_) string_prototype_->set_property("normalize", Value::object(ObjectPtr(fn)));
     }
 
+    // concat(), trimLeft/trimRight aliases, localeCompare
+    {
+        auto vm_concat_fn = RcPtr<JSFunction>::make();
+        vm_concat_fn->set_name(std::string("concat"));
+        vm_concat_fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            std::string result = std::string(string_this_value_vm(this_val).sv());
+            for (auto& a : args) result += to_string_val(a);
+            return EvalResult::ok(Value::string(result));
+        });
+        gc_heap_.Register(vm_concat_fn.get());
+        if (string_prototype_) string_prototype_->set_property("concat", Value::object(ObjectPtr(vm_concat_fn)));
+    }
+    {
+        Value ts = string_prototype_ ? string_prototype_->get_property("trimStart") : Value::undefined();
+        Value te = string_prototype_ ? string_prototype_->get_property("trimEnd") : Value::undefined();
+        if (string_prototype_) {
+            string_prototype_->set_property("trimLeft", ts);
+            string_prototype_->set_property("trimRight", te);
+        }
+    }
+    {
+        auto vm_lc_fn = RcPtr<JSFunction>::make();
+        vm_lc_fn->set_name(std::string("localeCompare"));
+        vm_lc_fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            std::string a = std::string(string_this_value_vm(this_val).sv());
+            std::string b = args.empty() ? "undefined" : to_string_val(args[0]);
+            int cmp = a.compare(b);
+            return EvalResult::ok(Value::number(cmp < 0 ? -1.0 : (cmp > 0 ? 1.0 : 0.0)));
+        });
+        gc_heap_.Register(vm_lc_fn.get());
+        if (string_prototype_) string_prototype_->set_property("localeCompare", Value::object(ObjectPtr(vm_lc_fn)));
+    }
+
     // ---- Symbol ----
 
     symbol_prototype_ = RcPtr<JSObject>::make();
