@@ -2583,6 +2583,60 @@ void Interpreter::init_runtime() {
         return EvalResult::ok(args[0]);
     });
 
+    // Build Object.freeze
+    auto freeze_fn = RcPtr<JSFunction>::make();
+    freeze_fn->set_name(std::string("freeze"));
+    freeze_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty()) return EvalResult::ok(Value::undefined());
+        if (!args[0].is_object()) return EvalResult::ok(args[0]);
+        RcObject* raw = args[0].as_object_raw();
+        if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+            static_cast<JSObject*>(raw)->freeze();
+        }
+        return EvalResult::ok(args[0]);
+    });
+    gc_heap_.Register(freeze_fn.get());
+
+    // Build Object.isFrozen
+    auto is_frozen_fn = RcPtr<JSFunction>::make();
+    is_frozen_fn->set_name(std::string("isFrozen"));
+    is_frozen_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_object()) return EvalResult::ok(Value::boolean(true));
+        RcObject* raw = args[0].as_object_raw();
+        if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+            return EvalResult::ok(Value::boolean(static_cast<JSObject*>(raw)->is_frozen()));
+        }
+        return EvalResult::ok(Value::boolean(false));
+    });
+    gc_heap_.Register(is_frozen_fn.get());
+
+    // Build Object.seal
+    auto seal_fn = RcPtr<JSFunction>::make();
+    seal_fn->set_name(std::string("seal"));
+    seal_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty()) return EvalResult::ok(Value::undefined());
+        if (!args[0].is_object()) return EvalResult::ok(args[0]);
+        RcObject* raw = args[0].as_object_raw();
+        if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+            static_cast<JSObject*>(raw)->seal();
+        }
+        return EvalResult::ok(args[0]);
+    });
+    gc_heap_.Register(seal_fn.get());
+
+    // Build Object.isSealed
+    auto is_sealed_fn = RcPtr<JSFunction>::make();
+    is_sealed_fn->set_name(std::string("isSealed"));
+    is_sealed_fn->set_native_fn([](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
+        if (args.empty() || !args[0].is_object()) return EvalResult::ok(Value::boolean(true));
+        RcObject* raw = args[0].as_object_raw();
+        if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+            return EvalResult::ok(Value::boolean(static_cast<JSObject*>(raw)->is_sealed()));
+        }
+        return EvalResult::ok(Value::boolean(false));
+    });
+    gc_heap_.Register(is_sealed_fn.get());
+
     // Build Object.getPrototypeOf
     auto get_proto_fn = RcPtr<JSFunction>::make();
     get_proto_fn->set_name(std::string("getPrototypeOf"));
@@ -2824,6 +2878,10 @@ void Interpreter::init_runtime() {
     object_constructor_->set_property("defineProperty", Value::object(ObjectPtr(define_property_fn)));
     object_constructor_->set_property("getOwnPropertyDescriptor", Value::object(ObjectPtr(get_own_prop_desc_fn)));
     object_constructor_->set_property("preventExtensions", Value::object(ObjectPtr(prevent_extensions_fn)));
+    object_constructor_->set_property("freeze", Value::object(ObjectPtr(freeze_fn)));
+    object_constructor_->set_property("isFrozen", Value::object(ObjectPtr(is_frozen_fn)));
+    object_constructor_->set_property("seal", Value::object(ObjectPtr(seal_fn)));
+    object_constructor_->set_property("isSealed", Value::object(ObjectPtr(is_sealed_fn)));
     object_constructor_->set_property("getPrototypeOf", Value::object(ObjectPtr(get_proto_fn)));
     object_constructor_->set_property("values", Value::object(ObjectPtr(values_fn)));
     object_constructor_->set_property("entries", Value::object(ObjectPtr(entries_fn)));

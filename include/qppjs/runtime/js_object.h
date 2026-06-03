@@ -75,6 +75,48 @@ public:
     bool extensible() const { return extensible_; }
     void set_extensible(bool v) { extensible_ = v; }
 
+    // [[PreventExtensions]] + clear writable/configurable on all own data properties.
+    void freeze() {
+        extensible_ = false;
+        for (auto& entry : properties_) {
+            if (!(entry.flags & kPropIsAccessor)) {
+                entry.flags &= ~static_cast<uint8_t>(kPropWritable | kPropConfigurable);
+            } else {
+                entry.flags &= ~static_cast<uint8_t>(kPropConfigurable);
+            }
+        }
+    }
+
+    // Returns true iff not extensible and all own properties are non-writable + non-configurable.
+    bool is_frozen() const {
+        if (extensible_) return false;
+        for (const auto& entry : properties_) {
+            if (entry.flags & kPropIsAccessor) {
+                if (entry.flags & kPropConfigurable) return false;
+            } else {
+                if (entry.flags & (kPropWritable | kPropConfigurable)) return false;
+            }
+        }
+        return true;
+    }
+
+    // [[PreventExtensions]] + clear configurable on all own properties (writable preserved).
+    void seal() {
+        extensible_ = false;
+        for (auto& entry : properties_) {
+            entry.flags &= ~static_cast<uint8_t>(kPropConfigurable);
+        }
+    }
+
+    // Returns true iff not extensible and all own properties are non-configurable.
+    bool is_sealed() const {
+        if (extensible_) return false;
+        for (const auto& entry : properties_) {
+            if (entry.flags & kPropConfigurable) return false;
+        }
+        return true;
+    }
+
     // Wrapped primitive value for kStringObject / kBooleanObject.
     const Value& wrapped_value() const { return wrapped_value_; }
     void set_wrapped_value(Value v) { wrapped_value_ = std::move(v); }
