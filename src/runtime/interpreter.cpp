@@ -3741,6 +3741,38 @@ void Interpreter::init_runtime() {
     gc_heap_.Register(str_trim_end_fn.get());
     string_prototype_->set_property("trimEnd", Value::object(ObjectPtr(str_trim_end_fn)));
 
+    // toLowerCase() / toUpperCase()
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("toLowerCase"));
+        fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+            if (this_val.is_null() || this_val.is_undefined()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError, "null or undefined");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            std::string s = std::string(string_this_value(this_val).sv());
+            for (auto& c : s) if (c >= 'A' && c <= 'Z') c += 32;
+            return EvalResult::ok(Value::string(s));
+        });
+        string_prototype_->set_property("toLowerCase", Value::object(ObjectPtr(fn)));
+        string_prototype_->set_property("toLocaleLowerCase", Value::object(ObjectPtr(fn)));
+    }
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("toUpperCase"));
+        fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+            if (this_val.is_null() || this_val.is_undefined()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError, "null or undefined");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            std::string s = std::string(string_this_value(this_val).sv());
+            for (auto& c : s) if (c >= 'a' && c <= 'z') c -= 32;
+            return EvalResult::ok(Value::string(s));
+        });
+        string_prototype_->set_property("toUpperCase", Value::object(ObjectPtr(fn)));
+        string_prototype_->set_property("toLocaleUpperCase", Value::object(ObjectPtr(fn)));
+    }
+
     // valueOf()
     auto str_valueof_fn = RcPtr<JSFunction>::make();
     str_valueof_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {

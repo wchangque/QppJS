@@ -3828,6 +3828,40 @@ void VM::init_global_env() {
     gc_heap_.Register(vm_str_trim_end_fn.get());
     string_prototype_->set_property("trimEnd", Value::object(ObjectPtr(vm_str_trim_end_fn)));
 
+    // toLowerCase() / toUpperCase()
+    {
+        auto vm_lower_fn = RcPtr<JSFunction>::make();
+        vm_lower_fn->set_name(std::string("toLowerCase"));
+        vm_lower_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+            if (this_val.is_null() || this_val.is_undefined()) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "null or undefined");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            std::string s = std::string(string_this_value_vm(this_val).sv());
+            for (auto& c : s) if (c >= 'A' && c <= 'Z') c += 32;
+            return EvalResult::ok(Value::string(s));
+        });
+        gc_heap_.Register(vm_lower_fn.get());
+        string_prototype_->set_property("toLowerCase", Value::object(ObjectPtr(vm_lower_fn)));
+        string_prototype_->set_property("toLocaleLowerCase", Value::object(ObjectPtr(vm_lower_fn)));
+    }
+    {
+        auto vm_upper_fn = RcPtr<JSFunction>::make();
+        vm_upper_fn->set_name(std::string("toUpperCase"));
+        vm_upper_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
+            if (this_val.is_null() || this_val.is_undefined()) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "null or undefined");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            std::string s = std::string(string_this_value_vm(this_val).sv());
+            for (auto& c : s) if (c >= 'a' && c <= 'z') c -= 32;
+            return EvalResult::ok(Value::string(s));
+        });
+        gc_heap_.Register(vm_upper_fn.get());
+        string_prototype_->set_property("toUpperCase", Value::object(ObjectPtr(vm_upper_fn)));
+        string_prototype_->set_property("toLocaleUpperCase", Value::object(ObjectPtr(vm_upper_fn)));
+    }
+
     // valueOf()
     auto vm_str_valueof_fn = RcPtr<JSFunction>::make();
     vm_str_valueof_fn->set_native_fn([this](Value this_val, std::vector<Value>, bool) -> EvalResult {
