@@ -26,7 +26,12 @@ function _toString(value) {
     return String(value);
 }
 
-var assert = {};
+// assert 是可调用函数，同时支持 assert.sameValue 等属性方法
+function assert(mustBeTrue, message) {
+    if (mustBeTrue !== true) {
+        throw new Test262Error(message || "Expected true but got " + _toString(mustBeTrue));
+    }
+}
 
 assert.sameValue = function(actual, expected, message) {
     if (!_isSameValue(actual, expected)) {
