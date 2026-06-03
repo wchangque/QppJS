@@ -1192,9 +1192,10 @@ TEST(Class, CL37_VM_StaticGetterRegistered) {
 //         此测试记录当前错误行为：C.val = 99 → TypeError。
 // ============================================================
 
-TEST(Class, CL38_Interp_StaticSetterThrows) {
-    // 已知 bug：static setter 不工作，赋值抛 TypeError
-    EXPECT_TRUE(interp_throws(R"(
+TEST(Class, CL38_Interp_StaticSetterSilentWrite) {
+    // 已知 bug：static setter 不工作，赋值写入 own_properties_（setter 未被调用）
+    // 允许写入（不抛），但 setter 不执行
+    EXPECT_FALSE(interp_throws(R"(
         class C {
             static set val(v) { C._val = v; }
         }

@@ -2402,9 +2402,24 @@ void Interpreter::init_runtime() {
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
         RcObject* raw = args[0].as_object_raw();
-        if (raw->object_kind() != ObjectKind::kOrdinary && raw->object_kind() != ObjectKind::kArray) {
+        // For kFunction, handle defineProperty via own_properties_
+        if (raw->object_kind() == ObjectKind::kFunction) {
+            auto* fn = static_cast<JSFunction*>(raw);
+            if (args.size() >= 2 && args.size() >= 3 && args[2].is_object()) {
+                std::string key2 = to_string_val(args[1]);
+                auto* desc_fn = static_cast<JSObject*>(args[2].as_object_raw());
+                Value val2 = desc_fn->has_own_property("value") ? desc_fn->get_property("value") : Value::undefined();
+                if (desc_fn->has_own_property("value") || desc_fn->has_own_property("get")) {
+                    fn->set_property(key2, val2);
+                }
+            }
+            return EvalResult::ok(args[0]);
+        }
+        if (raw->object_kind() != ObjectKind::kOrdinary && raw->object_kind() != ObjectKind::kArray &&
+            raw->object_kind() != ObjectKind::kRegExp && raw->object_kind() != ObjectKind::kStringObject &&
+            raw->object_kind() != ObjectKind::kBooleanObject) {
             pending_throw_ = make_error_value(NativeErrorType::kTypeError,
-                "Object.defineProperty called on non-object");
+                "Object.defineProperty called on non-ordinary object");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
         auto* obj = static_cast<JSObject*>(raw);
@@ -9655,6 +9670,12 @@ EvalResult Interpreter::eval_member_assign(const MemberAssignmentExpression& exp
             auto* rx = static_cast<JSRegExp*>(raw_obj2);
             rx->last_index_ = std::isnan(n) || n < 0.0 ? 0u : static_cast<uint32_t>(n);
         }
+        return EvalResult::ok(val_result.value());
+    }
+    if (raw_obj2->object_kind() == ObjectKind::kFunction) {
+        // Functions can have properties (e.g., assert._isSameValue = fn)
+        auto* fn_obj2 = static_cast<JSFunction*>(raw_obj2);
+        fn_obj2->set_property(key, val_result.value());
         return EvalResult::ok(val_result.value());
     }
     if (raw_obj2->object_kind() != ObjectKind::kOrdinary && raw_obj2->object_kind() != ObjectKind::kArray) {

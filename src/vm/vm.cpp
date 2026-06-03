@@ -2450,9 +2450,24 @@ void VM::init_global_env() {
             return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
         }
         RcObject* raw = args[0].as_object_raw();
-        if (raw->object_kind() != ObjectKind::kOrdinary && raw->object_kind() != ObjectKind::kArray) {
+        // For kFunction, handle defineProperty via own_properties_
+        if (raw->object_kind() == ObjectKind::kFunction) {
+            auto* fn = static_cast<JSFunction*>(raw);
+            if (args.size() >= 3 && args[2].is_object()) {
+                std::string key2 = to_string_val(args[1]);
+                auto* desc_fn = static_cast<JSObject*>(args[2].as_object_raw());
+                Value val2 = desc_fn->has_own_property("value") ? desc_fn->get_property("value") : Value::undefined();
+                if (desc_fn->has_own_property("value") || desc_fn->has_own_property("get")) {
+                    fn->set_property(key2, val2);
+                }
+            }
+            return EvalResult::ok(args[0]);
+        }
+        if (raw->object_kind() != ObjectKind::kOrdinary && raw->object_kind() != ObjectKind::kArray &&
+            raw->object_kind() != ObjectKind::kRegExp && raw->object_kind() != ObjectKind::kStringObject &&
+            raw->object_kind() != ObjectKind::kBooleanObject) {
             native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
-                "Object.defineProperty called on non-object");
+                "Object.defineProperty called on non-ordinary object");
             return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
         }
         auto* obj = static_cast<JSObject*>(raw);
