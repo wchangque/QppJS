@@ -2289,7 +2289,7 @@ void Interpreter::init_runtime() {
         return EvalResult::ok(Value::object(ObjectPtr(arr)));
     });
 
-    array_prototype_->set_property("constructor", Value::object(ObjectPtr(array_constructor)));
+    array_prototype_->define_builtin_property("constructor", Value::object(ObjectPtr(array_constructor)));
 
     gc_heap_.Register(array_constructor.get());
     global_env_->define_initialized("Array");
@@ -2399,6 +2399,7 @@ void Interpreter::init_runtime() {
     object_constructor_ = RcPtr<JSFunction>::make();
     object_constructor_->set_name(std::string("Object"));
     object_constructor_->set_prototype_obj(object_prototype_);
+    object_prototype_->define_builtin_property("constructor", Value::object(ObjectPtr(object_constructor_)));
     object_constructor_->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
         bool wrap = args.empty() || args[0].is_null() || args[0].is_undefined();
         if (wrap) {
@@ -4006,6 +4007,7 @@ void Interpreter::init_runtime() {
     gc_heap_.Register(number_prototype_.get());
     number_constructor_->set_prototype_obj(RcPtr<JSObject>(number_prototype_));
     number_constructor_->set_property("prototype", Value::object(ObjectPtr(number_prototype_)));
+    number_prototype_->define_builtin_property("constructor", Value::object(ObjectPtr(number_constructor_)));
 
     // Number.prototype.valueOf
     auto num_valueof_fn = RcPtr<JSFunction>::make();
@@ -4295,6 +4297,7 @@ void Interpreter::init_runtime() {
     });
     boolean_constructor_->set_prototype_obj(boolean_prototype_);
     boolean_constructor_->set_property("prototype", Value::object(ObjectPtr(boolean_prototype_)));
+    boolean_prototype_->define_builtin_property("constructor", Value::object(ObjectPtr(boolean_constructor_)));
 
     gc_heap_.Register(boolean_constructor_.get());
     global_env_->define_initialized("Boolean");
@@ -4328,6 +4331,7 @@ void Interpreter::init_runtime() {
     });
     string_constructor_->set_prototype_obj(string_prototype_);
     string_constructor_->set_property("prototype", Value::object(ObjectPtr(string_prototype_)));
+    string_prototype_->define_builtin_property("constructor", Value::object(ObjectPtr(string_constructor_)));
 
     // String.fromCharCode
     auto str_from_char_code_fn = RcPtr<JSFunction>::make();
@@ -6310,6 +6314,7 @@ void Interpreter::init_runtime() {
         // Function.prototype = function_prototype_
         if (function_prototype_) {
             fn_ctor->set_property("prototype", Value::object(ObjectPtr(function_prototype_)));
+            function_prototype_->define_builtin_property("constructor", Value::object(ObjectPtr(fn_ctor)));
         }
         global_env_->define_initialized("Function");
         global_env_->set("Function", Value::object(ObjectPtr(fn_ctor)));
