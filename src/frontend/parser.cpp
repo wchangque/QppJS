@@ -2730,40 +2730,83 @@ struct Parser {
                 range}});
         }
 
-        // 期望标识符
-        if (cur.kind != TokenKind::Ident) {
+        // 期望标识符或解构模式
+        if (cur.kind != TokenKind::Ident && cur.kind != TokenKind::LBrace && cur.kind != TokenKind::LBracket) {
             return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected identifier after var/let/const"));
         }
-        std::string name{token_text(cur)};
-        Token name_tok = cur;
-        advance();
 
-        std::optional<ExprNode> init;
-        if (cur.kind == TokenKind::Eq) {
-            advance();  // 消费 =
-            auto expr = parse_expr(0);
-            if (!expr.ok()) return ParseResult<StmtNode>::Err(expr.error());
-            init = std::move(expr.value());
-        } else if (kind == VarKind::Const) {
-            // const 必须有初始化器
-            return ParseResult<StmtNode>::Err(
-                    make_parse_error(source, cur, "const declaration must have an initializer"));
+        // 支持多变量声明：var a = 1, b, c = 3
+        struct Declarator {
+            std::string name;
+            Token name_tok;
+            std::optional<ExprNode> init;
+        };
+        std::vector<Declarator> declarators;
+
+        while (true) {
+            // 支持解构声明：var {a} = o, b = 1 中的解构部分
+            if (cur.kind == TokenKind::LBrace || cur.kind == TokenKind::LBracket) {
+                // 嵌入解构声明需要返回 DestructuringDeclaration，但在多变量中不常见
+                // 简化：如果第一个就是解构且后面没有逗号，走单声明路径（上面的代码已处理）
+                // 这里主要处理普通标识符的多变量场景
+                break;
+            }
+            if (cur.kind != TokenKind::Ident) break;
+
+            Declarator d;
+            d.name = std::string{token_text(cur)};
+            d.name_tok = cur;
+            advance();
+
+            if (cur.kind == TokenKind::Eq) {
+                advance();  // 消费 =
+                auto expr = parse_expr(1);  // 停在 , (lbp=0 < 1)，允许赋值表达式
+                if (!expr.ok()) return ParseResult<StmtNode>::Err(expr.error());
+                d.init = std::move(expr.value());
+            } else if (kind == VarKind::Const) {
+                return ParseResult<StmtNode>::Err(
+                        make_parse_error(source, cur, "const declaration must have an initializer"));
+            }
+
+            declarators.push_back(std::move(d));
+
+            if (cur.kind != TokenKind::Comma) break;
+            advance();  // 消费 ,
+        }
+
+        if (declarators.empty()) {
+            return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected identifier after var/let/const"));
         }
 
         auto semi = consume_semicolon();
         if (!semi.ok()) return ParseResult<StmtNode>::Err(semi.error());
 
-        uint32_t decl_end = range_end(semi.value().range);
-        if (decl_end == semi.value().range.offset) {
-            // 虚拟分号（ASI），用 init 或 name 的末尾
-            if (init.has_value()) {
-                decl_end = range_end(expr_range(*init));
-            } else {
-                decl_end = range_end(name_tok.range);
+        // 单变量声明：直接返回 VariableDeclaration
+        if (declarators.size() == 1) {
+            auto& d = declarators[0];
+            uint32_t decl_end = range_end(semi.value().range);
+            if (decl_end == semi.value().range.offset) {
+                if (d.init.has_value()) {
+                    decl_end = range_end(expr_range(*d.init));
+                } else {
+                    decl_end = range_end(d.name_tok.range);
+                }
             }
+            SourceRange range = span(kw.range.offset, decl_end);
+            return ParseResult<StmtNode>::Ok(StmtNode{VariableDeclaration{kind, std::move(d.name), std::move(d.init), range}});
         }
-        SourceRange range = span(kw.range.offset, decl_end);
-        return ParseResult<StmtNode>::Ok(StmtNode{VariableDeclaration{kind, std::move(name), std::move(init), range}});
+
+        // 多变量声明：返回 BlockStatement 包含多个 VariableDeclaration
+        std::vector<StmtNode> stmts;
+        uint32_t block_start = kw.range.offset;
+        uint32_t block_end = range_end(semi.value().range);
+        for (auto& d : declarators) {
+            uint32_t de = d.init.has_value() ? range_end(expr_range(*d.init)) : range_end(d.name_tok.range);
+            SourceRange r = span(block_start, de);
+            stmts.push_back(StmtNode{VariableDeclaration{kind, std::move(d.name), std::move(d.init), r}});
+        }
+        SourceRange block_range = span(block_start, block_end);
+        return ParseResult<StmtNode>::Ok(StmtNode{BlockStatement{std::move(stmts), block_range}});
     }
 
     ParseResult<StmtNode> parse_block_stmt() {
@@ -3619,21 +3662,61 @@ struct Parser {
                             span(kw.range.offset, end)}});
                 }
                 // Not for...in or for...of — reconstruct a var_decl init and fall through to ForStatement.
-                // Build a VariableDeclaration StmtNode manually.
-                std::optional<ExprNode> var_init;
-                SourceRange decl_end = id_tok.range;
-                if (cur.kind == TokenKind::Eq) {
-                    advance();  // 消费 =
-                    auto init_expr = parse_expr(0);
-                    if (!init_expr.ok()) return ParseResult<StmtNode>::Err(init_expr.error());
-                    decl_end = expr_range(init_expr.value());
-                    var_init = std::move(init_expr.value());
+                // Support multiple comma-separated declarators: for (var i = 0, j = 1; ...)
+                struct ForDeclarator {
+                    std::string name;
+                    Token name_tok2;
+                    std::optional<ExprNode> init;
+                };
+                std::vector<ForDeclarator> for_decls;
+                // First declarator (binding_name already consumed)
+                {
+                    ForDeclarator d;
+                    d.name = std::move(binding_name);
+                    d.name_tok2 = id_tok;
+                    if (cur.kind == TokenKind::Eq) {
+                        advance();
+                        auto init_expr = parse_expr(1);
+                        if (!init_expr.ok()) return ParseResult<StmtNode>::Err(init_expr.error());
+                        d.init = std::move(init_expr.value());
+                    }
+                    for_decls.push_back(std::move(d));
+                }
+                // Additional declarators after comma
+                while (cur.kind == TokenKind::Comma) {
+                    advance();  // consume ','
+                    if (cur.kind != TokenKind::Ident) break;
+                    ForDeclarator d;
+                    d.name = std::string{token_text(cur)};
+                    d.name_tok2 = cur;
+                    advance();
+                    if (cur.kind == TokenKind::Eq) {
+                        advance();
+                        auto init_expr = parse_expr(1);
+                        if (!init_expr.ok()) return ParseResult<StmtNode>::Err(init_expr.error());
+                        d.init = std::move(init_expr.value());
+                    }
+                    for_decls.push_back(std::move(d));
                 }
                 auto semi1 = expect(TokenKind::Semicolon);
                 if (!semi1.ok()) return ParseResult<StmtNode>::Err(semi1.error());
-                SourceRange decl_range = span(kw_tok.range.offset, range_end(decl_end));
-                auto init_node = std::make_unique<StmtNode>(StmtNode{VariableDeclaration{
-                        var_kind, std::move(binding_name), std::move(var_init), decl_range}});
+                std::unique_ptr<StmtNode> init_node;
+                if (for_decls.size() == 1) {
+                    auto& d = for_decls[0];
+                    SourceRange decl_end = d.init.has_value() ? expr_range(*d.init) : d.name_tok2.range;
+                    SourceRange decl_range = span(kw_tok.range.offset, range_end(decl_end));
+                    init_node = std::make_unique<StmtNode>(StmtNode{VariableDeclaration{
+                            var_kind, std::move(d.name), std::move(d.init), decl_range}});
+                } else {
+                    std::vector<StmtNode> for_stmts;
+                    for (auto& d : for_decls) {
+                        SourceRange dr = d.init.has_value() ? expr_range(*d.init) : d.name_tok2.range;
+                        for_stmts.push_back(StmtNode{VariableDeclaration{
+                                var_kind, std::move(d.name), std::move(d.init), dr}});
+                    }
+                    init_node = std::make_unique<StmtNode>(StmtNode{
+                        BlockStatement{std::move(for_stmts), kw_tok.range}});
+                }
 
                 // test
                 std::optional<ExprNode> test;
