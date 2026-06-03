@@ -4267,6 +4267,12 @@ struct Parser {
             }
         }
         switch (cur.kind) {
+            case TokenKind::Semicolon: {
+                // 空语句：直接消费 ;，返回空块（no-op）
+                Token semi_tok = cur;
+                advance();
+                return ParseResult<StmtNode>::Ok(StmtNode{BlockStatement{{}, semi_tok.range}});
+            }
             case TokenKind::KwLet:
             case TokenKind::KwConst:
             case TokenKind::KwVar:
