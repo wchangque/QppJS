@@ -2090,6 +2090,27 @@ void Interpreter::init_runtime() {
                                                   Value::object(ObjectPtr(array_iter_fn)));
     }
 
+    // Array.prototype.toString: equivalent to join(",")
+    {
+        auto tostring_fn = RcPtr<JSFunction>::make();
+        tostring_fn->set_name(std::string("toString"));
+        tostring_fn->set_native_fn([](Value this_val, std::vector<Value>, bool) -> EvalResult {
+            if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kArray)
+                return EvalResult::ok(Value::string("[object Array]"));
+            auto* arr = static_cast<JSObject*>(this_val.as_object_raw());
+            std::string result;
+            uint32_t len = arr->array_length_;
+            for (uint32_t i = 0; i < len; i++) {
+                if (i > 0) result += ",";
+                auto it = arr->elements_.find(i);
+                if (it != arr->elements_.end() && !it->second.is_null() && !it->second.is_undefined())
+                    result += to_string_val(it->second);
+            }
+            return EvalResult::ok(Value::string(result));
+        });
+        array_prototype_->set_property("toString", Value::object(ObjectPtr(tostring_fn)));
+    }
+
     // Build Array constructor
     auto array_constructor = RcPtr<JSFunction>::make();
     array_constructor->set_name(std::string("Array"));
