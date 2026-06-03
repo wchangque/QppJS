@@ -6511,6 +6511,112 @@ void Interpreter::init_runtime() {
         global_env_->set("eval", Value::object(ObjectPtr(eval_fn)));
     }
 
+    // ---- Reflect ----
+    {
+        auto reflect_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(reflect_obj.get());
+        reflect_obj->set_proto(object_prototype_);
+
+        // Reflect.apply(target, thisArg, argsList)
+        {
+            auto fn = RcPtr<JSFunction>::make(); fn->set_name(std::string("apply"));
+            fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+                if (args.size() < 1) { pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Reflect.apply: target required"); return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel)); }
+                Value this_arg = args.size() > 1 ? args[1] : Value::undefined();
+                std::vector<Value> call_args;
+                if (args.size() > 2 && args[2].is_object()) {
+                    auto* raw = args[2].as_object_raw();
+                    if (raw->object_kind() == ObjectKind::kArray) {
+                        auto* arr = static_cast<JSObject*>(raw);
+                        for (uint32_t i = 0; i < arr->array_length_; i++) {
+                            auto it = arr->elements_.find(i);
+                            call_args.push_back(it != arr->elements_.end() ? it->second : Value::undefined());
+                        }
+                    }
+                }
+                return call_function_val(args[0], this_arg, call_args);
+            });
+            reflect_obj->set_property("apply", Value::object(ObjectPtr(fn)));
+        }
+        // Reflect.has(obj, key) - like in operator
+        {
+            auto fn = RcPtr<JSFunction>::make(); fn->set_name(std::string("has"));
+            fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+                if (args.size() < 2 || !args[0].is_object()) { pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Reflect.has: object required"); return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel)); }
+                std::string key = to_string_val(args[1]);
+                auto* raw = args[0].as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    return EvalResult::ok(Value::boolean(obj->has_property(key)));
+                }
+                return EvalResult::ok(Value::boolean(false));
+            });
+            reflect_obj->set_property("has", Value::object(ObjectPtr(fn)));
+        }
+        // Reflect.ownKeys(obj) - getOwnPropertyNames + getOwnPropertySymbols
+        {
+            auto fn = RcPtr<JSFunction>::make(); fn->set_name(std::string("ownKeys"));
+            fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+                auto arr = RcPtr<JSObject>::make(ObjectKind::kArray); gc_heap_.Register(arr.get());
+                arr->set_proto(array_prototype_);
+                if (!args.empty() && args[0].is_object()) {
+                    auto* raw = args[0].as_object_raw();
+                    if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                        auto* obj = static_cast<JSObject*>(raw);
+                        auto all = obj->own_all_string_keys();
+                        for (uint32_t i = 0; i < all.size(); i++) {
+                            arr->elements_[i] = Value::string(all[i]);
+                            arr->array_length_ = i + 1;
+                        }
+                    }
+                }
+                return EvalResult::ok(Value::object(ObjectPtr(arr)));
+            });
+            reflect_obj->set_property("ownKeys", Value::object(ObjectPtr(fn)));
+        }
+        // Reflect.getPrototypeOf = Object.getPrototypeOf
+        reflect_obj->set_property("getPrototypeOf", object_constructor_->get_property("getPrototypeOf"));
+        // Reflect.setPrototypeOf = Object.setPrototypeOf
+        reflect_obj->set_property("setPrototypeOf", object_constructor_->get_property("setPrototypeOf"));
+        // Reflect.preventExtensions = Object.preventExtensions
+        reflect_obj->set_property("preventExtensions", object_constructor_->get_property("preventExtensions"));
+        // Reflect.getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor
+        reflect_obj->set_property("getOwnPropertyDescriptor", object_constructor_->get_property("getOwnPropertyDescriptor"));
+        // Reflect.defineProperty = Object.defineProperty
+        reflect_obj->set_property("defineProperty", object_constructor_->get_property("defineProperty"));
+        // Reflect.deleteProperty(obj, key) - like delete obj[key]
+        {
+            auto fn = RcPtr<JSFunction>::make(); fn->set_name(std::string("deleteProperty"));
+            fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+                if (args.size() < 2 || !args[0].is_object()) return EvalResult::ok(Value::boolean(false));
+                std::string key = to_string_val(args[1]);
+                auto* raw = args[0].as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    return EvalResult::ok(Value::boolean(obj->delete_property(key)));
+                }
+                return EvalResult::ok(Value::boolean(true));
+            });
+            reflect_obj->set_property("deleteProperty", Value::object(ObjectPtr(fn)));
+        }
+        // Reflect.isExtensible(obj)
+        {
+            auto fn = RcPtr<JSFunction>::make(); fn->set_name(std::string("isExtensible"));
+            fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+                if (args.empty() || !args[0].is_object()) return EvalResult::ok(Value::boolean(false));
+                auto* raw = args[0].as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                    auto* obj_ext = static_cast<JSObject*>(raw);
+                    return EvalResult::ok(Value::boolean(obj_ext->extensible()));
+                }
+                return EvalResult::ok(Value::boolean(true));
+            });
+            reflect_obj->set_property("isExtensible", Value::object(ObjectPtr(fn)));
+        }
+        global_env_->define_initialized("Reflect");
+        global_env_->set("Reflect", Value::object(ObjectPtr(reflect_obj)));
+    }
+
     // Register the global environment with GcHeap so user-created closures reachable
     // from it are treated as roots and not swept.
     gc_heap_.Register(global_env_.get());
