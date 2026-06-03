@@ -431,20 +431,46 @@ void Interpreter::init_runtime() {
         fn->set_native_fn([this](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
             if (this_val.is_null()) return EvalResult::ok(Value::string("[object Null]"));
             if (this_val.is_undefined()) return EvalResult::ok(Value::string("[object Undefined]"));
-            // Check [Symbol.toStringTag]
+            std::string tag;
             if (this_val.is_object()) {
                 RcObject* raw = this_val.as_object_raw();
-                if (raw && raw->object_kind() != ObjectKind::kFunction) {
-                    auto* obj = static_cast<JSObject*>(raw);
-                    const JSObject::SymbolPropertyEntry* tag_entry =
-                        obj->find_symbol_entry(symbol_table_.well_known_to_string_tag);
-                    if (tag_entry && tag_entry->value.is_string()) {
-                        return EvalResult::ok(Value::string(
-                            "[object " + tag_entry->value.as_string() + "]"));
+                if (raw) {
+                    ObjectKind kind = raw->object_kind();
+                    if (kind == ObjectKind::kFunction) {
+                        tag = "Function";
+                    } else {
+                        auto* obj = static_cast<JSObject*>(raw);
+                        // Check [Symbol.toStringTag] first
+                        const JSObject::SymbolPropertyEntry* tag_entry =
+                            obj->find_symbol_entry(symbol_table_.well_known_to_string_tag);
+                        if (tag_entry && tag_entry->value.is_string()) {
+                            return EvalResult::ok(Value::string(
+                                "[object " + tag_entry->value.as_string() + "]"));
+                        }
+                        if (kind == ObjectKind::kArray) tag = "Array";
+                        else if (kind == ObjectKind::kRegExp) tag = "RegExp";
+                        else if (kind == ObjectKind::kPromise) tag = "Promise";
+                        else if (kind == ObjectKind::kMap) tag = "Map";
+                        else if (kind == ObjectKind::kSet) tag = "Set";
+                        else if (kind == ObjectKind::kWeakMap) tag = "WeakMap";
+                        else if (kind == ObjectKind::kWeakSet) tag = "WeakSet";
+                        else if (kind == ObjectKind::kStringObject) tag = "String";
+                        else if (kind == ObjectKind::kBooleanObject) tag = "Boolean";
+                        else tag = "Object";
                     }
+                } else {
+                    tag = "Object";
                 }
+            } else if (this_val.is_number()) {
+                tag = "Number";
+            } else if (this_val.is_string()) {
+                tag = "String";
+            } else if (this_val.is_bool()) {
+                tag = "Boolean";
+            } else {
+                tag = "Object";
             }
-            return EvalResult::ok(Value::string("[object Object]"));
+            return EvalResult::ok(Value::string("[object " + tag + "]"));
         });
         gc_heap_.Register(fn.get());
         object_prototype_->define_builtin_property("toString", Value::object(ObjectPtr(fn)));
@@ -2246,6 +2272,9 @@ void Interpreter::init_runtime() {
         return EvalResult::ok(Value::object(ObjectPtr(arr)));
     });
 
+    array_prototype_->set_property("constructor", Value::object(ObjectPtr(array_constructor)));
+
+    gc_heap_.Register(array_constructor.get());
     global_env_->define_initialized("Array");
     global_env_->set("Array", Value::object(ObjectPtr(array_constructor)));
 
@@ -2734,6 +2763,28 @@ void Interpreter::init_runtime() {
     });
     gc_heap_.Register(object_has_own_fn.get());
 
+    // Object.getOwnPropertySymbols(obj)
+    auto get_own_prop_symbols_fn = RcPtr<JSFunction>::make();
+    get_own_prop_symbols_fn->set_name(std::string("getOwnPropertySymbols"));
+    get_own_prop_symbols_fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+        auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+        gc_heap_.Register(arr.get());
+        arr->set_proto(array_prototype_);
+        if (!args.empty() && args[0].is_object()) {
+            RcObject* raw = args[0].as_object_raw();
+            if (raw->object_kind() != ObjectKind::kFunction) {
+                auto* obj = static_cast<JSObject*>(raw);
+                auto sym_ids = obj->own_symbol_ids();
+                for (uint32_t i = 0; i < static_cast<uint32_t>(sym_ids.size()); ++i) {
+                    arr->elements_[i] = Value::symbol(sym_ids[i]);
+                }
+                arr->array_length_ = static_cast<uint32_t>(sym_ids.size());
+            }
+        }
+        return EvalResult::ok(Value::object(ObjectPtr(arr)));
+    });
+    gc_heap_.Register(get_own_prop_symbols_fn.get());
+
     object_constructor_->set_property("keys", Value::object(ObjectPtr(keys_fn)));
     object_constructor_->set_property("assign", Value::object(ObjectPtr(assign_fn)));
     object_constructor_->set_property("create", Value::object(ObjectPtr(create_fn)));
@@ -2748,6 +2799,7 @@ void Interpreter::init_runtime() {
     object_constructor_->set_property("is", Value::object(ObjectPtr(object_is_fn)));
     object_constructor_->set_property("setPrototypeOf", Value::object(ObjectPtr(object_set_proto_fn)));
     object_constructor_->set_property("hasOwn", Value::object(ObjectPtr(object_has_own_fn)));
+    object_constructor_->set_property("getOwnPropertySymbols", Value::object(ObjectPtr(get_own_prop_symbols_fn)));
 
     global_env_->define_initialized("Object");
     global_env_->set("Object", Value::object(ObjectPtr(object_constructor_)));
@@ -4219,6 +4271,44 @@ void Interpreter::init_runtime() {
     gc_heap_.Register(str_from_char_code_fn.get());
     string_constructor_->set_property("fromCharCode", Value::object(ObjectPtr(str_from_char_code_fn)));
 
+    // String.fromCodePoint(...codePoints) — encodes each code point as UTF-8
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("fromCodePoint"));
+        fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+            std::string result;
+            for (auto& arg : args) {
+                double n = to_number_double(arg);
+                double trunc_n = std::trunc(n);
+                if (n != trunc_n || trunc_n < 0.0 || trunc_n > 0x10FFFF) {
+                    pending_throw_ = make_error_value(NativeErrorType::kRangeError,
+                        "Invalid code point");
+                    return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                }
+                uint32_t cp = static_cast<uint32_t>(trunc_n);
+                if (cp < 0x80) {
+                    result += static_cast<char>(cp);
+                } else if (cp < 0x800) {
+                    result += static_cast<char>(0xC0 | (cp >> 6));
+                    result += static_cast<char>(0x80 | (cp & 0x3F));
+                } else if (cp < 0x10000) {
+                    result += static_cast<char>(0xE0 | (cp >> 12));
+                    result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                    result += static_cast<char>(0x80 | (cp & 0x3F));
+                } else {
+                    // Encode as UTF-8 4-byte sequence (SMP)
+                    result += static_cast<char>(0xF0 | (cp >> 18));
+                    result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                    result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                    result += static_cast<char>(0x80 | (cp & 0x3F));
+                }
+            }
+            return EvalResult::ok(Value::string(result));
+        });
+        gc_heap_.Register(fn.get());
+        string_constructor_->set_property("fromCodePoint", Value::object(ObjectPtr(fn)));
+    }
+
     gc_heap_.Register(string_prototype_.get());
     gc_heap_.Register(string_constructor_.get());
     global_env_->define_initialized("String");
@@ -5075,6 +5165,102 @@ void Interpreter::init_runtime() {
     gc_heap_.Register(string_match_all_fn.get());
     if (string_prototype_) {
         string_prototype_->set_property("matchAll", Value::object(ObjectPtr(string_match_all_fn)));
+    }
+
+    // ---- String.prototype.charCodeAt ----
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("charCodeAt"));
+        fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            Value sv = string_this_value(this_val);
+            if (sv.is_undefined()) return EvalResult::ok(Value::number(std::numeric_limits<double>::quiet_NaN()));
+            std::string_view s = sv.js_string_raw()->sv();
+            double idx_d = args.empty() ? 0.0 : to_number_double(args[0]);
+            int32_t idx = static_cast<int32_t>(std::isfinite(idx_d) ? std::trunc(idx_d) : 0.0);
+            // idx is a UTF-16 code unit index
+            int32_t len = utf8_cp_len(sv.js_string_raw());
+            if (idx < 0 || idx >= len) {
+                return EvalResult::ok(Value::number(std::numeric_limits<double>::quiet_NaN()));
+            }
+            size_t byte_pos = utf8_cu_to_byte(s, idx);
+            unsigned char c = static_cast<unsigned char>(s[byte_pos]);
+            uint16_t code_unit;
+            if (c < 0x80) {
+                code_unit = c;
+            } else if (c < 0xE0) {
+                code_unit = static_cast<uint16_t>((c & 0x1F) << 6 | (static_cast<unsigned char>(s[byte_pos + 1]) & 0x3F));
+            } else if (c < 0xF0) {
+                code_unit = static_cast<uint16_t>((c & 0x0F) << 12 |
+                    (static_cast<unsigned char>(s[byte_pos + 1]) & 0x3F) << 6 |
+                    (static_cast<unsigned char>(s[byte_pos + 2]) & 0x3F));
+            } else {
+                // SMP: 4-byte UTF-8 → surrogate pair. Return high surrogate.
+                uint32_t cp = ((c & 0x07u) << 18) |
+                    ((static_cast<unsigned char>(s[byte_pos + 1]) & 0x3Fu) << 12) |
+                    ((static_cast<unsigned char>(s[byte_pos + 2]) & 0x3Fu) << 6) |
+                    (static_cast<unsigned char>(s[byte_pos + 3]) & 0x3Fu);
+                cp -= 0x10000u;
+                code_unit = static_cast<uint16_t>(0xD800u + (cp >> 10));
+            }
+            return EvalResult::ok(Value::number(static_cast<double>(code_unit)));
+        });
+        gc_heap_.Register(fn.get());
+        if (string_prototype_) string_prototype_->set_property("charCodeAt", Value::object(ObjectPtr(fn)));
+    }
+
+    // ---- String.prototype.charAt ----
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("charAt"));
+        fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            Value sv = string_this_value(this_val);
+            if (sv.is_undefined()) return EvalResult::ok(Value::string(""));
+            std::string_view s = sv.js_string_raw()->sv();
+            double idx_d = args.empty() ? 0.0 : to_number_double(args[0]);
+            int32_t idx = static_cast<int32_t>(std::isfinite(idx_d) ? std::trunc(idx_d) : 0.0);
+            int32_t len = utf8_cp_len(sv.js_string_raw());
+            if (idx < 0 || idx >= len) {
+                return EvalResult::ok(Value::string(""));
+            }
+            return EvalResult::ok(Value::string(utf8_substr(s, idx, idx + 1)));
+        });
+        gc_heap_.Register(fn.get());
+        if (string_prototype_) string_prototype_->set_property("charAt", Value::object(ObjectPtr(fn)));
+    }
+
+    // ---- String.prototype.codePointAt ----
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("codePointAt"));
+        fn->set_native_fn([](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            Value sv = string_this_value(this_val);
+            if (sv.is_undefined()) return EvalResult::ok(Value::undefined());
+            std::string_view s = sv.js_string_raw()->sv();
+            double idx_d = args.empty() ? 0.0 : to_number_double(args[0]);
+            int32_t idx = static_cast<int32_t>(std::isfinite(idx_d) ? std::trunc(idx_d) : 0.0);
+            int32_t len = utf8_cp_len(sv.js_string_raw());
+            if (idx < 0 || idx >= len) return EvalResult::ok(Value::undefined());
+            size_t byte_pos = utf8_cu_to_byte(s, idx);
+            unsigned char c = static_cast<unsigned char>(s[byte_pos]);
+            uint32_t cp;
+            if (c < 0x80) {
+                cp = c;
+            } else if (c < 0xE0) {
+                cp = static_cast<uint32_t>((c & 0x1F) << 6 | (static_cast<unsigned char>(s[byte_pos + 1]) & 0x3F));
+            } else if (c < 0xF0) {
+                cp = static_cast<uint32_t>((c & 0x0F) << 12 |
+                    (static_cast<unsigned char>(s[byte_pos + 1]) & 0x3F) << 6 |
+                    (static_cast<unsigned char>(s[byte_pos + 2]) & 0x3F));
+            } else {
+                cp = ((c & 0x07u) << 18) |
+                    ((static_cast<unsigned char>(s[byte_pos + 1]) & 0x3Fu) << 12) |
+                    ((static_cast<unsigned char>(s[byte_pos + 2]) & 0x3Fu) << 6) |
+                    (static_cast<unsigned char>(s[byte_pos + 3]) & 0x3Fu);
+            }
+            return EvalResult::ok(Value::number(static_cast<double>(cp)));
+        });
+        gc_heap_.Register(fn.get());
+        if (string_prototype_) string_prototype_->set_property("codePointAt", Value::object(ObjectPtr(fn)));
     }
 
     // ---- Symbol ----

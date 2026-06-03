@@ -979,15 +979,14 @@ TEST(ComputedProperty, CP47_VM_MultipleSymbolKeysIndependent) {
 // ============================================================
 
 TEST(ComputedProperty, CP48_Interp_GetOwnPropertySymbolsNotImplemented) {
-    // Object.getOwnPropertySymbols 在当前版本未实现
-    // 确认其为 undefined，回归测试：实现后此测试应更新为 "function"
+    // Object.getOwnPropertySymbols 已实现（misc_fixes_test MF-07）
     auto v = interp_ok("typeof Object.getOwnPropertySymbols");
-    EXPECT_EQ(v.as_string(), "undefined");
+    EXPECT_EQ(v.as_string(), "function");
 }
 
 TEST(ComputedProperty, CP48_VM_GetOwnPropertySymbolsNotImplemented) {
     auto v = vm_ok("typeof Object.getOwnPropertySymbols");
-    EXPECT_EQ(v.as_string(), "undefined");
+    EXPECT_EQ(v.as_string(), "function");
 }
 
 // ============================================================

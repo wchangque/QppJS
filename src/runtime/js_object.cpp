@@ -595,6 +595,17 @@ bool JSObject::has_own_symbol(uint64_t symbol_id) const {
     return symbol_index_->count(symbol_id) > 0;
 }
 
+std::vector<uint64_t> JSObject::own_symbol_ids() const {
+    std::vector<uint64_t> result;
+    if (symbol_props_) {
+        result.reserve(symbol_props_->size());
+        for (const auto& entry : *symbol_props_) {
+            result.push_back(entry.symbol_id);
+        }
+    }
+    return result;
+}
+
 const JSObject::SymbolPropertyEntry* JSObject::find_symbol_entry(uint64_t symbol_id) const {
     const JSObject* cur = this;
     while (cur != nullptr) {

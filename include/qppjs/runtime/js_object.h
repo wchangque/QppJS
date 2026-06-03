@@ -108,6 +108,8 @@ public:
     EvalResult define_property_by_symbol(uint64_t symbol_id, const PropDesc& desc);
     // Traverse prototype chain and return the SymbolPropertyEntry for symbol_id, or nullptr.
     const SymbolPropertyEntry* find_symbol_entry(uint64_t symbol_id) const;
+    // Return all own symbol property ids (for Object.getOwnPropertySymbols).
+    std::vector<uint64_t> own_symbol_ids() const;
 
     // Only used by kArray objects — sparse storage + explicit length
     std::unordered_map<uint32_t, Value> elements_;
