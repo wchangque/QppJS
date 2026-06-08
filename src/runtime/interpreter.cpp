@@ -60,7 +60,23 @@ static double to_number_double(const Value& v) {
         if (end == s.c_str() || *end != '\0') return std::numeric_limits<double>::quiet_NaN();
         return r;
     }
-    case ValueKind::Object:  return std::numeric_limits<double>::quiet_NaN();
+    case ValueKind::Object: {
+        // ToPrimitive: kStringObject/kBooleanObject 快路径
+        RcObject* raw = v.as_object_raw();
+        if (raw != nullptr) {
+            if (raw->object_kind() == ObjectKind::kStringObject) {
+                auto* obj = static_cast<JSObject*>(raw);
+                Value wrapped = obj->wrapped_value();
+                if (wrapped.is_string()) return to_number_double(wrapped);
+            }
+            if (raw->object_kind() == ObjectKind::kBooleanObject) {
+                auto* obj = static_cast<JSObject*>(raw);
+                Value wrapped = obj->wrapped_value();
+                if (wrapped.is_bool()) return wrapped.as_bool() ? 1.0 : 0.0;
+            }
+        }
+        return std::numeric_limits<double>::quiet_NaN();
+    }
     case ValueKind::Symbol:  return std::numeric_limits<double>::quiet_NaN();
     }
     return std::numeric_limits<double>::quiet_NaN();

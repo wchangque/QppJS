@@ -80,8 +80,27 @@ EvalResult VM::to_number(const Value& v) {
         }
         return EvalResult::ok(Value::number(result));
     }
-    case ValueKind::Object:
+    case ValueKind::Object: {
+        // ToPrimitive(obj, "number"): 处理 wrapper 对象快路径
+        RcObject* raw_obj = v.as_object_raw();
+        if (raw_obj != nullptr) {
+            // kStringObject: valueOf 返回包装的字符串
+            if (raw_obj->object_kind() == ObjectKind::kStringObject) {
+                auto* js_obj = static_cast<JSObject*>(raw_obj);
+                Value wrapped = js_obj->wrapped_value();
+                if (wrapped.is_string()) return to_number(wrapped);
+            }
+            // kBooleanObject: valueOf 返回包装的布尔值
+            if (raw_obj->object_kind() == ObjectKind::kBooleanObject) {
+                auto* js_obj = static_cast<JSObject*>(raw_obj);
+                Value wrapped = js_obj->wrapped_value();
+                if (wrapped.is_bool()) {
+                    return EvalResult::ok(Value::number(wrapped.as_bool() ? 1.0 : 0.0));
+                }
+            }
+        }
         return EvalResult::ok(Value::number(std::numeric_limits<double>::quiet_NaN()));
+    }
     case ValueKind::Symbol:
         return EvalResult::err(Error(ErrorKind::Runtime, "TypeError: Cannot convert a Symbol value to a number"));
     }
