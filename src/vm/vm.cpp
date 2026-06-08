@@ -9412,6 +9412,25 @@ EvalResult VM::run(size_t exit_depth) {
                 stack.push_back(obj->get_property(to_string_val(key_val)));
                 break;
             }
+            if (raw_elem->object_kind() == ObjectKind::kFunction) {
+                // Function with string key: check own properties (static accessor/method support)
+                auto* fn_elem = static_cast<JSFunction*>(raw_elem);
+                std::string fn_key = to_string_val(key_val);
+                Value own_val = fn_elem->get_property(fn_key);
+                if (!own_val.is_undefined()) {
+                    stack.push_back(std::move(own_val));
+                } else if (fn_key == "prototype") {
+                    const auto& proto = fn_elem->prototype_obj();
+                    stack.push_back(proto ? Value::object(ObjectPtr(proto)) : Value::undefined());
+                } else if (function_prototype_) {
+                    // Also check own_properties_ for accessor (static getter/setter)
+                    // fn_elem->get_property already handles this; try accessor via own_properties_
+                    stack.push_back(function_prototype_->get_property(fn_key));
+                } else {
+                    stack.push_back(Value::undefined());
+                }
+                break;
+            }
             if (raw_elem->object_kind() != ObjectKind::kOrdinary &&
                 raw_elem->object_kind() != ObjectKind::kGenerator &&
                 raw_elem->object_kind() != ObjectKind::kMap && raw_elem->object_kind() != ObjectKind::kSet &&
@@ -9420,8 +9439,47 @@ EvalResult VM::run(size_t exit_depth) {
                     "Cannot read element of non-JSObject");
                 continue;
             }
-            auto* obj = static_cast<JSObject*>(raw_elem);
-            stack.push_back(obj->get_property(to_string_val(key_val)));
+            {
+                auto* obj = static_cast<JSObject*>(raw_elem);
+                std::string elem_key = to_string_val(key_val);
+                // Check prototype chain for accessor getter (mirrors kGetProp behavior)
+                Value getter_to_call;
+                bool found_accessor = false;
+                const JSObject* cur_elem = obj;
+                while (cur_elem != nullptr) {
+                    const JSObject::PropertyEntry* entry = cur_elem->get_own_entry(elem_key);
+                    if (entry != nullptr && (entry->flags & kPropIsAccessor)) {
+                        found_accessor = true;
+                        if (!entry->getter.is_undefined() && !entry->getter.is_null()) {
+                            getter_to_call = entry->getter;
+                        }
+                        break;
+                    }
+                    if (entry != nullptr) break;
+                    cur_elem = cur_elem->proto().get();
+                }
+                if (found_accessor) {
+                    if (getter_to_call.is_undefined()) {
+                        call_stack_.back().stack.push_back(Value::undefined());
+                    } else {
+                        auto getter_res = call_function_val(getter_to_call, obj_val, {});
+                        CallFrame& cur_frame = call_stack_.back();
+                        if (!getter_res.is_ok()) {
+                            const std::string& emsg = getter_res.error().message();
+                            if (emsg == "__qppjs_pending_throw__" && native_pending_throw_.has_value()) {
+                                cur_frame.pending_throw = std::move(*native_pending_throw_);
+                                native_pending_throw_ = std::nullopt;
+                            } else {
+                                cur_frame.pending_throw = make_error_value(NativeErrorType::kTypeError, emsg);
+                            }
+                            continue;
+                        }
+                        cur_frame.stack.push_back(getter_res.value());
+                    }
+                } else {
+                    stack.push_back(obj->get_property(elem_key));
+                }
+            }
             break;
         }
 
@@ -9499,14 +9557,70 @@ EvalResult VM::run(size_t exit_depth) {
                 stack.push_back(std::move(val));
                 break;
             }
-            if (raw_setelem->object_kind() != ObjectKind::kOrdinary) {
+            if (raw_setelem->object_kind() != ObjectKind::kOrdinary &&
+                raw_setelem->object_kind() != ObjectKind::kGenerator &&
+                raw_setelem->object_kind() != ObjectKind::kMap && raw_setelem->object_kind() != ObjectKind::kSet &&
+                raw_setelem->object_kind() != ObjectKind::kWeakMap && raw_setelem->object_kind() != ObjectKind::kWeakSet) {
                 frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
                     "Cannot set element on non-JSObject");
                 continue;
             }
-            auto* obj = static_cast<JSObject*>(raw_setelem);
-            obj->set_property(to_string_val(key_val), val);
-            stack.push_back(std::move(val));
+            {
+                auto* obj = static_cast<JSObject*>(raw_setelem);
+                std::string setelem_key = to_string_val(key_val);
+                // Check prototype chain for accessor setter (mirrors kSetProp behavior)
+                Value setter_to_call;
+                bool found_accessor = false;
+                bool no_setter = false;
+                {
+                    const JSObject* cur_setelem = obj;
+                    while (cur_setelem != nullptr) {
+                        const JSObject::PropertyEntry* entry = cur_setelem->get_own_entry(setelem_key);
+                        if (entry != nullptr) {
+                            if (entry->flags & kPropIsAccessor) {
+                                found_accessor = true;
+                                if (entry->setter.is_undefined() || entry->setter.is_null()) {
+                                    no_setter = true;
+                                } else {
+                                    setter_to_call = entry->setter;
+                                }
+                            }
+                            break;
+                        }
+                        cur_setelem = cur_setelem->proto().get();
+                    }
+                }
+                if (found_accessor) {
+                    if (no_setter) {
+                        stack.push_back(std::move(val));  // sloppy: ignore
+                    } else {
+                        std::vector<Value> setter_args = {val};
+                        auto setter_res = call_function_val(setter_to_call, obj_val, setter_args);
+                        CallFrame& cur_frame = call_stack_.back();
+                        if (!setter_res.is_ok()) {
+                            const std::string& emsg = setter_res.error().message();
+                            if (emsg == "__qppjs_pending_throw__" && native_pending_throw_.has_value()) {
+                                cur_frame.pending_throw = std::move(*native_pending_throw_);
+                                native_pending_throw_ = std::nullopt;
+                            } else {
+                                cur_frame.pending_throw = make_error_value(NativeErrorType::kTypeError, emsg);
+                            }
+                            continue;
+                        }
+                        cur_frame.stack.push_back(std::move(val));
+                    }
+                } else {
+                    auto set_ex_res = obj->set_property_ex(setelem_key, val);
+                    if (!set_ex_res.is_ok()) {
+                        const std::string& msg = set_ex_res.error().message();
+                        NativeErrorType err_type = NativeErrorType::kRangeError;
+                        if (msg.rfind("TypeError:", 0) == 0) err_type = NativeErrorType::kTypeError;
+                        frame.pending_throw = make_error_value(err_type, strip_error_prefix(msg));
+                        continue;
+                    }
+                    stack.push_back(std::move(val));
+                }
+            }
             break;
         }
 

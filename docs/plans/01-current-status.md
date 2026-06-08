@@ -10,7 +10,7 @@
 | 测试计数 | 4924/4924 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-06-08 |
 | 下一步 | 下一批 test262 候选目标（WeakRef / Proxy 等） |
-| test262 | do-while/可选 catch 绑定/数字分隔符实现后 do-while 82.9%、literals 87.0% |
+| test262 | bracket accessor 修复后 class/accessor-name-inst 90.9%（原 13.6%） |
 
 ## 已知遗留问题
 
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **VM kGetElem/kSetElem bracket accessor 修复**（2026-06-08）：对 kOrdinary/kGenerator/kMap/kSet 等类型对象，bracket 读取（`obj["key"]`）现在正确通过原型链检查 accessor getter 并调用（与 kGetProp 对称）；bracket 赋值（`obj["key"] = val`）现在正确通过原型链检查 accessor setter 并调用（含 no-setter sloppy 静默忽略）；kSetElem 支持的 ObjectKind 白名单扩展（新增 Generator/Map/Set/WeakMap/WeakSet）；kGetElem 新增 kFunction 路径（尝试 `fn->get_property(key)`，再查 prototype，避免"Cannot read element of non-JSObject"错误）。仅修改 `src/vm/vm.cpp`。4924/4924 通过（coverage），0 LSan 泄漏。test262 改善：language/statements/class/accessor-name-inst 13.6%→90.9%（3→20 通过）。
 
 - [x] **do-while 循环 + 可选 catch 绑定 + 数字分隔符**（2026-06-08）：`do { body } while (test)` 完整实现（Interp+VM 对称，break/continue/return/throw 正确传播，labeled break/continue 支持）；ES2019 可选 catch 绑定 `catch {}` 无需参数（`CatchClause.param` 改为 `optional<string>`，无 param 时不创建绑定）；数字分隔符 `1_000_000`（lexer scan_number 各进制扫描循环支持 `_`，`parse_number_text` 剥离 `_` 后再解析）；新增 `tests/unit/dowhile_catch_numsep_test.cpp`（DW-01～DW-08 + OCB-01～OCB-04 + NS-01～NS-06 × Interp+VM = 36 个测试）。4924/4924 通过（coverage），0 LSan 泄漏。test262 改善：do-while 17→29 通过（48.6%→82.9%），literals 431→457 通过（82.1%→87.0%）。
 

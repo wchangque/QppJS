@@ -1238,3 +1238,11 @@
   - `./scripts/coverage.sh --quiet`：4924/4924 通过，0 LSan 泄漏
   - 新增测试：36 个（DW-01～DW-08 + OCB-01～OCB-04 + NS-01～NS-06 × Interp+VM）
   - test262 改善：language/statements/do-while 17→29 通过（48.6%→82.9%），language/literals 431→457 通过（82.1%→87.0%），language/statements/try 改善（可选 catch 绑定支持）
+
+- [x] **VM kGetElem/kSetElem bracket accessor 修复**（2026-06-08）：
+  - **背景**：class 中定义的 getter/setter 通过 bracket 语法访问（`obj["key"]`）时，VM 侧 kGetElem/kSetElem 未检查 accessor，直接走 `get_property`/`set_property`，导致 accessor 不被调用。
+  - **kGetElem 修复**：对 kOrdinary/kGenerator/kMap/kSet 类型对象，bracket 读取路径新增 accessor getter 检查：遍历原型链，若找到 `kPropIsAccessor` 条目则通过 `call_function_val` 调用 getter，实现与 kGetProp 对称（含 `call_stack_.back()` 重取防 realloc 失效）。
+  - **kSetElem 修复**：对相同类型对象，bracket 赋值路径新增 accessor setter 检查：遍历原型链，若找到 accessor 条目则调用 setter（含 no-setter sloppy 模式静默忽略）；kArray 和 kOrdinary-nonarray 共享同一 accessor 检查路径。扩展 kSetElem 支持的 ObjectKind 白名单（新增 kGenerator/kMap/kSet/kWeakMap/kWeakSet），与 kGetElem 一致。
+  - **kGetElem 新增 kFunction 路径**：对 kFunction 对象（如 class constructor），bracket 读取尝试 `fn->get_property(key)`，再检查 prototype 属性，最后查 function_prototype_，避免"Cannot read element of non-JSObject"错误。
+  - **修改文件**：仅 `src/vm/vm.cpp`（kGetElem 和 kSetElem 两个 opcode handler）。
+  - **测试结果**：4924/4924 通过（coverage），0 LSan 泄漏。test262 改善：language/statements/class/accessor-name-inst 13.6%→90.9%（3→20 通过）。
