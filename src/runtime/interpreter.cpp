@@ -565,6 +565,8 @@ void Interpreter::init_runtime() {
         {NativeErrorType::kReferenceError, "ReferenceError"},
         {NativeErrorType::kRangeError,     "RangeError"},
         {NativeErrorType::kSyntaxError,    "SyntaxError"},
+        {NativeErrorType::kEvalError,      "EvalError"},
+        {NativeErrorType::kURIError,       "URIError"},
     };
 
     for (const auto& spec : kSubErrors) {

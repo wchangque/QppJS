@@ -14,6 +14,8 @@ enum class NativeErrorType {
     kReferenceError, // index 2
     kRangeError,     // index 3
     kSyntaxError,    // index 4
+    kEvalError,      // index 5
+    kURIError,       // index 6
     kCount
 };
 

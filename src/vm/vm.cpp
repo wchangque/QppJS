@@ -581,6 +581,8 @@ void VM::init_global_env() {
         {NativeErrorType::kReferenceError, "ReferenceError"},
         {NativeErrorType::kRangeError,     "RangeError"},
         {NativeErrorType::kSyntaxError,    "SyntaxError"},
+        {NativeErrorType::kEvalError,      "EvalError"},
+        {NativeErrorType::kURIError,       "URIError"},
     };
 
     for (const auto& spec : kSubErrors) {
