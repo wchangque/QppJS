@@ -1183,3 +1183,58 @@
 ### 测试结果
 - `./scripts/coverage.sh --quiet`：4344/4344 通过，0 LSan 泄漏
 - 新增测试：112 个（CL-01～CL-55 × Interp+VM）
+
+---
+
+- [x] **do-while 循环 + 可选 catch 绑定（ES2019）+ 数字分隔符（ES2021）**（2026-06-08）：
+
+  ### 背景
+  三个独立但体量较小的语言特性合并实现：do-while 循环（test262 do-while 通过率从 48.6% 提升到 82.9%）、可选 catch 绑定（`catch {}` 无需参数，ES2019）、数字分隔符（`1_000_000`，ES2021，literals 通过率从 82.1% 提升到 87.0%）。
+
+  ### Token/Lexer（token.h + lexer.cpp + token.cpp）
+  - `token.h`：新增 `KwDo` token（在 KwWhile 之后）
+  - `lexer.cpp`：`kKeywords` 添加 `"do" → KwDo`；`scan_number` 各进制扫描循环（十进制/十六进制/八进制/二进制）均支持 `_` 数字分隔符（连续循环 `while (isdigit/isxdigit/isoct/isbin(c) || c == '_')` 同时接受 `_`）
+  - `token.cpp`：`token_kind_name` 添加 `KwDo` case
+
+  ### AST（ast.h）
+  - 新增 `DoWhileStatement` 结构体（`body: unique_ptr<StmtNode>`，`test: unique_ptr<ExprNode>`，`range: SourceRange`）
+  - `CatchClause.param` 从 `std::string` 改为 `std::optional<std::string>`（支持可选 catch 绑定）
+  - `StmtNode` variant 添加 `DoWhileStatement`
+
+  ### Parser（parser.cpp）
+  - 新增 `parse_do_while_stmt()`：解析 `do stmt while (expr);`，末尾分号可选（ASI 兼容）
+  - `stmt_range()` 添加 `DoWhileStatement` 分支
+  - `parse_stmt()` 添加 `KwDo` case 调用 `parse_do_while_stmt()`
+  - `parse_try_stmt()` 修改 catch 参数解析：`catch {` 直接识别（无参数），`catch (e)` 正常解析（有参数）
+  - `parse_number_text()` 在传给 `strtod`/`strtol` 之前剥离所有 `_` 字符（`std::erase_if` 过滤）
+
+  ### AST Dump（ast_dump.cpp）
+  - 添加 `DoWhileStatement` dump（body + test 子树）
+  - `CatchClause` dump 修复为 optional param 输出（有参数时显示参数名，无参数时显示 "(none)"）
+
+  ### Interpreter（interpreter.h + interpreter.cpp）
+  - `interpreter.h` 声明 `eval_do_while_stmt`
+  - `interpreter.cpp` 实现 `eval_do_while_stmt`：body-first 循环，break/continue/return/throw 四路正确传播；labeled break/continue 支持
+  - `eval_stmt` 添加 `DoWhileStatement` 分发
+  - `hoist_vars_stmt` 添加 `DoWhileStatement`/`WhileStatement`/`BlockStatement`/`IfStatement` 递归（修复 do-while 内 var 声明未提升的问题）
+  - `eval_labeled_stmt` 添加 `DoWhileStatement` 分支
+  - `exec_catch` 修改为 optional param：有参数时创建 catch 绑定，无参数时直接执行 catch body
+
+  ### VM Compiler（compiler.h + compiler.cpp）
+  - `compiler.h` 声明 `compile_do_while_stmt`
+  - `compiler.cpp` 实现 `compile_do_while_stmt`：`body_start → body → continue_target → test → kJumpIfTrue(body_start) → break patches` 布局（body 先执行，test 在末尾，kJumpIfTrue 跳回开头）
+  - `compile_stmt` 添加 `DoWhileStatement` 分发
+  - `hoist_vars_scan_stmt` 添加 `DoWhileStatement` 递归
+  - `compile_labeled_stmt` 添加 `DoWhileStatement` 分支
+  - `compile_try_stmt` 两处 catch param 改为 optional：有 param 时 `kDefLet + kInitVar`，无 param 时直接 `kPop`（弹出异常值）
+
+  ### 测试（tests/unit/dowhile_catch_numsep_test.cpp + tests/CMakeLists.txt）
+  - 新增 `tests/unit/dowhile_catch_numsep_test.cpp`，注册到 `tests/CMakeLists.txt`
+  - **DW-01～DW-08 × Interp+VM（16 个）**：do-while 基础执行（至少一次）、条件为 false 时执行一次、多次迭代、break 退出、continue 跳过、嵌套循环、labeled break/continue、var 声明提升
+  - **OCB-01～OCB-04 × Interp+VM（8 个）**：可选 catch 绑定基础（`catch {}` 无参数）、catch body 正常执行、与有参数 catch 混用、finally 与可选 catch 组合
+  - **NS-01～NS-06 × Interp+VM（12 个）**：十进制数字分隔符、十六进制分隔符、二进制分隔符、八进制分隔符、多个分隔符、分隔符在浮点数中
+
+  ### 测试结果
+  - `./scripts/coverage.sh --quiet`：4924/4924 通过，0 LSan 泄漏
+  - 新增测试：36 个（DW-01～DW-08 + OCB-01～OCB-04 + NS-01～NS-06 × Interp+VM）
+  - test262 改善：language/statements/do-while 17→29 通过（48.6%→82.9%），language/literals 431→457 通过（82.1%→87.0%），language/statements/try 改善（可选 catch 绑定支持）

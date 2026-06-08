@@ -7,10 +7,10 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 4888/4888 通过（coverage），0 LSan 泄漏 |
-| 最近更新 | 2026-06-03 |
+| 测试计数 | 4924/4924 通过（coverage），0 LSan 泄漏 |
+| 最近更新 | 2026-06-08 |
 | 下一步 | 下一批 test262 候选目标（WeakRef / Proxy 等） |
-| test262 | language/expressions class fields + private fields 实现后约 24%（expressions 32.4% 基线） |
+| test262 | do-while/可选 catch 绑定/数字分隔符实现后 do-while 82.9%、literals 87.0% |
 
 ## 已知遗留问题
 
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **do-while 循环 + 可选 catch 绑定 + 数字分隔符**（2026-06-08）：`do { body } while (test)` 完整实现（Interp+VM 对称，break/continue/return/throw 正确传播，labeled break/continue 支持）；ES2019 可选 catch 绑定 `catch {}` 无需参数（`CatchClause.param` 改为 `optional<string>`，无 param 时不创建绑定）；数字分隔符 `1_000_000`（lexer scan_number 各进制扫描循环支持 `_`，`parse_number_text` 剥离 `_` 后再解析）；新增 `tests/unit/dowhile_catch_numsep_test.cpp`（DW-01～DW-08 + OCB-01～OCB-04 + NS-01～NS-06 × Interp+VM = 36 个测试）。4924/4924 通过（coverage），0 LSan 泄漏。test262 改善：do-while 17→29 通过（48.6%→82.9%），literals 431→457 通过（82.1%→87.0%）。
 
 - [x] **Object 静态方法补充（freeze/isFrozen/seal/isSealed）**（2026-06-03）：`js_object.h` 新增 `freeze()`（non-extensible + 所有自有数据属性去掉 writable/configurable flag，accessor 属性仅去 configurable）、`is_frozen()`、`seal()`（non-extensible + 去掉所有属性 configurable）、`is_sealed()` 四个内联方法；interpreter.cpp + vm.cpp 各注册 `Object.freeze`/`Object.isFrozen`/`Object.seal`/`Object.isSealed`（kOrdinary/kArray 路径，非对象参数返回 primitive 原值/true，Interp+VM 对称）；新增 `tests/unit/object_misc_test.cpp`（OM-01～OM-15 × Interp+VM = 30 个测试）。4888/4888 通过（coverage），0 LSan 泄漏。
 

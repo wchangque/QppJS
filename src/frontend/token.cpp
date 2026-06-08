@@ -26,6 +26,8 @@ std::string_view token_kind_name(TokenKind kind) {
             return "KwElse";
         case TokenKind::KwWhile:
             return "KwWhile";
+        case TokenKind::KwDo:
+            return "KwDo";
         case TokenKind::KwFor:
             return "KwFor";
         case TokenKind::KwBreak:

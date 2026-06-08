@@ -80,6 +80,7 @@ private:
     void compile_block_stmt(const BlockStatement& stmt);
     void compile_if_stmt(const IfStatement& stmt);
     void compile_while_stmt(const WhileStatement& stmt, std::optional<std::string> label = std::nullopt);
+    void compile_do_while_stmt(const DoWhileStatement& stmt, std::optional<std::string> label = std::nullopt);
     void compile_return_stmt(const ReturnStatement& stmt);
     void compile_function_decl(const FunctionDeclaration& stmt);
     void compile_async_function_decl(const AsyncFunctionDeclaration& stmt);

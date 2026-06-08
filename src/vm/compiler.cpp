@@ -162,6 +162,9 @@ void Compiler::hoist_vars_scan_stmt(const StmtNode& stmt) {
     } else if (std::holds_alternative<WhileStatement>(stmt.v)) {
         const auto& while_stmt = std::get<WhileStatement>(stmt.v);
         if (while_stmt.body) hoist_vars_scan_stmt(*while_stmt.body);
+    } else if (std::holds_alternative<DoWhileStatement>(stmt.v)) {
+        const auto& dw_stmt = std::get<DoWhileStatement>(stmt.v);
+        if (dw_stmt.body) hoist_vars_scan_stmt(*dw_stmt.body);
     } else if (std::holds_alternative<ForStatement>(stmt.v)) {
         const auto& for_stmt = std::get<ForStatement>(stmt.v);
         if (for_stmt.init.has_value()) hoist_vars_scan_stmt(**for_stmt.init);
@@ -552,6 +555,7 @@ void Compiler::compile_stmt(const StmtNode& stmt) {
             [this](const BlockStatement& s) { compile_block_stmt(s); },
             [this](const IfStatement& s) { compile_if_stmt(s); },
             [this](const WhileStatement& s) { compile_while_stmt(s); },
+            [this](const DoWhileStatement& s) { compile_do_while_stmt(s); },
             [this](const ReturnStatement& s) { compile_return_stmt(s); },
             [this](const FunctionDeclaration& s) { compile_function_decl(s); },
             [this](const AsyncFunctionDeclaration& s) { compile_async_function_decl(s); },
@@ -899,6 +903,32 @@ void Compiler::compile_while_stmt(const WhileStatement& stmt, std::optional<std:
 
     size_t after_loop = current_offset();
     patch_jump_to(exit_patch, after_loop);
+    for (size_t p : loop_env_stack_.back().break_patches) {
+        patch_jump_to(p, after_loop);
+    }
+
+    loop_env_stack_.pop_back();
+}
+
+void Compiler::compile_do_while_stmt(const DoWhileStatement& stmt, std::optional<std::string> label) {
+    size_t body_start = current_offset();
+
+    loop_env_stack_.push_back({label, 0, {}, {}, {}, false, false, false, false, finally_info_stack_.size()});
+
+    compile_stmt(*stmt.body);
+
+    // continue target = test evaluation (after body)
+    size_t continue_target = current_offset();
+    loop_env_stack_.back().continue_target = continue_target;
+    for (size_t p : loop_env_stack_.back().continue_patches) {
+        patch_jump_to(p, continue_target);
+    }
+
+    // evaluate test; if true jump back to body_start
+    compile_expr(stmt.test);
+    emit_jump_to(Opcode::kJumpIfTrue, body_start);
+
+    size_t after_loop = current_offset();
     for (size_t p : loop_env_stack_.back().break_patches) {
         patch_jump_to(p, after_loop);
     }
@@ -1942,11 +1972,14 @@ void Compiler::compile_try_stmt(const TryStatement& stmt) {
             finally_info_stack_.push_back(FinallyInfo{});
             emit(Opcode::kPushScope);
             emit(Opcode::kGetException);
-            uint16_t param_idx = add_name(stmt.handler->param);
-            emit(Opcode::kDefLet);
-            emit_u16(param_idx);
-            emit(Opcode::kInitVar);
-            emit_u16(param_idx);
+            // 可选 catch 绑定（ES2019）：无参数时直接 Pop 丢弃异常值
+            if (stmt.handler->param.has_value()) {
+                uint16_t param_idx = add_name(stmt.handler->param.value());
+                emit(Opcode::kDefLet);
+                emit_u16(param_idx);
+                emit(Opcode::kInitVar);
+                emit_u16(param_idx);
+            }
             emit(Opcode::kPop);
             compile_block_stmt(stmt.handler->body);
             emit(Opcode::kPopScope);
@@ -2065,11 +2098,14 @@ void Compiler::compile_try_stmt(const TryStatement& stmt) {
         patch_jump_to(enter_try_pos, catch_label);
         emit(Opcode::kPushScope);
         emit(Opcode::kGetException);
-        uint16_t param_idx = add_name(stmt.handler->param);
-        emit(Opcode::kDefLet);
-        emit_u16(param_idx);
-        emit(Opcode::kInitVar);
-        emit_u16(param_idx);
+        // 可选 catch 绑定（ES2019）：无参数时直接 Pop 丢弃异常值
+        if (stmt.handler->param.has_value()) {
+            uint16_t param_idx = add_name(stmt.handler->param.value());
+            emit(Opcode::kDefLet);
+            emit_u16(param_idx);
+            emit(Opcode::kInitVar);
+            emit_u16(param_idx);
+        }
         emit(Opcode::kPop);
         compile_block_stmt(stmt.handler->body);
         emit(Opcode::kPopScope);
@@ -2184,6 +2220,8 @@ void Compiler::compile_labeled_stmt(const LabeledStatement& stmt) {
         compile_for_of_stmt(std::get<ForOfStatement>(stmt.body->v), stmt.label);
     } else if (std::holds_alternative<WhileStatement>(stmt.body->v)) {
         compile_while_stmt(std::get<WhileStatement>(stmt.body->v), stmt.label);
+    } else if (std::holds_alternative<DoWhileStatement>(stmt.body->v)) {
+        compile_do_while_stmt(std::get<DoWhileStatement>(stmt.body->v), stmt.label);
     } else {
         loop_env_stack_.push_back(LoopEnv{stmt.label, 0, {}, {}, {}, false, false, false, false,
                                           finally_info_stack_.size()});

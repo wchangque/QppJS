@@ -7,7 +7,7 @@ namespace qppjs {
 static const std::unordered_map<std::string_view, TokenKind> kKeywords = {
         {"let", TokenKind::KwLet},         {"const", TokenKind::KwConst},       {"var", TokenKind::KwVar},
         {"if", TokenKind::KwIf},           {"else", TokenKind::KwElse},         {"while", TokenKind::KwWhile},
-        {"for", TokenKind::KwFor},         {"break", TokenKind::KwBreak},       {"continue", TokenKind::KwContinue},
+        {"do", TokenKind::KwDo},           {"for", TokenKind::KwFor},         {"break", TokenKind::KwBreak},       {"continue", TokenKind::KwContinue},
         {"return", TokenKind::KwReturn},   {"function", TokenKind::KwFunction}, {"true", TokenKind::KwTrue},
         {"false", TokenKind::KwFalse},     {"null", TokenKind::KwNull},         {"new", TokenKind::KwNew},
         {"this", TokenKind::KwThis},
@@ -90,7 +90,9 @@ static Token scan_number(LexerState& state, uint32_t start) {
             if (state.pos >= len || !is_hex_digit(src[state.pos])) {
                 return make_invalid();
             }
-            while (state.pos < len && is_hex_digit(src[state.pos])) {
+            // 数字分隔符：_ 后必须跟十六进制数字
+            while (state.pos < len && (is_hex_digit(src[state.pos]) ||
+                   (src[state.pos] == '_' && state.pos + 1 < len && is_hex_digit(src[state.pos + 1])))) {
                 ++state.pos;
             }
             if (state.pos < len && is_ident_start(src[state.pos])) {
@@ -104,7 +106,10 @@ static Token scan_number(LexerState& state, uint32_t start) {
             if (state.pos >= len || (src[state.pos] != '0' && src[state.pos] != '1')) {
                 return make_invalid();
             }
-            while (state.pos < len && (src[state.pos] == '0' || src[state.pos] == '1')) {
+            // 数字分隔符：_ 后必须跟二进制数字
+            while (state.pos < len && (src[state.pos] == '0' || src[state.pos] == '1' ||
+                   (src[state.pos] == '_' && state.pos + 1 < len &&
+                    (src[state.pos + 1] == '0' || src[state.pos + 1] == '1')))) {
                 ++state.pos;
             }
             // 后跟其他数字或字母 -> Invalid
@@ -119,7 +124,10 @@ static Token scan_number(LexerState& state, uint32_t start) {
             if (state.pos >= len || src[state.pos] < '0' || src[state.pos] > '7') {
                 return make_invalid();
             }
-            while (state.pos < len && src[state.pos] >= '0' && src[state.pos] <= '7') {
+            // 数字分隔符：_ 后必须跟八进制数字
+            while (state.pos < len && ((src[state.pos] >= '0' && src[state.pos] <= '7') ||
+                   (src[state.pos] == '_' && state.pos + 1 < len &&
+                    src[state.pos + 1] >= '0' && src[state.pos + 1] <= '7'))) {
                 ++state.pos;
             }
             // 后跟其他数字或字母 -> Invalid
@@ -184,20 +192,24 @@ static Token scan_number(LexerState& state, uint32_t start) {
         return {TokenKind::Number, {start, state.pos - start}};
     }
 
-    // 1-9 开头
-    while (state.pos < len && is_dec_digit(src[state.pos])) {
-        ++state.pos;
-    }
-
-    // 可选小数部分
-    if (state.pos < len && src[state.pos] == '.') {
-        ++state.pos;
-        while (state.pos < len && is_dec_digit(src[state.pos])) {
+    // 辅助：跳过十进制数字（含数字分隔符 _，_ 后必须跟十进制数字）
+    auto scan_dec = [&]() {
+        while (state.pos < len && (is_dec_digit(src[state.pos]) ||
+               (src[state.pos] == '_' && state.pos + 1 < len && is_dec_digit(src[state.pos + 1])))) {
             ++state.pos;
         }
+    };
+
+    // 1-9 开头
+    scan_dec();
+
+    // 可选小数部分（小数点两侧不能有 _）
+    if (state.pos < len && src[state.pos] == '.') {
+        ++state.pos;
+        scan_dec();
     }
 
-    // 可选指数部分
+    // 可选指数部分（e/E 两侧不能有 _）
     if (state.pos < len && (src[state.pos] == 'e' || src[state.pos] == 'E')) {
         ++state.pos;
         if (state.pos < len && (src[state.pos] == '+' || src[state.pos] == '-')) {
@@ -206,9 +218,7 @@ static Token scan_number(LexerState& state, uint32_t start) {
         if (state.pos >= len || !is_dec_digit(src[state.pos])) {
             return make_invalid();
         }
-        while (state.pos < len && is_dec_digit(src[state.pos])) {
-            ++state.pos;
-        }
+        scan_dec();
     }
 
     // 后缀检查：不允许紧跟 ASCII 字母、_ 或 $

@@ -469,6 +469,13 @@ std::string dump_stmt(const StmtNode& node, int indent) {
                            result += ind(indent + 1) + "body:\n";
                            result += dump_stmt(*ws.body, indent + 2);
                        },
+                       [&](const DoWhileStatement& dw) {
+                           result = prefix + "DoWhileStatement\n";
+                           result += ind(indent + 1) + "body:\n";
+                           result += dump_stmt(*dw.body, indent + 2);
+                           result += ind(indent + 1) + "test:\n";
+                           result += dump_expr(dw.test, indent + 2);
+                       },
                        [&](const ReturnStatement& rs) {
                            result = prefix + "ReturnStatement\n";
                            if (rs.argument.has_value()) {
@@ -518,7 +525,9 @@ std::string dump_stmt(const StmtNode& node, int indent) {
                                result += dump_stmt(s, indent + 3);
                            }
                            if (trys.handler.has_value()) {
-                               result += ind(indent + 1) + "catch (" + trys.handler->param + "):\n";
+                               result += ind(indent + 1) + "catch ("
+                                       + (trys.handler->param.has_value() ? trys.handler->param.value() : "")
+                                       + "):\n";
                                result += ind(indent + 2) + "BlockStatement\n";
                                for (const auto& s : trys.handler->body.body) {
                                    result += dump_stmt(s, indent + 3);

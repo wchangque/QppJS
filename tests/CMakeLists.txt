@@ -69,6 +69,7 @@ add_executable(qppjs_unit_tests
     unit/array_methods_test.cpp
     unit/misc_fixes_test.cpp
     unit/object_misc_test.cpp
+    unit/dowhile_catch_numsep_test.cpp
     # unit/global_stubs_test.cpp  # FIXME: pre-existing compilation error (is_err not a member of EvalResult)
 )
 

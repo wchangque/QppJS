@@ -51,6 +51,8 @@ private:
     StmtResult eval_if_stmt(const IfStatement& stmt);
     StmtResult eval_while_stmt(const WhileStatement& stmt,
                                std::optional<std::string> label = std::nullopt);
+    StmtResult eval_do_while_stmt(const DoWhileStatement& stmt,
+                                  std::optional<std::string> label = std::nullopt);
     StmtResult eval_return_stmt(const ReturnStatement& stmt);
     StmtResult eval_function_decl(const FunctionDeclaration& stmt);
     StmtResult eval_throw_stmt(const ThrowStatement& stmt);

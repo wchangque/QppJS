@@ -475,6 +475,12 @@ struct WhileStatement {
     SourceRange range;
 };
 
+struct DoWhileStatement {
+    std::unique_ptr<StmtNode> body;
+    ExprNode test;
+    SourceRange range;
+};
+
 struct ReturnStatement {
     std::optional<ExprNode> argument;
     SourceRange range;
@@ -521,7 +527,7 @@ struct ThrowStatement {
 
 // catch(e) { body }（辅助结构，不进 variant）
 struct CatchClause {
-    std::string param;
+    std::optional<std::string> param;  // nullopt = optional catch binding (ES2019)
     BlockStatement body;
     SourceRange range;
 };
@@ -617,7 +623,7 @@ struct ExportDefaultDeclaration {
 
 struct StmtNode {
     std::variant<ExpressionStatement, VariableDeclaration, BlockStatement, IfStatement, WhileStatement,
-                 ReturnStatement, FunctionDeclaration, AsyncFunctionDeclaration,
+                 DoWhileStatement, ReturnStatement, FunctionDeclaration, AsyncFunctionDeclaration,
                  ThrowStatement, TryStatement, BreakStatement, ContinueStatement,
                  LabeledStatement, ForStatement, ForInStatement, ForOfStatement,
                  ImportDeclaration, ExportNamedDeclaration, ExportDefaultDeclaration,

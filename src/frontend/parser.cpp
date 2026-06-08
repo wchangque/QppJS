@@ -325,9 +325,10 @@ static double parse_number_text(std::string_view text) {
     if (text.size() >= 2 && text[0] == '0') {
         char p = text[1];
         if (p == 'x' || p == 'X') {
-            // 逐字符累加到 double，避免 stoull 的 64 位上限
+            // 逐字符累加到 double，跳过数字分隔符 _
             double v = 0.0;
             for (char c : text.substr(2)) {
+                if (c == '_') continue;
                 v = v * 16.0 + hex_val(c);
             }
             return v;
@@ -335,6 +336,7 @@ static double parse_number_text(std::string_view text) {
         if (p == 'b' || p == 'B') {
             double v = 0.0;
             for (char c : text.substr(2)) {
+                if (c == '_') continue;
                 v = v * 2.0 + (c - '0');
             }
             return v;
@@ -342,10 +344,24 @@ static double parse_number_text(std::string_view text) {
         if (p == 'o' || p == 'O') {
             double v = 0.0;
             for (char c : text.substr(2)) {
+                if (c == '_') continue;
                 v = v * 8.0 + (c - '0');
             }
             return v;
         }
+    }
+    // 十进制：如有数字分隔符 _，先剥离后再解析
+    if (text.find('_') != std::string_view::npos) {
+        std::string clean;
+        clean.reserve(text.size());
+        for (char c : text) {
+            if (c != '_') clean += c;
+        }
+        double result = 0.0;
+        auto [ptr, ec] = std::from_chars(clean.data(), clean.data() + clean.size(), result);
+        if (ec == std::errc{}) return result;
+        if (ec == std::errc::result_out_of_range) return std::numeric_limits<double>::infinity();
+        return 0.0;
     }
     double result = 0.0;
     auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), result);
@@ -437,6 +453,7 @@ static SourceRange stmt_range(const StmtNode& s) {
                               [](const BlockStatement& n) { return n.range; },
                               [](const IfStatement& n) { return n.range; },
                               [](const WhileStatement& n) { return n.range; },
+                              [](const DoWhileStatement& n) { return n.range; },
                               [](const ReturnStatement& n) { return n.range; },
                               [](const FunctionDeclaration& n) { return n.range; },
                               [](const AsyncFunctionDeclaration& n) { return n.range; },
@@ -2899,6 +2916,33 @@ struct Parser {
                                         span(kw.range.offset, while_end)}});
     }
 
+    ParseResult<StmtNode> parse_do_while_stmt() {
+        Token kw = cur;
+        advance();  // 消费 do
+        bool saved_top_level = is_top_level_;
+        is_top_level_ = false;
+        auto body = parse_stmt();
+        is_top_level_ = saved_top_level;
+        if (!body.ok()) return body;
+        auto kw_while = expect(TokenKind::KwWhile);
+        if (!kw_while.ok()) return ParseResult<StmtNode>::Err(kw_while.error());
+        auto lp = expect(TokenKind::LParen);
+        if (!lp.ok()) return ParseResult<StmtNode>::Err(lp.error());
+        auto test = parse_expr(0);
+        if (!test.ok()) return ParseResult<StmtNode>::Err(test.error());
+        auto rp = expect(TokenKind::RParen);
+        if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
+        uint32_t end = rp.value().range.offset + rp.value().range.length;
+        // do-while 末尾的分号是可选的（ASI）
+        if (cur.kind == TokenKind::Semicolon) {
+            end = cur.range.offset + cur.range.length;
+            advance();
+        }
+        return ParseResult<StmtNode>::Ok(
+                StmtNode{DoWhileStatement{std::make_unique<StmtNode>(std::move(body.value())),
+                                          std::move(test.value()), span(kw.range.offset, end)}});
+    }
+
     ParseResult<StmtNode> parse_return_stmt() {
         Token kw = cur;
         advance();
@@ -3444,17 +3488,22 @@ struct Parser {
         if (cur.kind == TokenKind::KwCatch) {
             Token catch_tok = cur;
             advance();  // 消费 catch
-            auto lp = expect(TokenKind::LParen);
-            if (!lp.ok()) return ParseResult<StmtNode>::Err(lp.error());
-            if (cur.kind != TokenKind::Ident) {
-                return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected catch parameter"));
+            // 可选 catch 绑定（ES2019）：catch (e) { ... } 或 catch { ... }
+            std::optional<std::string> param = std::nullopt;
+            if (cur.kind == TokenKind::LParen) {
+                advance();  // 消费 (
+                if (cur.kind != TokenKind::Ident) {
+                    return ParseResult<StmtNode>::Err(
+                        make_parse_error(source, cur, "expected catch parameter"));
+                }
+                param = std::string{token_text(cur)};
+                advance();
+                auto rp = expect(TokenKind::RParen);
+                if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
             }
-            std::string param{token_text(cur)};
-            advance();
-            auto rp = expect(TokenKind::RParen);
-            if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
             if (cur.kind != TokenKind::LBrace) {
-                return ParseResult<StmtNode>::Err(make_parse_error(source, cur, "expected '{' after catch(...)"));
+                return ParseResult<StmtNode>::Err(
+                    make_parse_error(source, cur, "expected '{' after catch"));
             }
             auto catch_body = parse_block();
             if (!catch_body.ok()) return ParseResult<StmtNode>::Err(catch_body.error());
@@ -4297,6 +4346,8 @@ struct Parser {
                 return parse_if_stmt();
             case TokenKind::KwWhile:
                 return parse_while_stmt();
+            case TokenKind::KwDo:
+                return parse_do_while_stmt();
             case TokenKind::KwReturn:
                 return parse_return_stmt();
             case TokenKind::KwFunction:

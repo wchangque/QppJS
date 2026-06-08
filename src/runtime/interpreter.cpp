@@ -7274,6 +7274,16 @@ void Interpreter::hoist_vars_stmt(const StmtNode& stmt, Environment& var_target)
                 hoist_vars_stmt(*s, var_target);
             }
         }
+    } else if (std::holds_alternative<WhileStatement>(stmt.v)) {
+        hoist_vars_stmt(*std::get<WhileStatement>(stmt.v).body, var_target);
+    } else if (std::holds_alternative<DoWhileStatement>(stmt.v)) {
+        hoist_vars_stmt(*std::get<DoWhileStatement>(stmt.v).body, var_target);
+    } else if (std::holds_alternative<BlockStatement>(stmt.v)) {
+        hoist_vars(std::get<BlockStatement>(stmt.v).body, var_target);
+    } else if (std::holds_alternative<IfStatement>(stmt.v)) {
+        const auto& if_stmt = std::get<IfStatement>(stmt.v);
+        hoist_vars_stmt(*if_stmt.consequent, var_target);
+        if (if_stmt.alternate) hoist_vars_stmt(*if_stmt.alternate, var_target);
     }
 }
 
@@ -7511,6 +7521,7 @@ StmtResult Interpreter::eval_stmt(const StmtNode& stmt) {
             [this](const BlockStatement& s) { return eval_block_stmt(s); },
             [this](const IfStatement& s) { return eval_if_stmt(s); },
             [this](const WhileStatement& s) { return eval_while_stmt(s); },
+            [this](const DoWhileStatement& s) { return eval_do_while_stmt(s); },
             [this](const ReturnStatement& s) { return eval_return_stmt(s); },
             [this](const FunctionDeclaration& s) { return eval_function_decl(s); },
             [this](const AsyncFunctionDeclaration& s) { return eval_async_function_decl(s); },
@@ -7926,6 +7937,41 @@ StmtResult Interpreter::eval_while_stmt(const WhileStatement& stmt,
             return body_result;
         }
     }
+    return StmtResult::ok(Completion::normal(Value::undefined()));
+}
+
+StmtResult Interpreter::eval_do_while_stmt(const DoWhileStatement& stmt,
+                                            std::optional<std::string> label) {
+    do {
+        auto body_result = eval_stmt(*stmt.body);
+        if (!body_result.is_ok()) {
+            return body_result;
+        }
+        const Completion& c = body_result.completion();
+        if (c.is_break()) {
+            if (!c.target.has_value() || c.target == label) {
+                return StmtResult::ok(Completion::normal(Value::undefined()));
+            }
+            return body_result;
+        }
+        if (c.is_continue()) {
+            if (!c.target.has_value() || c.target == label) {
+                // continue goes to test evaluation
+            } else {
+                return body_result;
+            }
+        }
+        if (c.is_return() || c.is_throw()) {
+            return body_result;
+        }
+        auto test_result = eval_expr(stmt.test);
+        if (!test_result.is_ok()) {
+            return StmtResult::err(test_result.error());
+        }
+        if (!to_boolean(test_result.value())) {
+            break;
+        }
+    } while (true);
     return StmtResult::ok(Completion::normal(Value::undefined()));
 }
 
@@ -10424,8 +10470,11 @@ StmtResult Interpreter::exec_catch(const CatchClause& handler, Value thrown_val)
     auto old_env = current_env_;
     current_env_ = catch_env;
 
-    catch_env->define(handler.param, VarKind::Let);
-    catch_env->initialize(handler.param, thrown_val);
+    // 可选 catch 绑定（ES2019）：param 为 nullopt 时不创建绑定，直接丢弃异常值
+    if (handler.param.has_value()) {
+        catch_env->define(handler.param.value(), VarKind::Let);
+        catch_env->initialize(handler.param.value(), thrown_val);
+    }
 
     auto result = eval_block_stmt(handler.body);
 
@@ -10554,6 +10603,8 @@ StmtResult Interpreter::eval_labeled_stmt(const LabeledStatement& stmt) {
         result = eval_for_of_stmt(std::get<ForOfStatement>(stmt.body->v), stmt.label);
     } else if (std::holds_alternative<WhileStatement>(stmt.body->v)) {
         result = eval_while_stmt(std::get<WhileStatement>(stmt.body->v), stmt.label);
+    } else if (std::holds_alternative<DoWhileStatement>(stmt.body->v)) {
+        result = eval_do_while_stmt(std::get<DoWhileStatement>(stmt.body->v), stmt.label);
     } else {
         result = eval_stmt(*stmt.body);
     }
