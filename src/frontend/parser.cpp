@@ -2631,7 +2631,7 @@ struct Parser {
                 rest_pat = std::make_unique<PatternNode>(std::move(rest_r.value()));
                 break;
             }
-            // 可能是 AssignmentExpression（默认值）
+            // 可能是 AssignmentExpression（简单标识符默认值，如 x = 1）
             if (std::holds_alternative<AssignmentExpression>(elem.v)) {
                 auto& ae = std::get<AssignmentExpression>(elem.v);
                 if (ae.op != AssignOp::Assign) {
@@ -2644,6 +2644,16 @@ struct Parser {
                 elements.push_back(ArrayPatternElement{
                     std::make_unique<PatternNode>(std::move(sub_pat)),
                     std::optional<std::unique_ptr<ExprNode>>{std::move(default_val)},
+                    elem_range});
+                continue;
+            }
+            // 可能是 DestructuringAssignmentExpression（嵌套模式带默认值，如 [x,y]=[]）
+            if (std::holds_alternative<DestructuringAssignmentExpression>(elem.v)) {
+                auto& dae = std::get<DestructuringAssignmentExpression>(elem.v);
+                SourceRange elem_range = dae.range;
+                elements.push_back(ArrayPatternElement{
+                    std::move(dae.pattern),  // 已是 PatternNode
+                    std::optional<std::unique_ptr<ExprNode>>{std::move(dae.value)},
                     elem_range});
                 continue;
             }
