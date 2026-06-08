@@ -651,7 +651,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(Value::number(static_cast<double>(arr->array_length_)));
     });
-    array_prototype_->set_property("push", Value::object(ObjectPtr(push_fn)));
+    array_prototype_->define_builtin_property("push", Value::object(ObjectPtr(push_fn)));
 
     // Array.prototype.pop
     auto pop_fn = RcPtr<JSFunction>::make();
@@ -675,7 +675,7 @@ void VM::init_global_env() {
         arr->array_length_ = last_idx;
         return EvalResult::ok(std::move(last));
     });
-    array_prototype_->set_property("pop", Value::object(ObjectPtr(pop_fn)));
+    array_prototype_->define_builtin_property("pop", Value::object(ObjectPtr(pop_fn)));
 
     auto array_iterator_fn = RcPtr<JSFunction>::make();
     array_iterator_fn->set_name(std::string("[Symbol.iterator]"));
@@ -756,7 +756,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(Value::undefined());
     });
-    array_prototype_->set_property("forEach", Value::object(ObjectPtr(foreach_fn)));
+    array_prototype_->define_builtin_property("forEach", Value::object(ObjectPtr(foreach_fn)));
 
     // Array.prototype.map
     auto map_fn = RcPtr<JSFunction>::make();
@@ -795,7 +795,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(Value::object(ObjectPtr(result)));
     });
-    array_prototype_->set_property("map", Value::object(ObjectPtr(map_fn)));
+    array_prototype_->define_builtin_property("map", Value::object(ObjectPtr(map_fn)));
 
     // Array.prototype.filter
     auto filter_fn = RcPtr<JSFunction>::make();
@@ -836,7 +836,7 @@ void VM::init_global_env() {
         result->array_length_ = to;
         return EvalResult::ok(Value::object(ObjectPtr(result)));
     });
-    array_prototype_->set_property("filter", Value::object(ObjectPtr(filter_fn)));
+    array_prototype_->define_builtin_property("filter", Value::object(ObjectPtr(filter_fn)));
 
     // Array.prototype.reduce
     auto reduce_fn = RcPtr<JSFunction>::make();
@@ -890,7 +890,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(acc);
     });
-    array_prototype_->set_property("reduce", Value::object(ObjectPtr(reduce_fn)));
+    array_prototype_->define_builtin_property("reduce", Value::object(ObjectPtr(reduce_fn)));
 
     // Array.prototype.reduceRight
     auto reduce_right_fn = RcPtr<JSFunction>::make();
@@ -945,7 +945,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(acc);
     });
-    array_prototype_->set_property("reduceRight", Value::object(ObjectPtr(reduce_right_fn)));
+    array_prototype_->define_builtin_property("reduceRight", Value::object(ObjectPtr(reduce_right_fn)));
 
     // Array.prototype.find
     auto find_fn = RcPtr<JSFunction>::make();
@@ -981,7 +981,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(Value::undefined());
     });
-    array_prototype_->set_property("find", Value::object(ObjectPtr(find_fn)));
+    array_prototype_->define_builtin_property("find", Value::object(ObjectPtr(find_fn)));
 
     // Array.prototype.findIndex
     auto find_index_fn = RcPtr<JSFunction>::make();
@@ -1019,7 +1019,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(Value::number(-1.0));
     });
-    array_prototype_->set_property("findIndex", Value::object(ObjectPtr(find_index_fn)));
+    array_prototype_->define_builtin_property("findIndex", Value::object(ObjectPtr(find_index_fn)));
 
     // Array.prototype.some
     auto some_fn = RcPtr<JSFunction>::make();
@@ -1053,7 +1053,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(Value::boolean(false));
     });
-    array_prototype_->set_property("some", Value::object(ObjectPtr(some_fn)));
+    array_prototype_->define_builtin_property("some", Value::object(ObjectPtr(some_fn)));
 
     // Array.prototype.every
     auto every_fn = RcPtr<JSFunction>::make();
@@ -1087,7 +1087,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(Value::boolean(true));
     });
-    array_prototype_->set_property("every", Value::object(ObjectPtr(every_fn)));
+    array_prototype_->define_builtin_property("every", Value::object(ObjectPtr(every_fn)));
 
     // Array.prototype.indexOf
     auto index_of_fn = RcPtr<JSFunction>::make();
@@ -1111,7 +1111,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(Value::number(-1.0));
     });
-    array_prototype_->set_property("indexOf", Value::object(ObjectPtr(index_of_fn)));
+    array_prototype_->define_builtin_property("indexOf", Value::object(ObjectPtr(index_of_fn)));
 
     // Array.prototype.includes
     auto includes_fn = RcPtr<JSFunction>::make();
@@ -1133,7 +1133,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(Value::boolean(false));
     });
-    array_prototype_->set_property("includes", Value::object(ObjectPtr(includes_fn)));
+    array_prototype_->define_builtin_property("includes", Value::object(ObjectPtr(includes_fn)));
 
     // Array.prototype.slice
     auto slice_fn = RcPtr<JSFunction>::make();
@@ -1173,7 +1173,7 @@ void VM::init_global_env() {
         result->array_length_ = static_cast<uint32_t>(count);
         return EvalResult::ok(Value::object(ObjectPtr(result)));
     });
-    array_prototype_->set_property("slice", Value::object(ObjectPtr(slice_fn)));
+    array_prototype_->define_builtin_property("slice", Value::object(ObjectPtr(slice_fn)));
 
     // Array.prototype.splice
     auto splice_fn = RcPtr<JSFunction>::make();
@@ -1264,7 +1264,7 @@ void VM::init_global_env() {
         arr->array_length_ = static_cast<uint32_t>(new_len);
         return EvalResult::ok(Value::object(ObjectPtr(deleted)));
     });
-    array_prototype_->set_property("splice", Value::object(ObjectPtr(splice_fn)));
+    array_prototype_->define_builtin_property("splice", Value::object(ObjectPtr(splice_fn)));
 
     // Array.prototype.sort
     auto sort_fn = RcPtr<JSFunction>::make();
@@ -1343,7 +1343,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(this_val);
     });
-    array_prototype_->set_property("sort", Value::object(ObjectPtr(sort_fn)));
+    array_prototype_->define_builtin_property("sort", Value::object(ObjectPtr(sort_fn)));
 
     // Array.prototype.join
     auto join_fn = RcPtr<JSFunction>::make();
@@ -1387,7 +1387,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(Value::string(result));
     });
-    array_prototype_->set_property("join", Value::object(ObjectPtr(join_fn)));
+    array_prototype_->define_builtin_property("join", Value::object(ObjectPtr(join_fn)));
 
     // Array.prototype.reverse
     auto reverse_fn = RcPtr<JSFunction>::make();
@@ -1419,7 +1419,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(this_val);
     });
-    array_prototype_->set_property("reverse", Value::object(ObjectPtr(reverse_fn)));
+    array_prototype_->define_builtin_property("reverse", Value::object(ObjectPtr(reverse_fn)));
 
     // Array.prototype.flat
     // Recursive helper (vm suffix to avoid ODR conflict with interpreter translation unit)
@@ -1472,7 +1472,7 @@ void VM::init_global_env() {
         result->array_length_ = target_idx;
         return EvalResult::ok(Value::object(ObjectPtr(result)));
     });
-    array_prototype_->set_property("flat", Value::object(ObjectPtr(flat_fn)));
+    array_prototype_->define_builtin_property("flat", Value::object(ObjectPtr(flat_fn)));
 
     // Array.prototype.flatMap
     auto flat_map_fn = RcPtr<JSFunction>::make();
@@ -1520,7 +1520,7 @@ void VM::init_global_env() {
         result->array_length_ = target_idx;
         return EvalResult::ok(Value::object(ObjectPtr(result)));
     });
-    array_prototype_->set_property("flatMap", Value::object(ObjectPtr(flat_map_fn)));
+    array_prototype_->define_builtin_property("flatMap", Value::object(ObjectPtr(flat_map_fn)));
 
     // Array.prototype.findLast
     auto find_last_fn = RcPtr<JSFunction>::make();
@@ -1554,7 +1554,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::undefined());
     });
     gc_heap_.Register(find_last_fn.get());
-    array_prototype_->set_property("findLast", Value::object(ObjectPtr(find_last_fn)));
+    array_prototype_->define_builtin_property("findLast", Value::object(ObjectPtr(find_last_fn)));
 
     // Array.prototype.findLastIndex
     auto find_last_index_fn = RcPtr<JSFunction>::make();
@@ -1588,7 +1588,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::number(-1.0));
     });
     gc_heap_.Register(find_last_index_fn.get());
-    array_prototype_->set_property("findLastIndex", Value::object(ObjectPtr(find_last_index_fn)));
+    array_prototype_->define_builtin_property("findLastIndex", Value::object(ObjectPtr(find_last_index_fn)));
 
     // Array.prototype.toSorted
     auto to_sorted_fn = RcPtr<JSFunction>::make();
@@ -1661,7 +1661,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::object(ObjectPtr(result)));
     });
     gc_heap_.Register(to_sorted_fn.get());
-    array_prototype_->set_property("toSorted", Value::object(ObjectPtr(to_sorted_fn)));
+    array_prototype_->define_builtin_property("toSorted", Value::object(ObjectPtr(to_sorted_fn)));
 
     // Array.prototype.toReversed
     auto to_reversed_fn = RcPtr<JSFunction>::make();
@@ -1687,7 +1687,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::object(ObjectPtr(result)));
     });
     gc_heap_.Register(to_reversed_fn.get());
-    array_prototype_->set_property("toReversed", Value::object(ObjectPtr(to_reversed_fn)));
+    array_prototype_->define_builtin_property("toReversed", Value::object(ObjectPtr(to_reversed_fn)));
 
     // Array.prototype.toSpliced(start, deleteCount, ...items)
     auto to_spliced_fn = RcPtr<JSFunction>::make();
@@ -1734,7 +1734,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::object(ObjectPtr(result)));
     });
     gc_heap_.Register(to_spliced_fn.get());
-    array_prototype_->set_property("toSpliced", Value::object(ObjectPtr(to_spliced_fn)));
+    array_prototype_->define_builtin_property("toSpliced", Value::object(ObjectPtr(to_spliced_fn)));
 
     // Array.prototype.with(index, value)
     auto with_fn = RcPtr<JSFunction>::make();
@@ -1775,7 +1775,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::object(ObjectPtr(result)));
     });
     gc_heap_.Register(with_fn.get());
-    array_prototype_->set_property("with", Value::object(ObjectPtr(with_fn)));
+    array_prototype_->define_builtin_property("with", Value::object(ObjectPtr(with_fn)));
 
     // Array.prototype.keys
     auto keys_iter_fn = RcPtr<JSFunction>::make();
@@ -1823,7 +1823,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::object(ObjectPtr(iter_obj)));
     });
     gc_heap_.Register(keys_iter_fn.get());
-    array_prototype_->set_property("keys", Value::object(ObjectPtr(keys_iter_fn)));
+    array_prototype_->define_builtin_property("keys", Value::object(ObjectPtr(keys_iter_fn)));
 
     // Array.prototype.values
     auto values_iter_fn = RcPtr<JSFunction>::make();
@@ -1873,7 +1873,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::object(ObjectPtr(iter_obj)));
     });
     gc_heap_.Register(values_iter_fn.get());
-    array_prototype_->set_property("values", Value::object(ObjectPtr(values_iter_fn)));
+    array_prototype_->define_builtin_property("values", Value::object(ObjectPtr(values_iter_fn)));
 
     // Array.prototype.entries
     auto entries_iter_fn = RcPtr<JSFunction>::make();
@@ -1929,7 +1929,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::object(ObjectPtr(iter_obj)));
     });
     gc_heap_.Register(entries_iter_fn.get());
-    array_prototype_->set_property("entries", Value::object(ObjectPtr(entries_iter_fn)));
+    array_prototype_->define_builtin_property("entries", Value::object(ObjectPtr(entries_iter_fn)));
 
     // Array.prototype.concat
     auto concat_fn = RcPtr<JSFunction>::make();
@@ -1968,7 +1968,7 @@ void VM::init_global_env() {
         result->array_length_ = n;
         return EvalResult::ok(Value::object(ObjectPtr(result)));
     });
-    array_prototype_->set_property("concat", Value::object(ObjectPtr(concat_fn)));
+    array_prototype_->define_builtin_property("concat", Value::object(ObjectPtr(concat_fn)));
 
     // Array.prototype.fill
     auto fill_fn = RcPtr<JSFunction>::make();
@@ -1995,7 +1995,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(this_val);
     });
-    array_prototype_->set_property("fill", Value::object(ObjectPtr(fill_fn)));
+    array_prototype_->define_builtin_property("fill", Value::object(ObjectPtr(fill_fn)));
 
     // Array.prototype.copyWithin
     auto copywithin_fn = RcPtr<JSFunction>::make();
@@ -2036,7 +2036,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(this_val);
     });
-    array_prototype_->set_property("copyWithin", Value::object(ObjectPtr(copywithin_fn)));
+    array_prototype_->define_builtin_property("copyWithin", Value::object(ObjectPtr(copywithin_fn)));
 
     // Array.prototype.shift
     auto shift_fn = RcPtr<JSFunction>::make();
@@ -2060,7 +2060,7 @@ void VM::init_global_env() {
         arr->array_length_--;
         return EvalResult::ok(first);
     });
-    array_prototype_->set_property("shift", Value::object(ObjectPtr(shift_fn)));
+    array_prototype_->define_builtin_property("shift", Value::object(ObjectPtr(shift_fn)));
 
     // Array.prototype.unshift
     auto unshift_fn = RcPtr<JSFunction>::make();
@@ -2085,7 +2085,7 @@ void VM::init_global_env() {
         arr->array_length_ += arg_count;
         return EvalResult::ok(Value::number(static_cast<double>(arr->array_length_)));
     });
-    array_prototype_->set_property("unshift", Value::object(ObjectPtr(unshift_fn)));
+    array_prototype_->define_builtin_property("unshift", Value::object(ObjectPtr(unshift_fn)));
 
     // Array.prototype.lastIndexOf
     auto lastindexof_fn = RcPtr<JSFunction>::make();
@@ -2114,7 +2114,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(Value::number(-1));
     });
-    array_prototype_->set_property("lastIndexOf", Value::object(ObjectPtr(lastindexof_fn)));
+    array_prototype_->define_builtin_property("lastIndexOf", Value::object(ObjectPtr(lastindexof_fn)));
 
     // Array.prototype.at(index)
     {
@@ -2140,7 +2140,7 @@ void VM::init_global_env() {
             return EvalResult::ok(it->second);
         });
         gc_heap_.Register(vm_at_fn.get());
-        array_prototype_->set_property("at", Value::object(ObjectPtr(vm_at_fn)));
+        array_prototype_->define_builtin_property("at", Value::object(ObjectPtr(vm_at_fn)));
     }
 
     // Array.prototype.toString: equivalent to join(",")
@@ -2162,7 +2162,7 @@ void VM::init_global_env() {
             return EvalResult::ok(Value::string(result));
         });
         gc_heap_.Register(vm_tostring_fn.get());
-        array_prototype_->set_property("toString", Value::object(ObjectPtr(vm_tostring_fn)));
+        array_prototype_->define_builtin_property("toString", Value::object(ObjectPtr(vm_tostring_fn)));
     }
 
     // Build Array constructor
@@ -3031,7 +3031,7 @@ void VM::init_global_env() {
         }
         return call_function_val(this_val, std::move(new_this), call_args);
     });
-    function_prototype_->set_property("call", Value::object(ObjectPtr(call_fn)));
+    function_prototype_->define_builtin_property("call", Value::object(ObjectPtr(call_fn)));
 
     // Function.prototype.apply
     auto apply_fn = RcPtr<JSFunction>::make();
@@ -3086,7 +3086,7 @@ void VM::init_global_env() {
         return call_function_val(this_val, std::move(new_this),
                                  std::span<Value>(call_args.data(), call_args.size()));
     });
-    function_prototype_->set_property("apply", Value::object(ObjectPtr(apply_fn)));
+    function_prototype_->define_builtin_property("apply", Value::object(ObjectPtr(apply_fn)));
 
     // Function.prototype.bind
     auto bind_fn = RcPtr<JSFunction>::make();
@@ -3172,7 +3172,7 @@ void VM::init_global_env() {
 
         return EvalResult::ok(Value::object(ObjectPtr(new_fn)));
     });
-    function_prototype_->set_property("bind", Value::object(ObjectPtr(bind_fn)));
+    function_prototype_->define_builtin_property("bind", Value::object(ObjectPtr(bind_fn)));
 
     // Function.prototype.toString
     {
@@ -3196,7 +3196,7 @@ void VM::init_global_env() {
             return EvalResult::ok(Value::string("function " + name + "() { [native code] }"));
         });
         gc_heap_.Register(fn.get());
-        function_prototype_->set_property("toString", Value::object(ObjectPtr(fn)));
+        function_prototype_->define_builtin_property("toString", Value::object(ObjectPtr(fn)));
     }
 
     // ---- Promise ----
@@ -3221,7 +3221,7 @@ void VM::init_global_env() {
         gc_heap_.Register(result_promise.get());
         return EvalResult::ok(Value::object(ObjectPtr(result_promise)));
     });
-    promise_prototype_->set_property("then", Value::object(ObjectPtr(vm_then_fn)));
+    promise_prototype_->define_builtin_property("then", Value::object(ObjectPtr(vm_then_fn)));
 
     // Promise.prototype.catch
     auto vm_catch_fn = RcPtr<JSFunction>::make();
@@ -3239,7 +3239,7 @@ void VM::init_global_env() {
         gc_heap_.Register(result_promise.get());
         return EvalResult::ok(Value::object(ObjectPtr(result_promise)));
     });
-    promise_prototype_->set_property("catch", Value::object(ObjectPtr(vm_catch_fn)));
+    promise_prototype_->define_builtin_property("catch", Value::object(ObjectPtr(vm_catch_fn)));
 
     // Promise.prototype.finally
     auto vm_finally_fn = RcPtr<JSFunction>::make();
@@ -3312,7 +3312,7 @@ void VM::init_global_env() {
         gc_heap_.Register(result_promise.get());
         return EvalResult::ok(Value::object(ObjectPtr(result_promise)));
     });
-    promise_prototype_->set_property("finally", Value::object(ObjectPtr(vm_finally_fn)));
+    promise_prototype_->define_builtin_property("finally", Value::object(ObjectPtr(vm_finally_fn)));
 
     // Promise constructor
     auto vm_promise_ctor = RcPtr<JSFunction>::make();
@@ -3723,7 +3723,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::number(static_cast<double>(str_index_of_vm(js_str->sv(), search, k, len))));
     });
     gc_heap_.Register(vm_str_index_of_fn.get());
-    string_prototype_->set_property("indexOf", Value::object(ObjectPtr(vm_str_index_of_fn)));
+    string_prototype_->define_builtin_property("indexOf", Value::object(ObjectPtr(vm_str_index_of_fn)));
 
     // lastIndexOf(searchString, fromIndex)
     auto vm_str_last_index_of_fn = RcPtr<JSFunction>::make();
@@ -3752,7 +3752,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::number(static_cast<double>(str_last_index_of_vm(js_str->sv(), search, k, len))));
     });
     gc_heap_.Register(vm_str_last_index_of_fn.get());
-    string_prototype_->set_property("lastIndexOf", Value::object(ObjectPtr(vm_str_last_index_of_fn)));
+    string_prototype_->define_builtin_property("lastIndexOf", Value::object(ObjectPtr(vm_str_last_index_of_fn)));
 
     // slice(start, end)
     auto vm_str_slice_fn = RcPtr<JSFunction>::make();
@@ -3779,7 +3779,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::string(utf8_substr_vm(js_str->sv(), from, to)));
     });
     gc_heap_.Register(vm_str_slice_fn.get());
-    string_prototype_->set_property("slice", Value::object(ObjectPtr(vm_str_slice_fn)));
+    string_prototype_->define_builtin_property("slice", Value::object(ObjectPtr(vm_str_slice_fn)));
 
     // substring(start, end)
     auto vm_str_substring_fn = RcPtr<JSFunction>::make();
@@ -3805,7 +3805,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::string(utf8_substr_vm(js_str->sv(), start, end)));
     });
     gc_heap_.Register(vm_str_substring_fn.get());
-    string_prototype_->set_property("substring", Value::object(ObjectPtr(vm_str_substring_fn)));
+    string_prototype_->define_builtin_property("substring", Value::object(ObjectPtr(vm_str_substring_fn)));
 
     // split(separator, limit)
     auto vm_str_split_fn = RcPtr<JSFunction>::make();
@@ -3879,7 +3879,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::object(ObjectPtr(result)));
     });
     gc_heap_.Register(vm_str_split_fn.get());
-    string_prototype_->set_property("split", Value::object(ObjectPtr(vm_str_split_fn)));
+    string_prototype_->define_builtin_property("split", Value::object(ObjectPtr(vm_str_split_fn)));
 
     // trim()
     auto vm_str_trim_fn = RcPtr<JSFunction>::make();
@@ -3893,7 +3893,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::string(utf8_trim_impl_vm(string_this_value_vm(this_val).sv(), true, true)));
     });
     gc_heap_.Register(vm_str_trim_fn.get());
-    string_prototype_->set_property("trim", Value::object(ObjectPtr(vm_str_trim_fn)));
+    string_prototype_->define_builtin_property("trim", Value::object(ObjectPtr(vm_str_trim_fn)));
 
     // trimStart()
     auto vm_str_trim_start_fn = RcPtr<JSFunction>::make();
@@ -3907,7 +3907,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::string(utf8_trim_impl_vm(string_this_value_vm(this_val).sv(), true, false)));
     });
     gc_heap_.Register(vm_str_trim_start_fn.get());
-    string_prototype_->set_property("trimStart", Value::object(ObjectPtr(vm_str_trim_start_fn)));
+    string_prototype_->define_builtin_property("trimStart", Value::object(ObjectPtr(vm_str_trim_start_fn)));
 
     // trimEnd()
     auto vm_str_trim_end_fn = RcPtr<JSFunction>::make();
@@ -3921,7 +3921,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::string(utf8_trim_impl_vm(string_this_value_vm(this_val).sv(), false, true)));
     });
     gc_heap_.Register(vm_str_trim_end_fn.get());
-    string_prototype_->set_property("trimEnd", Value::object(ObjectPtr(vm_str_trim_end_fn)));
+    string_prototype_->define_builtin_property("trimEnd", Value::object(ObjectPtr(vm_str_trim_end_fn)));
 
     // toLowerCase() / toUpperCase()
     {
@@ -3937,8 +3937,8 @@ void VM::init_global_env() {
             return EvalResult::ok(Value::string(s));
         });
         gc_heap_.Register(vm_lower_fn.get());
-        string_prototype_->set_property("toLowerCase", Value::object(ObjectPtr(vm_lower_fn)));
-        string_prototype_->set_property("toLocaleLowerCase", Value::object(ObjectPtr(vm_lower_fn)));
+        string_prototype_->define_builtin_property("toLowerCase", Value::object(ObjectPtr(vm_lower_fn)));
+        string_prototype_->define_builtin_property("toLocaleLowerCase", Value::object(ObjectPtr(vm_lower_fn)));
     }
     {
         auto vm_upper_fn = RcPtr<JSFunction>::make();
@@ -3953,8 +3953,8 @@ void VM::init_global_env() {
             return EvalResult::ok(Value::string(s));
         });
         gc_heap_.Register(vm_upper_fn.get());
-        string_prototype_->set_property("toUpperCase", Value::object(ObjectPtr(vm_upper_fn)));
-        string_prototype_->set_property("toLocaleUpperCase", Value::object(ObjectPtr(vm_upper_fn)));
+        string_prototype_->define_builtin_property("toUpperCase", Value::object(ObjectPtr(vm_upper_fn)));
+        string_prototype_->define_builtin_property("toLocaleUpperCase", Value::object(ObjectPtr(vm_upper_fn)));
     }
 
     // valueOf()
@@ -3972,7 +3972,7 @@ void VM::init_global_env() {
         return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
     });
     gc_heap_.Register(vm_str_valueof_fn.get());
-    string_prototype_->set_property("valueOf", Value::object(ObjectPtr(vm_str_valueof_fn)));
+    string_prototype_->define_builtin_property("valueOf", Value::object(ObjectPtr(vm_str_valueof_fn)));
 
     // toString()
     auto vm_str_tostring_fn = RcPtr<JSFunction>::make();
@@ -3989,7 +3989,7 @@ void VM::init_global_env() {
         return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
     });
     gc_heap_.Register(vm_str_tostring_fn.get());
-    string_prototype_->set_property("toString", Value::object(ObjectPtr(vm_str_tostring_fn)));
+    string_prototype_->define_builtin_property("toString", Value::object(ObjectPtr(vm_str_tostring_fn)));
 
     auto string_iterator_fn = RcPtr<JSFunction>::make();
     string_iterator_fn->set_name(std::string("[Symbol.iterator]"));
@@ -4244,7 +4244,7 @@ void VM::init_global_env() {
         return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
     });
     gc_heap_.Register(vm_num_valueof_fn.get());
-    number_prototype_->set_property("valueOf", Value::object(ObjectPtr(vm_num_valueof_fn)));
+    number_prototype_->define_builtin_property("valueOf", Value::object(ObjectPtr(vm_num_valueof_fn)));
 
     // Number.prototype.toString([radix])
     auto vm_num_tostring_fn = RcPtr<JSFunction>::make();
@@ -4300,7 +4300,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::string(result));
     });
     gc_heap_.Register(vm_num_tostring_fn.get());
-    number_prototype_->set_property("toString", Value::object(ObjectPtr(vm_num_tostring_fn)));
+    number_prototype_->define_builtin_property("toString", Value::object(ObjectPtr(vm_num_tostring_fn)));
 
     // Number.prototype.toFixed([digits])
     auto vm_num_tofixed_fn = RcPtr<JSFunction>::make();
@@ -4329,7 +4329,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::string(buf));
     });
     gc_heap_.Register(vm_num_tofixed_fn.get());
-    number_prototype_->set_property("toFixed", Value::object(ObjectPtr(vm_num_tofixed_fn)));
+    number_prototype_->define_builtin_property("toFixed", Value::object(ObjectPtr(vm_num_tofixed_fn)));
 
     // Number.prototype.toExponential([digits])
     auto vm_num_toexp_fn = RcPtr<JSFunction>::make();
@@ -4371,7 +4371,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::string(result));
     });
     gc_heap_.Register(vm_num_toexp_fn.get());
-    number_prototype_->set_property("toExponential", Value::object(ObjectPtr(vm_num_toexp_fn)));
+    number_prototype_->define_builtin_property("toExponential", Value::object(ObjectPtr(vm_num_toexp_fn)));
 
     // Number.prototype.toPrecision([prec])
     auto vm_num_toprec_fn = RcPtr<JSFunction>::make();
@@ -4408,7 +4408,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::string(result));
     });
     gc_heap_.Register(vm_num_toprec_fn.get());
-    number_prototype_->set_property("toPrecision", Value::object(ObjectPtr(vm_num_toprec_fn)));
+    number_prototype_->define_builtin_property("toPrecision", Value::object(ObjectPtr(vm_num_toprec_fn)));
 
     // Number.prototype.toLocaleString — simplified: delegate to toString
     {
@@ -4434,7 +4434,7 @@ void VM::init_global_env() {
             return EvalResult::ok(Value::string(to_string_val(Value::number(val))));
         });
         gc_heap_.Register(fn.get());
-        number_prototype_->set_property("toLocaleString", Value::object(ObjectPtr(fn)));
+        number_prototype_->define_builtin_property("toLocaleString", Value::object(ObjectPtr(fn)));
     }
 
     gc_heap_.Register(number_constructor_.get());
@@ -4463,7 +4463,7 @@ void VM::init_global_env() {
         return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
     });
     gc_heap_.Register(vm_bool_valueof_fn.get());
-    boolean_prototype_->set_property("valueOf", Value::object(ObjectPtr(vm_bool_valueof_fn)));
+    boolean_prototype_->define_builtin_property("valueOf", Value::object(ObjectPtr(vm_bool_valueof_fn)));
 
     // Boolean.prototype.toString
     auto vm_bool_tostring_fn = RcPtr<JSFunction>::make();
@@ -4488,7 +4488,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::string(b ? "true" : "false"));
     });
     gc_heap_.Register(vm_bool_tostring_fn.get());
-    boolean_prototype_->set_property("toString", Value::object(ObjectPtr(vm_bool_tostring_fn)));
+    boolean_prototype_->define_builtin_property("toString", Value::object(ObjectPtr(vm_bool_tostring_fn)));
 
     // ---- Boolean constructor ----
 
@@ -4777,7 +4777,7 @@ void VM::init_global_env() {
         std::string input = args.empty() ? "undefined" : to_string_val(args[0]);
         return vm_regexp_exec(rx, input);
     });
-    regexp_prototype_->set_property("exec", Value::object(ObjectPtr(vm_regexp_exec_fn)));
+    regexp_prototype_->define_builtin_property("exec", Value::object(ObjectPtr(vm_regexp_exec_fn)));
 
     // RegExp.prototype.test
     auto vm_regexp_test_fn = RcPtr<JSFunction>::make();
@@ -4794,7 +4794,7 @@ void VM::init_global_env() {
         if (!res.is_ok()) return res;
         return EvalResult::ok(Value::boolean(!res.value().is_null()));
     });
-    regexp_prototype_->set_property("test", Value::object(ObjectPtr(vm_regexp_test_fn)));
+    regexp_prototype_->define_builtin_property("test", Value::object(ObjectPtr(vm_regexp_test_fn)));
 
     // RegExp.prototype.toString
     auto vm_regexp_tostring_fn = RcPtr<JSFunction>::make();
@@ -4820,7 +4820,7 @@ void VM::init_global_env() {
         }
         return EvalResult::ok(Value::string("/" + escaped + "/" + rx->flags_str_));
     });
-    regexp_prototype_->set_property("toString", Value::object(ObjectPtr(vm_regexp_tostring_fn)));
+    regexp_prototype_->define_builtin_property("toString", Value::object(ObjectPtr(vm_regexp_tostring_fn)));
 
     // ---- RegExp constructor ----
 
@@ -4904,7 +4904,7 @@ void VM::init_global_env() {
         return EvalResult::ok(Value::object(ObjectPtr(result_arr)));
     });
     if (string_prototype_) {
-        string_prototype_->set_property("match", Value::object(ObjectPtr(vm_string_match_fn)));
+        string_prototype_->define_builtin_property("match", Value::object(ObjectPtr(vm_string_match_fn)));
     }
 
     // ---- String.prototype.search ----
@@ -4946,7 +4946,7 @@ void VM::init_global_env() {
     });
     gc_heap_.Register(vm_string_search_fn.get());
     if (string_prototype_) {
-        string_prototype_->set_property("search", Value::object(ObjectPtr(vm_string_search_fn)));
+        string_prototype_->define_builtin_property("search", Value::object(ObjectPtr(vm_string_search_fn)));
     }
 
     // ---- String.prototype.replace ----
@@ -5065,7 +5065,7 @@ void VM::init_global_env() {
     });
     gc_heap_.Register(vm_string_replace_fn.get());
     if (string_prototype_) {
-        string_prototype_->set_property("replace", Value::object(ObjectPtr(vm_string_replace_fn)));
+        string_prototype_->define_builtin_property("replace", Value::object(ObjectPtr(vm_string_replace_fn)));
     }
 
     // ---- String.prototype.replaceAll ----
@@ -5137,7 +5137,7 @@ void VM::init_global_env() {
     });
     gc_heap_.Register(vm_string_replace_all_fn.get());
     if (string_prototype_) {
-        string_prototype_->set_property("replaceAll", Value::object(ObjectPtr(vm_string_replace_all_fn)));
+        string_prototype_->define_builtin_property("replaceAll", Value::object(ObjectPtr(vm_string_replace_all_fn)));
     }
 
     // ---- String.prototype.at ----
@@ -5159,7 +5159,7 @@ void VM::init_global_env() {
     });
     gc_heap_.Register(vm_string_at_fn.get());
     if (string_prototype_) {
-        string_prototype_->set_property("at", Value::object(ObjectPtr(vm_string_at_fn)));
+        string_prototype_->define_builtin_property("at", Value::object(ObjectPtr(vm_string_at_fn)));
     }
 
     // ---- String.prototype.padStart ----
@@ -5185,7 +5185,7 @@ void VM::init_global_env() {
     });
     gc_heap_.Register(vm_string_pad_start_fn.get());
     if (string_prototype_) {
-        string_prototype_->set_property("padStart", Value::object(ObjectPtr(vm_string_pad_start_fn)));
+        string_prototype_->define_builtin_property("padStart", Value::object(ObjectPtr(vm_string_pad_start_fn)));
     }
 
     // ---- String.prototype.padEnd ----
@@ -5210,7 +5210,7 @@ void VM::init_global_env() {
     });
     gc_heap_.Register(vm_string_pad_end_fn.get());
     if (string_prototype_) {
-        string_prototype_->set_property("padEnd", Value::object(ObjectPtr(vm_string_pad_end_fn)));
+        string_prototype_->define_builtin_property("padEnd", Value::object(ObjectPtr(vm_string_pad_end_fn)));
     }
 
     // ---- String.prototype.repeat ----
@@ -5239,7 +5239,7 @@ void VM::init_global_env() {
     });
     gc_heap_.Register(vm_string_repeat_fn.get());
     if (string_prototype_) {
-        string_prototype_->set_property("repeat", Value::object(ObjectPtr(vm_string_repeat_fn)));
+        string_prototype_->define_builtin_property("repeat", Value::object(ObjectPtr(vm_string_repeat_fn)));
     }
 
     // ---- String.prototype.startsWith ----
@@ -5272,7 +5272,7 @@ void VM::init_global_env() {
     });
     gc_heap_.Register(vm_string_starts_with_fn.get());
     if (string_prototype_) {
-        string_prototype_->set_property("startsWith", Value::object(ObjectPtr(vm_string_starts_with_fn)));
+        string_prototype_->define_builtin_property("startsWith", Value::object(ObjectPtr(vm_string_starts_with_fn)));
     }
 
     // ---- String.prototype.endsWith ----
@@ -5306,7 +5306,7 @@ void VM::init_global_env() {
     });
     gc_heap_.Register(vm_string_ends_with_fn.get());
     if (string_prototype_) {
-        string_prototype_->set_property("endsWith", Value::object(ObjectPtr(vm_string_ends_with_fn)));
+        string_prototype_->define_builtin_property("endsWith", Value::object(ObjectPtr(vm_string_ends_with_fn)));
     }
 
     // ---- String.prototype.includes ----
@@ -5337,7 +5337,7 @@ void VM::init_global_env() {
     });
     gc_heap_.Register(vm_string_includes_fn.get());
     if (string_prototype_) {
-        string_prototype_->set_property("includes", Value::object(ObjectPtr(vm_string_includes_fn)));
+        string_prototype_->define_builtin_property("includes", Value::object(ObjectPtr(vm_string_includes_fn)));
     }
 
     // ---- String.prototype.matchAll ----
@@ -5426,7 +5426,7 @@ void VM::init_global_env() {
     });
     gc_heap_.Register(vm_string_match_all_fn.get());
     if (string_prototype_) {
-        string_prototype_->set_property("matchAll", Value::object(ObjectPtr(vm_string_match_all_fn)));
+        string_prototype_->define_builtin_property("matchAll", Value::object(ObjectPtr(vm_string_match_all_fn)));
     }
 
     // ---- String.prototype.charCodeAt ----
@@ -5465,7 +5465,7 @@ void VM::init_global_env() {
             return EvalResult::ok(Value::number(static_cast<double>(code_unit)));
         });
         gc_heap_.Register(fn.get());
-        if (string_prototype_) string_prototype_->set_property("charCodeAt", Value::object(ObjectPtr(fn)));
+        if (string_prototype_) string_prototype_->define_builtin_property("charCodeAt", Value::object(ObjectPtr(fn)));
     }
 
     // ---- String.prototype.charAt ----
@@ -5484,7 +5484,7 @@ void VM::init_global_env() {
             return EvalResult::ok(Value::string(utf8_substr_vm(s, idx, idx + 1)));
         });
         gc_heap_.Register(fn.get());
-        if (string_prototype_) string_prototype_->set_property("charAt", Value::object(ObjectPtr(fn)));
+        if (string_prototype_) string_prototype_->define_builtin_property("charAt", Value::object(ObjectPtr(fn)));
     }
 
     // ---- String.prototype.codePointAt ----
@@ -5518,7 +5518,7 @@ void VM::init_global_env() {
             return EvalResult::ok(Value::number(static_cast<double>(cp)));
         });
         gc_heap_.Register(fn.get());
-        if (string_prototype_) string_prototype_->set_property("codePointAt", Value::object(ObjectPtr(fn)));
+        if (string_prototype_) string_prototype_->define_builtin_property("codePointAt", Value::object(ObjectPtr(fn)));
     }
 
     // ---- String.prototype.normalize ----
@@ -5544,7 +5544,7 @@ void VM::init_global_env() {
             return EvalResult::ok(sv);
         });
         gc_heap_.Register(fn.get());
-        if (string_prototype_) string_prototype_->set_property("normalize", Value::object(ObjectPtr(fn)));
+        if (string_prototype_) string_prototype_->define_builtin_property("normalize", Value::object(ObjectPtr(fn)));
     }
 
     // concat(), trimLeft/trimRight aliases, localeCompare
@@ -5557,14 +5557,14 @@ void VM::init_global_env() {
             return EvalResult::ok(Value::string(result));
         });
         gc_heap_.Register(vm_concat_fn.get());
-        if (string_prototype_) string_prototype_->set_property("concat", Value::object(ObjectPtr(vm_concat_fn)));
+        if (string_prototype_) string_prototype_->define_builtin_property("concat", Value::object(ObjectPtr(vm_concat_fn)));
     }
     {
         Value ts = string_prototype_ ? string_prototype_->get_property("trimStart") : Value::undefined();
         Value te = string_prototype_ ? string_prototype_->get_property("trimEnd") : Value::undefined();
         if (string_prototype_) {
-            string_prototype_->set_property("trimLeft", ts);
-            string_prototype_->set_property("trimRight", te);
+            string_prototype_->define_builtin_property("trimLeft", ts);
+            string_prototype_->define_builtin_property("trimRight", te);
         }
     }
     {
@@ -5577,7 +5577,7 @@ void VM::init_global_env() {
             return EvalResult::ok(Value::number(cmp < 0 ? -1.0 : (cmp > 0 ? 1.0 : 0.0)));
         });
         gc_heap_.Register(vm_lc_fn.get());
-        if (string_prototype_) string_prototype_->set_property("localeCompare", Value::object(ObjectPtr(vm_lc_fn)));
+        if (string_prototype_) string_prototype_->define_builtin_property("localeCompare", Value::object(ObjectPtr(vm_lc_fn)));
     }
 
     // ---- Symbol ----
@@ -5598,7 +5598,7 @@ void VM::init_global_env() {
         std::string result = desc ? ("Symbol(" + *desc + ")") : "Symbol()";
         return EvalResult::ok(Value::string(result));
     });
-    symbol_prototype_->set_property("toString", Value::object(ObjectPtr(vm_sym_tostring_fn)));
+    symbol_prototype_->define_builtin_property("toString", Value::object(ObjectPtr(vm_sym_tostring_fn)));
     gc_heap_.Register(vm_sym_tostring_fn.get());
 
     // Symbol.prototype.valueOf
@@ -5606,7 +5606,7 @@ void VM::init_global_env() {
     vm_sym_valueof_fn->set_native_fn([](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
         return EvalResult::ok(this_val);
     });
-    symbol_prototype_->set_property("valueOf", Value::object(ObjectPtr(vm_sym_valueof_fn)));
+    symbol_prototype_->define_builtin_property("valueOf", Value::object(ObjectPtr(vm_sym_valueof_fn)));
     gc_heap_.Register(vm_sym_valueof_fn.get());
 
     // Symbol constructor
@@ -5715,7 +5715,7 @@ void VM::init_global_env() {
             return fn;
         };
 
-        map_prototype_->set_property("set", Value::object(ObjectPtr(make_map_method(
+        map_prototype_->define_builtin_property("set", Value::object(ObjectPtr(make_map_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map.prototype.set called on non-Map");
@@ -5733,7 +5733,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(this_val);
             }))));
 
-        map_prototype_->set_property("get", Value::object(ObjectPtr(make_map_method(
+        map_prototype_->define_builtin_property("get", Value::object(ObjectPtr(make_map_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map.prototype.get called on non-Map");
@@ -5746,7 +5746,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(m->entries_[idx].second);
             }))));
 
-        map_prototype_->set_property("has", Value::object(ObjectPtr(make_map_method(
+        map_prototype_->define_builtin_property("has", Value::object(ObjectPtr(make_map_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map.prototype.has called on non-Map");
@@ -5757,7 +5757,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(Value::boolean(m->find_key(key) != JSMap::kNotFound));
             }))));
 
-        map_prototype_->set_property("delete", Value::object(ObjectPtr(make_map_method(
+        map_prototype_->define_builtin_property("delete", Value::object(ObjectPtr(make_map_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map.prototype.delete called on non-Map");
@@ -5771,7 +5771,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(Value::boolean(true));
             }))));
 
-        map_prototype_->set_property("clear", Value::object(ObjectPtr(make_map_method(
+        map_prototype_->define_builtin_property("clear", Value::object(ObjectPtr(make_map_method(
             [this](Value this_val, std::vector<Value>, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map.prototype.clear called on non-Map");
@@ -5782,7 +5782,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(Value::undefined());
             }))));
 
-        map_prototype_->set_property("forEach", Value::object(ObjectPtr(make_map_method(
+        map_prototype_->define_builtin_property("forEach", Value::object(ObjectPtr(make_map_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kMap) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Map.prototype.forEach called on non-Map");
@@ -5884,11 +5884,11 @@ void VM::init_global_env() {
             return fn;
         };
 
-        map_prototype_->set_property("keys", Value::object(ObjectPtr(
+        map_prototype_->define_builtin_property("keys", Value::object(ObjectPtr(
             make_map_iter_fn(CollectionIterMode::kKeys))));
-        map_prototype_->set_property("values", Value::object(ObjectPtr(
+        map_prototype_->define_builtin_property("values", Value::object(ObjectPtr(
             make_map_iter_fn(CollectionIterMode::kValues))));
-        map_prototype_->set_property("entries", Value::object(ObjectPtr(
+        map_prototype_->define_builtin_property("entries", Value::object(ObjectPtr(
             make_map_iter_fn(CollectionIterMode::kEntries))));
 
         {
@@ -6026,7 +6026,7 @@ void VM::init_global_env() {
             return fn;
         };
 
-        set_prototype_->set_property("add", Value::object(ObjectPtr(make_set_method(
+        set_prototype_->define_builtin_property("add", Value::object(ObjectPtr(make_set_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kSet) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Set.prototype.add called on non-Set");
@@ -6040,7 +6040,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(this_val);
             }))));
 
-        set_prototype_->set_property("has", Value::object(ObjectPtr(make_set_method(
+        set_prototype_->define_builtin_property("has", Value::object(ObjectPtr(make_set_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kSet) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Set.prototype.has called on non-Set");
@@ -6051,7 +6051,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(Value::boolean(s->find_value(val) != JSSet::kNotFound));
             }))));
 
-        set_prototype_->set_property("delete", Value::object(ObjectPtr(make_set_method(
+        set_prototype_->define_builtin_property("delete", Value::object(ObjectPtr(make_set_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kSet) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Set.prototype.delete called on non-Set");
@@ -6065,7 +6065,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(Value::boolean(true));
             }))));
 
-        set_prototype_->set_property("clear", Value::object(ObjectPtr(make_set_method(
+        set_prototype_->define_builtin_property("clear", Value::object(ObjectPtr(make_set_method(
             [this](Value this_val, std::vector<Value>, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kSet) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Set.prototype.clear called on non-Set");
@@ -6076,7 +6076,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(Value::undefined());
             }))));
 
-        set_prototype_->set_property("forEach", Value::object(ObjectPtr(make_set_method(
+        set_prototype_->define_builtin_property("forEach", Value::object(ObjectPtr(make_set_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kSet) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Set.prototype.forEach called on non-Set");
@@ -6175,11 +6175,11 @@ void VM::init_global_env() {
             return fn;
         };
 
-        set_prototype_->set_property("values", Value::object(ObjectPtr(
+        set_prototype_->define_builtin_property("values", Value::object(ObjectPtr(
             make_set_iter_fn(CollectionIterMode::kValues))));
-        set_prototype_->set_property("keys", Value::object(ObjectPtr(
+        set_prototype_->define_builtin_property("keys", Value::object(ObjectPtr(
             make_set_iter_fn(CollectionIterMode::kValues))));
-        set_prototype_->set_property("entries", Value::object(ObjectPtr(
+        set_prototype_->define_builtin_property("entries", Value::object(ObjectPtr(
             make_set_iter_fn(CollectionIterMode::kEntries))));
 
         {
@@ -6259,7 +6259,7 @@ void VM::init_global_env() {
             return fn;
         };
 
-        weakmap_prototype_->set_property("set", Value::object(ObjectPtr(make_wm_method(
+        weakmap_prototype_->define_builtin_property("set", Value::object(ObjectPtr(make_wm_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakMap) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakMap.prototype.set called on non-WeakMap");
@@ -6276,7 +6276,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(this_val);
             }))));
 
-        weakmap_prototype_->set_property("get", Value::object(ObjectPtr(make_wm_method(
+        weakmap_prototype_->define_builtin_property("get", Value::object(ObjectPtr(make_wm_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakMap) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakMap.prototype.get called on non-WeakMap");
@@ -6290,7 +6290,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(it->second);
             }))));
 
-        weakmap_prototype_->set_property("has", Value::object(ObjectPtr(make_wm_method(
+        weakmap_prototype_->define_builtin_property("has", Value::object(ObjectPtr(make_wm_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakMap) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakMap.prototype.has called on non-WeakMap");
@@ -6302,7 +6302,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(Value::boolean(wm->table_.count(key.as_object_raw()) > 0));
             }))));
 
-        weakmap_prototype_->set_property("delete", Value::object(ObjectPtr(make_wm_method(
+        weakmap_prototype_->define_builtin_property("delete", Value::object(ObjectPtr(make_wm_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakMap) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakMap.prototype.delete called on non-WeakMap");
@@ -6398,7 +6398,7 @@ void VM::init_global_env() {
             return fn;
         };
 
-        weakset_prototype_->set_property("add", Value::object(ObjectPtr(make_ws_method(
+        weakset_prototype_->define_builtin_property("add", Value::object(ObjectPtr(make_ws_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakSet) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakSet.prototype.add called on non-WeakSet");
@@ -6414,7 +6414,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(this_val);
             }))));
 
-        weakset_prototype_->set_property("has", Value::object(ObjectPtr(make_ws_method(
+        weakset_prototype_->define_builtin_property("has", Value::object(ObjectPtr(make_ws_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakSet) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakSet.prototype.has called on non-WeakSet");
@@ -6426,7 +6426,7 @@ void VM::init_global_env() {
                 return EvalResult::ok(Value::boolean(ws->table_.count(val.as_object_raw()) > 0));
             }))));
 
-        weakset_prototype_->set_property("delete", Value::object(ObjectPtr(make_ws_method(
+        weakset_prototype_->define_builtin_property("delete", Value::object(ObjectPtr(make_ws_method(
             [this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
                 if (!this_val.is_object() || this_val.as_object_raw()->object_kind() != ObjectKind::kWeakSet) {
                     native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "WeakSet.prototype.delete called on non-WeakSet");

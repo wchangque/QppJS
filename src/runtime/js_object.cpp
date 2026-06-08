@@ -113,13 +113,15 @@ void JSObject::set_property(const std::string& key, Value value) {
 }
 
 void JSObject::define_builtin_property(const std::string& key, Value value) {
+    // 内置方法标准属性描述符：writable=true, enumerable=false, configurable=true
+    constexpr uint8_t kBuiltinFlags = kPropWritable | kPropConfigurable;
     auto it = index_map_.find(key);
     if (it != index_map_.end()) {
         properties_[it->second].value = std::move(value);
-        properties_[it->second].flags = 0x00;
+        properties_[it->second].flags = kBuiltinFlags;
     } else {
         size_t idx = properties_.size();
-        properties_.push_back(PropertyEntry{key, std::move(value), Value::undefined(), Value::undefined(), 0x00});
+        properties_.push_back(PropertyEntry{key, std::move(value), Value::undefined(), Value::undefined(), kBuiltinFlags});
         index_map_.emplace(key, idx);
         ++active_count_;
     }
