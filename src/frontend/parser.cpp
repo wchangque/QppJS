@@ -3527,16 +3527,23 @@ struct Parser {
         if (cur.kind == TokenKind::KwCatch) {
             Token catch_tok = cur;
             advance();  // 消费 catch
-            // 可选 catch 绑定（ES2019）：catch (e) { ... } 或 catch { ... }
+            // 可选 catch 绑定（ES2019）：catch (e) { ... }、catch { ... }、catch ([a,b]) {}、catch ({a}) {}
             std::optional<std::string> param = std::nullopt;
+            std::shared_ptr<PatternNode> catch_pattern;
             if (cur.kind == TokenKind::LParen) {
                 advance();  // 消费 (
-                if (cur.kind != TokenKind::Ident) {
+                if (cur.kind == TokenKind::LBracket || cur.kind == TokenKind::LBrace) {
+                    // 解构绑定 catch 参数
+                    auto pat_r = parse_binding_pattern();
+                    if (!pat_r.ok()) return ParseResult<StmtNode>::Err(pat_r.error());
+                    catch_pattern = std::make_shared<PatternNode>(std::move(pat_r.value()));
+                } else if (cur.kind != TokenKind::Ident) {
                     return ParseResult<StmtNode>::Err(
                         make_parse_error(source, cur, "expected catch parameter"));
+                } else {
+                    param = std::string{token_text(cur)};
+                    advance();
                 }
-                param = std::string{token_text(cur)};
-                advance();
                 auto rp = expect(TokenKind::RParen);
                 if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
             }
@@ -3547,7 +3554,7 @@ struct Parser {
             auto catch_body = parse_block();
             if (!catch_body.ok()) return ParseResult<StmtNode>::Err(catch_body.error());
             SourceRange catch_range = span(catch_tok.range.offset, range_end(catch_body.value().range));
-            handler = CatchClause{std::move(param), std::move(catch_body.value()), catch_range};
+            handler = CatchClause{std::move(param), std::move(catch_pattern), std::move(catch_body.value()), catch_range};
         }
 
         if (cur.kind == TokenKind::KwFinally) {

@@ -2040,15 +2040,22 @@ void Compiler::compile_try_stmt(const TryStatement& stmt) {
             finally_info_stack_.push_back(FinallyInfo{});
             emit(Opcode::kPushScope);
             emit(Opcode::kGetException);
-            // 可选 catch 绑定（ES2019）：无参数时直接 Pop 丢弃异常值
-            if (stmt.handler->param.has_value()) {
-                uint16_t param_idx = add_name(stmt.handler->param.value());
-                emit(Opcode::kDefLet);
-                emit_u16(param_idx);
-                emit(Opcode::kInitVar);
-                emit_u16(param_idx);
+            // catch 绑定：解构模式 > 简单标识符 > 无绑定（ES2019 可选 catch）
+            if (stmt.handler->pattern_binding != nullptr) {
+                // 解构 catch 参数（如 catch ([a, b]) 或 catch ({a, b})）
+                // compile_bind_pattern 内部已 pop TOS，无需额外 kPop
+                emit_defs_for_pattern(*stmt.handler->pattern_binding);
+                compile_bind_pattern(*stmt.handler->pattern_binding, VarKind::Let, false);
+            } else {
+                if (stmt.handler->param.has_value()) {
+                    uint16_t param_idx = add_name(stmt.handler->param.value());
+                    emit(Opcode::kDefLet);
+                    emit_u16(param_idx);
+                    emit(Opcode::kInitVar);
+                    emit_u16(param_idx);
+                }
+                emit(Opcode::kPop);  // 简单参数：pop InitVar 的结果；无参数：pop exception_val
             }
-            emit(Opcode::kPop);
             compile_block_stmt(stmt.handler->body);
             emit(Opcode::kPopScope);
             std::vector<size_t> catch_gosub_patches = std::move(finally_info_stack_.back().gosub_patches);
@@ -2166,15 +2173,21 @@ void Compiler::compile_try_stmt(const TryStatement& stmt) {
         patch_jump_to(enter_try_pos, catch_label);
         emit(Opcode::kPushScope);
         emit(Opcode::kGetException);
-        // 可选 catch 绑定（ES2019）：无参数时直接 Pop 丢弃异常值
-        if (stmt.handler->param.has_value()) {
-            uint16_t param_idx = add_name(stmt.handler->param.value());
-            emit(Opcode::kDefLet);
-            emit_u16(param_idx);
-            emit(Opcode::kInitVar);
-            emit_u16(param_idx);
+        // catch 绑定：解构模式 > 简单标识符 > 无绑定（ES2019 可选 catch）
+        if (stmt.handler->pattern_binding != nullptr) {
+            // 解构 catch 参数：compile_bind_pattern 内部已 pop TOS
+            emit_defs_for_pattern(*stmt.handler->pattern_binding);
+            compile_bind_pattern(*stmt.handler->pattern_binding, VarKind::Let, false);
+        } else {
+            if (stmt.handler->param.has_value()) {
+                uint16_t param_idx = add_name(stmt.handler->param.value());
+                emit(Opcode::kDefLet);
+                emit_u16(param_idx);
+                emit(Opcode::kInitVar);
+                emit_u16(param_idx);
+            }
+            emit(Opcode::kPop);
         }
-        emit(Opcode::kPop);
         compile_block_stmt(stmt.handler->body);
         emit(Opcode::kPopScope);
 

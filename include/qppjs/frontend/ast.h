@@ -528,7 +528,8 @@ struct ThrowStatement {
 
 // catch(e) { body }（辅助结构，不进 variant）
 struct CatchClause {
-    std::optional<std::string> param;  // nullopt = optional catch binding (ES2019)
+    std::optional<std::string> param;              // 简单标识符绑定（nullopt = 可选 catch）
+    std::shared_ptr<PatternNode> pattern_binding;  // 解构绑定（非 null 时优先级高于 param）
     BlockStatement body;
     SourceRange range;
 };

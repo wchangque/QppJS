@@ -10497,8 +10497,16 @@ StmtResult Interpreter::exec_catch(const CatchClause& handler, Value thrown_val)
     auto old_env = current_env_;
     current_env_ = catch_env;
 
-    // 可选 catch 绑定（ES2019）：param 为 nullopt 时不创建绑定，直接丢弃异常值
-    if (handler.param.has_value()) {
+    // catch 绑定：解构模式 > 简单标识符 > 无绑定（ES2019 可选 catch）
+    if (handler.pattern_binding != nullptr) {
+        // 解构 catch 参数（如 catch ([a, b]) 或 catch ({a, b})）
+        // current_env_ 已指向 catch_env，bind_pattern 使用 current_env_ 定义变量
+        auto bind_r = bind_pattern(*handler.pattern_binding, thrown_val, VarKind::Let, false);
+        if (!bind_r.is_ok()) {
+            current_env_ = old_env;
+            return bind_r;
+        }
+    } else if (handler.param.has_value()) {
         catch_env->define(handler.param.value(), VarKind::Let);
         catch_env->initialize(handler.param.value(), thrown_val);
     }
