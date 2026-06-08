@@ -292,6 +292,14 @@ static std::string coerce_primitive_to_str(const Value& v) {
             oss << static_cast<long long>(n);
             return oss.str();
         }
+        // 大整数 < 10^21: 用 fixed 格式避免科学计数法
+        if (n == std::floor(n) && std::abs(n) < 1e21) {
+            char buf[64];
+            int len = std::snprintf(buf, sizeof(buf), "%.0f", n);
+            if (len > 0 && len < static_cast<int>(sizeof(buf))) {
+                return std::string(buf, len);
+            }
+        }
         std::ostringstream oss;
         oss << n;
         return oss.str();
@@ -2548,8 +2556,13 @@ void Interpreter::init_runtime() {
                 "Object.getOwnPropertyDescriptor called on non-object");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
         }
-        // ES2015+: 非对象参数不抛异常，返回 undefined（原始值没有自有属性）
+        // ES2015+: null/undefined 仍然 TypeError，其他原始值返回 undefined
         if (!args[0].is_object()) {
+            if (args[0].is_null() || args[0].is_undefined()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Object.getOwnPropertyDescriptor called on null or undefined");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
             return EvalResult::ok(Value::undefined());
         }
         RcObject* raw = args[0].as_object_raw();
@@ -7174,6 +7187,14 @@ std::string Interpreter::to_string_val(const Value& v) {
             std::ostringstream oss;
             oss << static_cast<long long>(n);
             return oss.str();
+        }
+        // 大整数 < 10^21: 用 fixed 格式避免科学计数法
+        if (n == std::floor(n) && std::abs(n) < 1e21) {
+            char buf[64];
+            int len = std::snprintf(buf, sizeof(buf), "%.0f", n);
+            if (len > 0 && len < static_cast<int>(sizeof(buf))) {
+                return std::string(buf, len);
+            }
         }
         std::ostringstream oss;
         oss << n;

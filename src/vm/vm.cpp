@@ -115,8 +115,18 @@ static std::string strip_error_prefix(const std::string& msg) {
 
 static std::string number_to_string(double d) {
     if (d == 0.0) return "0";
+    // 整数且在 2^53 范围内：精确转换
     if (d == std::floor(d) && d >= -9007199254740992.0 && d <= 9007199254740992.0) {
         return std::to_string(static_cast<int64_t>(d));
+    }
+    // 大整数且 < 10^21：使用 fixed 格式（如 1e20 → "100000000000000000000"）
+    if (d == std::floor(d) && std::abs(d) < 1e21) {
+        // sprintf 方式，用足够大的缓冲区输出 fixed 整数格式
+        char buf[64];
+        int len = std::snprintf(buf, sizeof(buf), "%.0f", d);
+        if (len > 0 && len < static_cast<int>(sizeof(buf))) {
+            return std::string(buf, len);
+        }
     }
     char buf[32];
     auto [ptr, ec] = std::to_chars(buf, buf + 32, d, std::chars_format::general, 17);
@@ -2598,8 +2608,13 @@ void VM::init_global_env() {
                 "Object.getOwnPropertyDescriptor called on non-object");
             return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
         }
-        // ES2015+: 非对象参数不抛异常，返回 undefined
+        // ES2015+: null/undefined 仍然 TypeError，其他原始值返回 undefined
         if (!args[0].is_object()) {
+            if (args[0].is_null() || args[0].is_undefined()) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Object.getOwnPropertyDescriptor called on null or undefined");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
             return EvalResult::ok(Value::undefined());
         }
         RcObject* raw = args[0].as_object_raw();
