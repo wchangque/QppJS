@@ -258,6 +258,26 @@ void Compiler::hoist_vars_scan_pattern(const PatternNode& pat) {
     }, pat.v);
 }
 
+void Compiler::emit_defs_for_pattern(const PatternNode& pat) {
+    std::visit(overloaded{
+        [this](const IdentifierPattern& ip) {
+            uint16_t idx = add_name(ip.name);
+            emit(Opcode::kDefVar);
+            emit_u16(idx);
+        },
+        [this](const ArrayPattern& ap) {
+            for (const auto& elem_opt : ap.elements) {
+                if (elem_opt.has_value()) emit_defs_for_pattern(*elem_opt->pattern);
+            }
+            if (ap.rest) emit_defs_for_pattern(*ap.rest);
+        },
+        [this](const ObjectPattern& op) {
+            for (const auto& prop : op.properties) emit_defs_for_pattern(*prop.value_pattern);
+            if (op.rest) emit_defs_for_pattern(*op.rest);
+        },
+    }, pat.v);
+}
+
 void Compiler::hoist_vars_scan_expr(const ExprNode& expr) {
     std::visit(
         overloaded{
@@ -390,13 +410,24 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
     std::optional<std::string> rest_param) {
 
     // 提取参数名列表，计算 length_count
+    // 解构参数使用临时名 $__arg_N__（N 为参数索引），以便 prologue 中加载实参值
     std::vector<std::string> param_names;
     param_names.reserve(params.size());
-    for (const auto& pd : params) param_names.push_back(pd.name);
+    for (size_t i = 0; i < params.size(); ++i) {
+        if (params[i].pattern_binding != nullptr) {
+            param_names.push_back("$__arg_" + std::to_string(i) + "__");
+        } else {
+            param_names.push_back(params[i].name);
+        }
+    }
 
+    // length_count: 第一个有默认值或解构参数之前的参数数量
     uint16_t length_count = static_cast<uint16_t>(params.size());
     for (uint16_t i = 0; i < static_cast<uint16_t>(params.size()); ++i) {
-        if (params[i].default_init != nullptr) { length_count = i; break; }
+        if (params[i].default_init != nullptr || params[i].pattern_binding != nullptr) {
+            length_count = i;
+            break;
+        }
     }
 
     auto fn = std::make_shared<BytecodeFunction>();
@@ -419,6 +450,15 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
     // Pre-scan for var declarations
     hoist_vars_scan(body);
 
+    // 解构参数的变量名也需要加入 var_decls，以便 kDefVar 预声明（供 kSetVar 使用）
+    if (!is_program) {
+        for (const auto& pd : params) {
+            if (pd.pattern_binding != nullptr) {
+                hoist_vars_scan_pattern(*pd.pattern_binding);
+            }
+        }
+    }
+
     uint16_t return_temp_idx = add_name(kReturnTempName);
     bool found_return_temp = false;
     for (uint16_t idx : fn->var_decls) {
@@ -433,20 +473,48 @@ std::shared_ptr<BytecodeFunction> Compiler::compile_function(
     // 序列：kGetVar name; kLoadUndefined; kStrictEq; kJumpIfFalse skip; [default_expr]; kSetVar name; kPop; label_skip:
     // 必须在 kDefVar（body var 提升）之前执行，确保 body var 在默认值求值时不可见（规范要求）
     if (!is_program) {
-        for (const auto& pd : params) {
-            if (pd.default_init == nullptr) continue;
-            uint16_t name_idx = add_name(pd.name);
-            emit(Opcode::kGetVar);
-            emit_u16(name_idx);
-            emit(Opcode::kLoadUndefined);
-            emit(Opcode::kStrictEq);
-            size_t skip_patch = emit_jump(Opcode::kJumpIfFalse);  // if not undefined, skip
-            // param is undefined: compile default_init
-            compile_expr(*pd.default_init);
-            emit(Opcode::kSetVar);
-            emit_u16(name_idx);
-            emit(Opcode::kPop);
-            patch_jump(skip_patch);  // label_skip
+        for (size_t pi = 0; pi < params.size(); ++pi) {
+            const auto& pd = params[pi];
+            if (pd.pattern_binding != nullptr) {
+                // 解构参数：临时名为 $__arg_N__
+                const std::string& tmp_name = param_names[pi];
+                uint16_t tmp_idx = add_name(tmp_name);
+                // 先为解构出的变量名 emit kDefVar（确保 kSetVar 时变量已声明）
+                // 复用 hoist_vars_scan_pattern 已把这些名字加入 var_decls，
+                // 但 var_decls 的 kDefVar 在 prologue 之后才 emit，所以这里提前单独声明
+                emit_defs_for_pattern(*pd.pattern_binding);
+                // 如果有整体默认值（如 [a,b]=[1,2]），先处理 undefined 替换
+                if (pd.default_init != nullptr) {
+                    emit(Opcode::kGetVar);
+                    emit_u16(tmp_idx);
+                    emit(Opcode::kLoadUndefined);
+                    emit(Opcode::kStrictEq);
+                    size_t skip_patch = emit_jump(Opcode::kJumpIfFalse);
+                    compile_expr(*pd.default_init);
+                    emit(Opcode::kSetVar);
+                    emit_u16(tmp_idx);
+                    emit(Opcode::kPop);
+                    patch_jump(skip_patch);
+                }
+                // 加载实参值，执行解构绑定
+                emit(Opcode::kGetVar);
+                emit_u16(tmp_idx);
+                compile_bind_pattern(*pd.pattern_binding, VarKind::Var, false);
+            } else {
+                if (pd.default_init == nullptr) continue;
+                uint16_t name_idx = add_name(pd.name);
+                emit(Opcode::kGetVar);
+                emit_u16(name_idx);
+                emit(Opcode::kLoadUndefined);
+                emit(Opcode::kStrictEq);
+                size_t skip_patch = emit_jump(Opcode::kJumpIfFalse);  // if not undefined, skip
+                // param is undefined: compile default_init
+                compile_expr(*pd.default_init);
+                emit(Opcode::kSetVar);
+                emit_u16(name_idx);
+                emit(Opcode::kPop);
+                patch_jump(skip_patch);  // label_skip
+            }
         }
     }
 

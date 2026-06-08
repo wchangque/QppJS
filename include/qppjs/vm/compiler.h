@@ -123,6 +123,9 @@ private:
                               const std::optional<std::string>& class_name);
     std::shared_ptr<BytecodeFunction> compile_field_initializer(const std::vector<ClassField>& fields);
 
+    // Emit kDefVar for all identifier names in a pattern (used in destructuring param prologue).
+    void emit_defs_for_pattern(const PatternNode& pat);
+
     // Emit helpers
     void emit(Opcode op);
     void emit_u8(uint8_t v);

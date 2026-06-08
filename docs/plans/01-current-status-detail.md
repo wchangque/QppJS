@@ -4,6 +4,15 @@
 
 ## 1. 已完成任务
 
+- [x] **函数参数解构（Destructuring Function Parameters）**（2026-06-08）：
+  - **背景**：`parse_function_params()` 原仅接受 Ident token，导致 `function foo([a,b])` / `function foo({a,b})` 等形式无法解析，8788 个 dstr 相关 test262 测试全部失败。
+  - **AST 修改**：`ParamDef` 结构体新增 `shared_ptr<PatternNode> pattern_binding` 字段（`shared_ptr` 保证可复制，`PatternNode` 含 `unique_ptr` 字段）；`name` 为空时表示解构参数；`default_init` 同时支持简单参数和解构参数的整体默认值。
+  - **Parser 修改**：`parse_function_params()` 在 Ident 检查前添加 `LBracket`/`LBrace` 分支，调用 `parse_binding_pattern()` 解析解构模式，支持整体默认值（如 `[a,b]=[1,2]`）；箭头函数参数解析（nud(LParen) 多参数路径和单参数路径）添加 `ArrayExpression`/`ObjectExpression` 分支，通过 `convert_expr_to_pattern` 转换为 `PatternNode`（支持 `([a,b]) =>` 和 `({a,b}) =>` 形式）；所有直接构造 `ParamDef{name, default_init}` 的地方更新为三字段形式 `ParamDef{name, nullptr, default_init}`。
+  - **Interpreter 修改**：`make_function_value`/`make_async_function_value`/`make_async_generator_value` 的 `length_count` 计算在解构参数处截断；`call_function` 参数绑定循环对 `pattern_binding != nullptr` 的参数先用 `collect_pattern_names` 收集所有变量名并 `define`（预声明），再处理整体默认值，最后调用 `bind_pattern`（Interp 路径）；`make_async_function_value` 和 `make_async_generator_value` 的参数绑定 lambda 对称实现。
+  - **Compiler 修改**：`compile_function` 提取 `param_names` 时，解构参数用临时名 `$__arg_N__` 作为实参占位符；`length_count` 在解构参数处截断；`hoist_vars_scan` 之后对解构参数调用 `hoist_vars_scan_pattern` 将解构出的变量名加入 `var_decls`；prologue 中对解构参数先调用新增的 `emit_defs_for_pattern`（递归 emit kDefVar 预声明所有解构变量），再处理整体默认值（kGetVar tmp + kLoadUndefined + kStrictEq + kJumpIfFalse 序列），最后 kGetVar tmp + `compile_bind_pattern` 生成解构字节码（VM 路径）；新增 `emit_defs_for_pattern` 成员函数（compiler.h 声明 + compiler.cpp 实现）。
+  - **测试**：新建 `tests/unit/dstr_params_test.cpp`（DP-01～DP-15 × Interp+VM = 30 个测试）；注册到 `tests/CMakeLists.txt`。覆盖：数组/对象解构参数、嵌套解构、带默认值的解构元素、整体默认值（`[a,b]=[1,2]`）、箭头函数解构参数、class 方法解构、rest+解构混合、对象方法简写解构、混合参数、重命名解构、多解构参数、`.length` 截断语义。
+  - **结果**：4954/4954 通过（coverage），0 LSan 泄漏。
+
 - [x] **Array.prototype 缺失方法补充（entries/keys/values 迭代器 + findLast/findLastIndex + toSorted/toReversed/toSpliced/with）**（2026-06-02）：
   - **背景**：补充 ES2016-ES2023 标准中 Array.prototype 已缺失的常用方法，无 AST/Parser 变更，仅在 interpreter.cpp 和 vm.cpp 的 array_prototype_ 注册区域各添加 9 个方法，Interp+VM 双路径对称。
   - **entries()/keys()/values() 迭代器**：三个方法均返回 JSObject 迭代器，含 `__arr__`/`__idx__` 内部状态字段，`next()` native 方法（keys 返回索引数字；values 返回元素值；entries 返回 `[idx, elem]` pair 数组），以及 `[Symbol.iterator]() { return this; }` 使迭代器本身可迭代（支持 for...of 和展开）。

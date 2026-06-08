@@ -139,10 +139,11 @@ struct MemberAssignmentExpression {
     AssignOp op = AssignOp::Assign;
 };
 
-// 函数参数定义：可含默认值
+// 函数参数定义：可含默认值或解构模式
 struct ParamDef {
-    std::string name;
-    std::shared_ptr<ExprNode> default_init;  // nullptr = 无默认值
+    std::string name;                                    // 简单标识符参数（pattern_binding 为空时有效）
+    std::shared_ptr<PatternNode> pattern_binding;        // 非空时表示解构参数（[a,b] 或 {a,b}）
+    std::shared_ptr<ExprNode> default_init;              // 可选默认值（简单参数和解构参数均可有）
 };
 
 // 函数表达式 function [name](params) { body }

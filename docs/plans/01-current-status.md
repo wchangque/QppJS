@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |------|----|
 | 当前阶段 | test262 通过率提升 |
-| 测试计数 | 4924/4924 通过（coverage），0 LSan 泄漏 |
+| 测试计数 | 4954/4954 通过（coverage），0 LSan 泄漏 |
 | 最近更新 | 2026-06-08 |
-| 下一步 | 下一批 test262 候选目标（WeakRef / Proxy 等） |
+| 下一步 | 下一批 test262 候选目标（函数参数解构已完成，可考虑 WeakRef / Proxy 等） |
 | test262 | bracket accessor 修复后 class/accessor-name-inst 90.9%（原 13.6%） |
 
 ## 已知遗留问题
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **函数参数解构（Destructuring Function Parameters）**（2026-06-08）：`ParamDef` 结构体新增 `pattern_binding` 字段（`shared_ptr<PatternNode>`）；`parse_function_params()` 支持 `[`/`{` 开头的解构参数（调用 `parse_binding_pattern()`，支持整体默认值）；箭头函数参数解析支持 `([a,b]) =>` 和 `({a,b}) =>` 形式（`convert_expr_to_pattern` 转换）；Interpreter `call_function` 参数绑定支持解构参数（`collect_pattern_names` 预声明 + `bind_pattern`），`make_async_function_value` 和 `make_async_generator_value` 对称实现；Compiler `compile_function` prologue 新增 `emit_defs_for_pattern`（预声明解构变量）+ `compile_bind_pattern`（生成解构字节码），`hoist_vars_scan_pattern` 扫描解构参数变量名加入 var_decls；`length_count` 计算在解构参数处截断（Interp+VM 对称）；新增 `tests/unit/dstr_params_test.cpp`（DP-01～DP-15 × Interp+VM = 30 个测试）。4954/4954 通过（coverage），0 LSan 泄漏。
 
 - [x] **VM kGetElem/kSetElem bracket accessor 修复**（2026-06-08）：对 kOrdinary/kGenerator/kMap/kSet 等类型对象，bracket 读取（`obj["key"]`）现在正确通过原型链检查 accessor getter 并调用（与 kGetProp 对称）；bracket 赋值（`obj["key"] = val`）现在正确通过原型链检查 accessor setter 并调用（含 no-setter sloppy 静默忽略）；kSetElem 支持的 ObjectKind 白名单扩展（新增 Generator/Map/Set/WeakMap/WeakSet）；kGetElem 新增 kFunction 路径（尝试 `fn->get_property(key)`，再查 prototype，避免"Cannot read element of non-JSObject"错误）。仅修改 `src/vm/vm.cpp`。4924/4924 通过（coverage），0 LSan 泄漏。test262 改善：language/statements/class/accessor-name-inst 13.6%→90.9%（3→20 通过）。
 

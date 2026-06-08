@@ -829,7 +829,7 @@ struct Parser {
                                 }
                                 rest = std::get<Identifier>(sp.argument->v).name;
                             } else if (std::holds_alternative<Identifier>(item.v)) {
-                                params.push_back(ParamDef{std::get<Identifier>(item.v).name, nullptr});
+                                params.push_back(ParamDef{std::get<Identifier>(item.v).name, nullptr, nullptr});
                             } else if (std::holds_alternative<AssignmentExpression>(item.v)) {
                                 // (a = expr) => ...  参数默认值
                                 auto& ae = std::get<AssignmentExpression>(item.v);
@@ -838,7 +838,14 @@ struct Parser {
                                         source, cur, "arrow function parameter must be an identifier"));
                                 }
                                 auto default_expr = std::make_shared<ExprNode>(std::move(*ae.value));
-                                params.push_back(ParamDef{std::move(ae.target), std::move(default_expr)});
+                                params.push_back(ParamDef{std::move(ae.target), nullptr, std::move(default_expr)});
+                            } else if (std::holds_alternative<ArrayExpression>(item.v) ||
+                                       std::holds_alternative<ObjectExpression>(item.v)) {
+                                // ([a,b]) => ... 或 ({a,b}) => ... 解构箭头参数
+                                auto pat_r = convert_expr_to_pattern(item);
+                                if (!pat_r.ok()) return ParseResult<ExprNode>::Err(pat_r.error());
+                                params.push_back(ParamDef{
+                                    "", std::make_shared<PatternNode>(std::move(pat_r.value())), nullptr});
                             } else {
                                 return ParseResult<ExprNode>::Err(make_parse_error(
                                     source, cur, "arrow function parameter must be an identifier"));
@@ -873,7 +880,7 @@ struct Parser {
                     if (std::holds_alternative<Identifier>(first.value().v)) {
                         std::string param_name = std::get<Identifier>(first.value().v).name;
                         advance();  // 消費 =>
-                        return parse_arrow_body({ParamDef{std::move(param_name), nullptr}}, paren_start);
+                        return parse_arrow_body({ParamDef{std::move(param_name), nullptr, nullptr}}, paren_start);
                     }
                     if (std::holds_alternative<AssignmentExpression>(first.value().v)) {
                         // (a = expr) => ...  单参数默认值
@@ -884,8 +891,18 @@ struct Parser {
                         }
                         auto default_expr = std::make_shared<ExprNode>(std::move(*ae.value));
                         advance();  // 消费 =>
-                        return parse_arrow_body({ParamDef{std::move(ae.target), std::move(default_expr)}},
+                        return parse_arrow_body({ParamDef{std::move(ae.target), nullptr, std::move(default_expr)}},
                                                 paren_start);
+                    }
+                    if (std::holds_alternative<ArrayExpression>(first.value().v) ||
+                        std::holds_alternative<ObjectExpression>(first.value().v)) {
+                        // ([a,b]) => ... 或 ({a,b}) => ... 单解构箭头参数
+                        auto pat_r = convert_expr_to_pattern(first.value());
+                        if (!pat_r.ok()) return ParseResult<ExprNode>::Err(pat_r.error());
+                        advance();  // 消费 =>
+                        return parse_arrow_body(
+                            {ParamDef{"", std::make_shared<PatternNode>(std::move(pat_r.value())), nullptr}},
+                            paren_start);
                     }
                     return ParseResult<ExprNode>::Err(
                         make_parse_error(source, cur, "arrow function parameter must be an identifier"));
@@ -1606,7 +1623,7 @@ struct Parser {
             }
             std::string param_name = std::get<Identifier>(left.v).name;
             uint32_t fn_start = std::get<Identifier>(left.v).range.offset;
-            return parse_arrow_body({ParamDef{std::move(param_name), nullptr}}, fn_start);
+            return parse_arrow_body({ParamDef{std::move(param_name), nullptr, nullptr}}, fn_start);
         }
 
         // 后缀自增/自减：x++ / x--
@@ -2301,6 +2318,28 @@ struct Parser {
                 }
                 break;
             }
+            if (cur.kind == TokenKind::LBracket || cur.kind == TokenKind::LBrace) {
+                // 解构参数：parse_binding_pattern() 消费 [ 或 {
+                auto pat_r = parse_binding_pattern();
+                if (!pat_r.ok()) return ParseResult<std::vector<ParamDef>>::Err(pat_r.error());
+                std::shared_ptr<ExprNode> default_init;
+                if (cur.kind == TokenKind::Eq) {
+                    advance();  // 消费 =
+                    auto dexpr = parse_expr(1);
+                    if (!dexpr.ok()) return ParseResult<std::vector<ParamDef>>::Err(dexpr.error());
+                    default_init = std::make_shared<ExprNode>(std::move(dexpr.value()));
+                }
+                params.push_back(ParamDef{
+                    "",
+                    std::make_shared<PatternNode>(std::move(pat_r.value())),
+                    std::move(default_init)});
+                if (cur.kind == TokenKind::Comma) {
+                    advance();
+                } else {
+                    break;
+                }
+                continue;
+            }
             if (cur.kind != TokenKind::Ident) {
                 return ParseResult<std::vector<ParamDef>>::Err(
                         make_parse_error(source, cur, "expected parameter name"));
@@ -2315,7 +2354,7 @@ struct Parser {
                 if (!dexpr.ok()) return ParseResult<std::vector<ParamDef>>::Err(dexpr.error());
                 default_init = std::make_shared<ExprNode>(std::move(dexpr.value()));
             }
-            params.push_back(ParamDef{std::move(pname), std::move(default_init)});
+            params.push_back(ParamDef{std::move(pname), nullptr, std::move(default_init)});
             if (cur.kind == TokenKind::Comma) {
                 advance();
             } else {

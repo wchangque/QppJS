@@ -10166,10 +10166,10 @@ Value Interpreter::make_function_value(std::optional<std::string> name, const st
                                         RcPtr<Environment> closure_env,
                                         bool is_named_expr,
                                         std::optional<std::string> rest_param) {
-    // 计算 length_count（第一个有默认值的参数的索引）
+    // 计算 length_count（第一个有默认值或解构参数的索引）
     uint32_t length_count = static_cast<uint32_t>(params.size());
     for (uint32_t i = 0; i < static_cast<uint32_t>(params.size()); ++i) {
-        if (params[i].default_init != nullptr) {
+        if (params[i].default_init != nullptr || params[i].pattern_binding != nullptr) {
             length_count = i;
             break;
         }
@@ -10278,7 +10278,7 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
     // 守卫 3：箭头函数使用词法 this（M2：actual_this 在参数绑定前确定）
     Value actual_this = fn->is_arrow() ? fn->lexical_this() : std::move(this_val);
 
-    // 参数绑定：若有 param_defs 则支持默认值求值
+    // 参数绑定：若有 param_defs 则支持默认值求值和解构参数
     if (fn->param_defs() != nullptr) {
         const auto& defs = *fn->param_defs();
         // 切换到 fn_env 并临时设置 this，以便默认值表达式能引用前面已绑定的参数、arguments 和 this
@@ -10290,17 +10290,44 @@ StmtResult Interpreter::call_function(RcPtr<JSFunction> fn, Value this_val,
         current_this_ = actual_this;  // 临时设置 this（M2）
         for (size_t i = 0; i < defs.size(); ++i) {
             Value arg_val = (i < args.size()) ? args[i] : Value::undefined();
-            fn_env->define(defs[i].name, VarKind::Var);   // 先声明（M1）
-            fn_env->initialize(defs[i].name, arg_val);    // 初始化为实参或 undefined（M1）
-            if (arg_val.is_undefined() && defs[i].default_init != nullptr) {
-                auto default_r = eval_expr(*defs[i].default_init);
-                if (!default_r.is_ok()) {
+            if (defs[i].pattern_binding != nullptr) {
+                // 解构参数：先预声明所有解构出的变量名，再处理默认值，最后执行解构绑定
+                std::vector<std::string> pat_names;
+                collect_pattern_names(*defs[i].pattern_binding, pat_names);
+                for (const auto& pn : pat_names) {
+                    fn_env->define(pn, VarKind::Var);
+                }
+                if (arg_val.is_undefined() && defs[i].default_init != nullptr) {
+                    auto default_r = eval_expr(*defs[i].default_init);
+                    if (!default_r.is_ok()) {
+                        current_env_ = old_env;
+                        var_env_ = old_var_env;
+                        current_this_ = std::move(old_this);
+                        return StmtResult::err(default_r.error());
+                    }
+                    arg_val = default_r.value();
+                }
+                auto bind_r = bind_pattern(*defs[i].pattern_binding, std::move(arg_val),
+                                           VarKind::Var, false);
+                if (!bind_r.is_ok()) {
                     current_env_ = old_env;
                     var_env_ = old_var_env;
                     current_this_ = std::move(old_this);
-                    return StmtResult::err(default_r.error());
+                    return bind_r;
                 }
-                fn_env->set(defs[i].name, default_r.value());  // 更新为默认值（M1）
+            } else {
+                fn_env->define(defs[i].name, VarKind::Var);   // 先声明（M1）
+                fn_env->initialize(defs[i].name, arg_val);    // 初始化为实参或 undefined（M1）
+                if (arg_val.is_undefined() && defs[i].default_init != nullptr) {
+                    auto default_r = eval_expr(*defs[i].default_init);
+                    if (!default_r.is_ok()) {
+                        current_env_ = old_env;
+                        var_env_ = old_var_env;
+                        current_this_ = std::move(old_this);
+                        return StmtResult::err(default_r.error());
+                    }
+                    fn_env->set(defs[i].name, default_r.value());  // 更新为默认值（M1）
+                }
             }
         }
         current_env_ = old_env;
@@ -12152,10 +12179,12 @@ Value Interpreter::make_async_function_value(std::optional<std::string> name,
                                               std::shared_ptr<std::vector<StmtNode>> body,
                                               RcPtr<Environment> closure_env,
                                               std::optional<std::string> rest_param) {
-    // 计算 length_count
+    // 计算 length_count（第一个有默认值或解构参数的索引）
     uint32_t length_count = static_cast<uint32_t>(params.size());
     for (uint32_t i = 0; i < static_cast<uint32_t>(params.size()); ++i) {
-        if (params[i].default_init != nullptr) { length_count = i; break; }
+        if (params[i].default_init != nullptr || params[i].pattern_binding != nullptr) {
+            length_count = i; break;
+        }
     }
 
     // Create a native JSFunction that wraps the async body execution
@@ -12202,18 +12231,43 @@ Value Interpreter::make_async_function_value(std::optional<std::string> name,
             fn_env->initialize(name.value(), Value::object(ObjectPtr(RcPtr<JSFunction>(fn_self_raw))));
         }
 
-        // Bind parameters（支持默认值）
+        // Bind parameters（支持默认值和解构参数）
         {
             RcPtr<Environment> old_env = current_env_;
             RcPtr<Environment> old_var_env = var_env_;
             current_env_ = fn_env;
             var_env_ = fn_env;
             const auto& defs = *param_defs_captured;
+            bool param_error = false;
             for (size_t i = 0; i < defs.size(); ++i) {
                 Value arg_val = (i < call_args.size()) ? call_args[i] : Value::undefined();
-                if (arg_val.is_undefined() && defs[i].default_init != nullptr) {
-                    auto default_r = eval_expr(*defs[i].default_init);
-                    if (!default_r.is_ok()) {
+                if (defs[i].pattern_binding != nullptr) {
+                    // 解构参数：先预声明所有解构出的变量名
+                    std::vector<std::string> pat_names;
+                    collect_pattern_names(*defs[i].pattern_binding, pat_names);
+                    for (const auto& pn : pat_names) {
+                        fn_env->define(pn, VarKind::Var);
+                    }
+                    if (arg_val.is_undefined() && defs[i].default_init != nullptr) {
+                        auto default_r = eval_expr(*defs[i].default_init);
+                        if (!default_r.is_ok()) {
+                            current_env_ = old_env;
+                            var_env_ = old_var_env;
+                            if (pending_throw_.has_value()) {
+                                outer_promise->Reject(std::move(*pending_throw_), job_queue_);
+                                pending_throw_ = std::nullopt;
+                            } else {
+                                outer_promise->Reject(
+                                    make_error_value(NativeErrorType::kTypeError,
+                                                     default_r.error().message()), job_queue_);
+                            }
+                            return EvalResult::ok(outer_val);
+                        }
+                        arg_val = default_r.value();
+                    }
+                    auto bind_r = bind_pattern(*defs[i].pattern_binding, std::move(arg_val),
+                                               VarKind::Var, false);
+                    if (!bind_r.is_ok()) {
                         current_env_ = old_env;
                         var_env_ = old_var_env;
                         if (pending_throw_.has_value()) {
@@ -12222,17 +12276,36 @@ Value Interpreter::make_async_function_value(std::optional<std::string> name,
                         } else {
                             outer_promise->Reject(
                                 make_error_value(NativeErrorType::kTypeError,
-                                                 default_r.error().message()), job_queue_);
+                                                 bind_r.error().message()), job_queue_);
                         }
-                        return EvalResult::ok(outer_val);
+                        param_error = true;
+                        break;
                     }
-                    arg_val = default_r.value();
+                } else {
+                    if (arg_val.is_undefined() && defs[i].default_init != nullptr) {
+                        auto default_r = eval_expr(*defs[i].default_init);
+                        if (!default_r.is_ok()) {
+                            current_env_ = old_env;
+                            var_env_ = old_var_env;
+                            if (pending_throw_.has_value()) {
+                                outer_promise->Reject(std::move(*pending_throw_), job_queue_);
+                                pending_throw_ = std::nullopt;
+                            } else {
+                                outer_promise->Reject(
+                                    make_error_value(NativeErrorType::kTypeError,
+                                                     default_r.error().message()), job_queue_);
+                            }
+                            return EvalResult::ok(outer_val);
+                        }
+                        arg_val = default_r.value();
+                    }
+                    fn_env->define(defs[i].name, VarKind::Var);
+                    fn_env->initialize(defs[i].name, std::move(arg_val));
                 }
-                fn_env->define(defs[i].name, VarKind::Var);
-                fn_env->initialize(defs[i].name, std::move(arg_val));
             }
             current_env_ = old_env;
             var_env_ = old_var_env;
+            if (param_error) return EvalResult::ok(outer_val);
         }
 
         // Bind rest parameter
@@ -12441,7 +12514,9 @@ Value Interpreter::make_async_generator_value(std::optional<std::string> name,
                                                std::optional<std::string> rest_param) {
     uint32_t length_count = static_cast<uint32_t>(params.size());
     for (uint32_t i = 0; i < static_cast<uint32_t>(params.size()); ++i) {
-        if (params[i].default_init != nullptr) { length_count = i; break; }
+        if (params[i].default_init != nullptr || params[i].pattern_binding != nullptr) {
+            length_count = i; break;
+        }
     }
 
     auto fn = RcPtr<JSFunction>::make();
@@ -12458,7 +12533,7 @@ Value Interpreter::make_async_generator_value(std::optional<std::string> name,
         auto fn_env = RcPtr<Environment>::make(outer_env);
         gc_heap_.Register(fn_env.get());
 
-        // Bind parameters
+        // Bind parameters（支持默认值和解构参数）
         {
             RcPtr<Environment> old_env = current_env_;
             RcPtr<Environment> old_var_env = var_env_;
@@ -12467,20 +12542,48 @@ Value Interpreter::make_async_generator_value(std::optional<std::string> name,
             const auto& defs = *param_defs_captured;
             for (size_t i = 0; i < defs.size(); ++i) {
                 Value arg_val = (i < call_args.size()) ? call_args[i] : Value::undefined();
-                if (arg_val.is_undefined() && defs[i].default_init != nullptr) {
-                    auto default_r = eval_expr(*defs[i].default_init);
-                    if (!default_r.is_ok()) {
+                if (defs[i].pattern_binding != nullptr) {
+                    // 先预声明所有解构出的变量名
+                    std::vector<std::string> pat_names;
+                    collect_pattern_names(*defs[i].pattern_binding, pat_names);
+                    for (const auto& pn : pat_names) {
+                        fn_env->define(pn, VarKind::Var);
+                    }
+                    if (arg_val.is_undefined() && defs[i].default_init != nullptr) {
+                        auto default_r = eval_expr(*defs[i].default_init);
+                        if (!default_r.is_ok()) {
+                            current_env_ = old_env;
+                            var_env_ = old_var_env;
+                            if (pending_throw_.has_value()) pending_throw_ = std::nullopt;
+                            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                              "Error in default param");
+                            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                        }
+                        arg_val = default_r.value();
+                    }
+                    auto bind_r = bind_pattern(*defs[i].pattern_binding, std::move(arg_val),
+                                               VarKind::Var, false);
+                    if (!bind_r.is_ok()) {
                         current_env_ = old_env;
                         var_env_ = old_var_env;
-                        if (pending_throw_.has_value()) pending_throw_ = std::nullopt;
-                        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
-                                                          "Error in default param");
-                        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                        return EvalResult::err(bind_r.error());
                     }
-                    arg_val = default_r.value();
+                } else {
+                    if (arg_val.is_undefined() && defs[i].default_init != nullptr) {
+                        auto default_r = eval_expr(*defs[i].default_init);
+                        if (!default_r.is_ok()) {
+                            current_env_ = old_env;
+                            var_env_ = old_var_env;
+                            if (pending_throw_.has_value()) pending_throw_ = std::nullopt;
+                            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                                                              "Error in default param");
+                            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                        }
+                        arg_val = default_r.value();
+                    }
+                    fn_env->define(defs[i].name, VarKind::Var);
+                    fn_env->initialize(defs[i].name, std::move(arg_val));
                 }
-                fn_env->define(defs[i].name, VarKind::Var);
-                fn_env->initialize(defs[i].name, std::move(arg_val));
             }
             current_env_ = old_env;
             var_env_ = old_var_env;
