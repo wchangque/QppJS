@@ -3691,34 +3691,83 @@ struct Parser {
                                                                  : VarKind::Const;
             Token kw_tok = cur;
             advance();  // 消费 var/let/const
-            // 解构模式：for (const/let/var [pattern] of ...) 或 for (const/let/var {pattern} of ...)
+            // 解构模式：for (const/let/var [pattern] ...) 或 for (const/let/var {pattern} ...)
+            // 可能是 for-of、for-in 或普通 for 初始化解构声明
             if (cur.kind == TokenKind::LBracket || cur.kind == TokenKind::LBrace) {
                 auto pat_r = parse_binding_pattern();
                 if (!pat_r.ok()) return ParseResult<StmtNode>::Err(pat_r.error());
-                if (!is_of_token()) {
-                    return ParseResult<StmtNode>::Err(
-                        make_parse_error(source, cur, "expected 'of' after destructuring pattern in for"));
+                if (is_of_token()) {
+                    // for (const/let/var [pattern] of iterable)
+                    advance();  // 消费 `of`
+                    auto right = parse_expr(0);
+                    if (!right.ok()) return ParseResult<StmtNode>::Err(right.error());
+                    auto rp = expect(TokenKind::RParen);
+                    if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
+                    bool saved_top = is_top_level_;
+                    is_top_level_ = false;
+                    auto body = parse_stmt();
+                    is_top_level_ = saved_top;
+                    if (!body.ok()) return body;
+                    uint32_t end = range_end(stmt_range(body.value()));
+                    ForOfStatement fos;
+                    fos.has_decl = true;
+                    fos.var_kind = var_kind;
+                    fos.binding = "";
+                    fos.pattern_binding = std::make_unique<PatternNode>(std::move(pat_r.value()));
+                    fos.right = std::make_unique<ExprNode>(std::move(right.value()));
+                    fos.body = std::make_unique<StmtNode>(std::move(body.value()));
+                    fos.range = span(kw.range.offset, end);
+                    return ParseResult<StmtNode>::Ok(StmtNode{std::move(fos)});
                 }
-                advance();  // 消费 `of`
-                auto right = parse_expr(0);
-                if (!right.ok()) return ParseResult<StmtNode>::Err(right.error());
-                auto rp = expect(TokenKind::RParen);
-                if (!rp.ok()) return ParseResult<StmtNode>::Err(rp.error());
-                bool saved_top = is_top_level_;
+                // 不是 of/in → 普通 for 循环，解构声明作为 init
+                // for (const/let/var [pattern] = init; test; update) body
+                // 构造 DestructuringDeclaration 作为 init 语句
+                std::unique_ptr<ExprNode> pattern_init;
+                if (cur.kind == TokenKind::Eq) {
+                    advance();  // 消费 =
+                    auto init_expr = parse_expr(1);  // AssignmentExpression 不吞逗号
+                    if (!init_expr.ok()) return ParseResult<StmtNode>::Err(init_expr.error());
+                    pattern_init = std::make_unique<ExprNode>(std::move(init_expr.value()));
+                }
+                auto semi1 = expect(TokenKind::Semicolon);
+                if (!semi1.ok()) return ParseResult<StmtNode>::Err(semi1.error());
+                // 构造 DestructuringDeclaration
+                DestructuringDeclaration dstr_decl;
+                dstr_decl.kind = var_kind;
+                dstr_decl.pattern = std::make_unique<PatternNode>(std::move(pat_r.value()));
+                dstr_decl.init = std::move(pattern_init);
+                dstr_decl.range = span(kw_tok.range.offset, semi1.value().range.offset);
+                auto init_stmt = std::make_unique<StmtNode>(StmtNode{std::move(dstr_decl)});
+                // 解析 test；update；body（复用普通 for 解析剩余部分）
+                std::optional<ExprNode> test_expr;
+                if (cur.kind != TokenKind::Semicolon) {
+                    auto te = parse_expr(0);
+                    if (!te.ok()) return ParseResult<StmtNode>::Err(te.error());
+                    test_expr = std::move(te.value());
+                }
+                auto semi2 = expect(TokenKind::Semicolon);
+                if (!semi2.ok()) return ParseResult<StmtNode>::Err(semi2.error());
+                std::optional<ExprNode> update_expr;
+                if (cur.kind != TokenKind::RParen) {
+                    auto ue = parse_expr(0);
+                    if (!ue.ok()) return ParseResult<StmtNode>::Err(ue.error());
+                    update_expr = std::move(ue.value());
+                }
+                auto rp2 = expect(TokenKind::RParen);
+                if (!rp2.ok()) return ParseResult<StmtNode>::Err(rp2.error());
+                bool saved_top2 = is_top_level_;
                 is_top_level_ = false;
-                auto body = parse_stmt();
-                is_top_level_ = saved_top;
-                if (!body.ok()) return body;
-                uint32_t end = range_end(stmt_range(body.value()));
-                ForOfStatement fos;
-                fos.has_decl = true;
-                fos.var_kind = var_kind;
-                fos.binding = "";
-                fos.pattern_binding = std::make_unique<PatternNode>(std::move(pat_r.value()));
-                fos.right = std::make_unique<ExprNode>(std::move(right.value()));
-                fos.body = std::make_unique<StmtNode>(std::move(body.value()));
-                fos.range = span(kw.range.offset, end);
-                return ParseResult<StmtNode>::Ok(StmtNode{std::move(fos)});
+                auto body2 = parse_stmt();
+                is_top_level_ = saved_top2;
+                if (!body2.ok()) return body2;
+                uint32_t end2 = range_end(stmt_range(body2.value()));
+                ForStatement fs2;
+                fs2.init = std::move(init_stmt);
+                fs2.test = std::move(test_expr);
+                fs2.update = std::move(update_expr);
+                fs2.body = std::make_unique<StmtNode>(std::move(body2.value()));
+                fs2.range = span(kw.range.offset, end2);
+                return ParseResult<StmtNode>::Ok(StmtNode{std::move(fs2)});
             }
             // Must be followed by an identifier (binding name)
             if (cur.kind == TokenKind::Ident) {
