@@ -2543,10 +2543,14 @@ void Interpreter::init_runtime() {
     auto get_own_prop_desc_fn = RcPtr<JSFunction>::make();
     get_own_prop_desc_fn->set_name(std::string("getOwnPropertyDescriptor"));
     get_own_prop_desc_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
-        if (args.size() < 1 || !args[0].is_object()) {
+        if (args.size() < 1) {
             pending_throw_ = make_error_value(NativeErrorType::kTypeError,
                 "Object.getOwnPropertyDescriptor called on non-object");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        // ES2015+: 非对象参数不抛异常，返回 undefined（原始值没有自有属性）
+        if (!args[0].is_object()) {
+            return EvalResult::ok(Value::undefined());
         }
         RcObject* raw = args[0].as_object_raw();
         std::string key = args.size() >= 2 ? to_string_val(args[1]) : "undefined";
@@ -2659,10 +2663,26 @@ void Interpreter::init_runtime() {
     auto get_proto_fn = RcPtr<JSFunction>::make();
     get_proto_fn->set_name(std::string("getPrototypeOf"));
     get_proto_fn->set_native_fn([this](Value /*this_val*/, std::vector<Value> args, bool) -> EvalResult {
-        if (args.empty() || !args[0].is_object()) {
+        if (args.empty()) {
             pending_throw_ = make_error_value(NativeErrorType::kTypeError,
                 "Object.getPrototypeOf called on non-object");
             return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+        }
+        // ES2015+: ToObject(O) — 原始值自动装箱
+        if (!args[0].is_object()) {
+            if (args[0].is_null() || args[0].is_undefined()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "Object.getPrototypeOf called on null or undefined");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            // 返回对应的 prototype
+            if (args[0].is_string() && string_prototype_)
+                return EvalResult::ok(Value::object(ObjectPtr(string_prototype_)));
+            if (args[0].is_number() && number_prototype_)
+                return EvalResult::ok(Value::object(ObjectPtr(number_prototype_)));
+            if (args[0].is_bool() && boolean_prototype_)
+                return EvalResult::ok(Value::object(ObjectPtr(boolean_prototype_)));
+            return EvalResult::ok(Value::null());
         }
         RcObject* raw = args[0].as_object_raw();
         if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
