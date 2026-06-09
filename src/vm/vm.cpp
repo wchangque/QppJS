@@ -9730,7 +9730,9 @@ EvalResult VM::run(size_t exit_depth) {
             if (raw_setelem->object_kind() != ObjectKind::kOrdinary &&
                 raw_setelem->object_kind() != ObjectKind::kGenerator &&
                 raw_setelem->object_kind() != ObjectKind::kMap && raw_setelem->object_kind() != ObjectKind::kSet &&
-                raw_setelem->object_kind() != ObjectKind::kWeakMap && raw_setelem->object_kind() != ObjectKind::kWeakSet) {
+                raw_setelem->object_kind() != ObjectKind::kWeakMap && raw_setelem->object_kind() != ObjectKind::kWeakSet &&
+                raw_setelem->object_kind() != ObjectKind::kStringObject &&
+                raw_setelem->object_kind() != ObjectKind::kBooleanObject) {
                 frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
                     "Cannot set element on non-JSObject");
                 continue;
@@ -11571,7 +11573,9 @@ EvalResult VM::run(size_t exit_depth) {
             }
             RcObject* raw_de = obj_val.as_object_raw();
             if (!raw_de || (raw_de->object_kind() != ObjectKind::kOrdinary &&
-                            raw_de->object_kind() != ObjectKind::kArray)) {
+                            raw_de->object_kind() != ObjectKind::kArray &&
+                            raw_de->object_kind() != ObjectKind::kStringObject &&
+                            raw_de->object_kind() != ObjectKind::kBooleanObject)) {
                 stack.push_back(Value::boolean(true));
                 break;
             }
