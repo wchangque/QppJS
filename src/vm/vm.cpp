@@ -6773,6 +6773,136 @@ void VM::init_global_env() {
         global_env_->set("FinalizationRegistry", Value::object(ObjectPtr(vm_fr_ctor)));
     }
 
+    // ---- Reflect ----
+    {
+        auto vm_reflect_obj = RcPtr<JSObject>::make();
+        gc_heap_.Register(vm_reflect_obj.get());
+        vm_reflect_obj->set_proto(object_prototype_);
+
+        // Reflect.apply(target, thisArg, argsList)
+        {
+            auto fn = RcPtr<JSFunction>::make(); fn->set_name(std::string("apply"));
+            fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+                if (args.empty()) {
+                    native_pending_throw_ = make_error_value(NativeErrorType::kTypeError, "Reflect.apply: target required");
+                    return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+                }
+                Value this_arg = args.size() > 1 ? args[1] : Value::undefined();
+                std::vector<Value> call_args;
+                if (args.size() > 2 && args[2].is_object()) {
+                    auto* raw = args[2].as_object_raw();
+                    if (raw->object_kind() == ObjectKind::kArray) {
+                        auto* arr = static_cast<JSObject*>(raw);
+                        for (uint32_t i = 0; i < arr->array_length_; i++) {
+                            auto it = arr->elements_.find(i);
+                            call_args.push_back(it != arr->elements_.end() ? it->second : Value::undefined());
+                        }
+                    }
+                }
+                return call_function_val(args[0], this_arg, call_args);
+            });
+            gc_heap_.Register(fn.get());
+            vm_reflect_obj->set_property("apply", Value::object(ObjectPtr(fn)));
+        }
+        // Reflect.has(obj, key)
+        {
+            auto fn = RcPtr<JSFunction>::make(); fn->set_name(std::string("has"));
+            fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+                if (args.size() < 2 || !args[0].is_object()) return EvalResult::ok(Value::boolean(false));
+                std::string key = VM::to_string_val(args[1]);
+                auto* raw = args[0].as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    return EvalResult::ok(Value::boolean(obj->has_property(key)));
+                }
+                return EvalResult::ok(Value::boolean(false));
+            });
+            gc_heap_.Register(fn.get());
+            vm_reflect_obj->set_property("has", Value::object(ObjectPtr(fn)));
+        }
+        // Reflect.ownKeys(obj)
+        {
+            auto fn = RcPtr<JSFunction>::make(); fn->set_name(std::string("ownKeys"));
+            fn->set_native_fn([this](Value, std::vector<Value> args, bool) -> EvalResult {
+                auto arr = RcPtr<JSObject>::make(ObjectKind::kArray);
+                gc_heap_.Register(arr.get());
+                arr->set_proto(array_prototype_);
+                if (!args.empty() && args[0].is_object()) {
+                    auto* raw = args[0].as_object_raw();
+                    if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                        auto* obj = static_cast<JSObject*>(raw);
+                        auto all = obj->own_all_string_keys();
+                        for (uint32_t i = 0; i < static_cast<uint32_t>(all.size()); i++) {
+                            arr->elements_[i] = Value::string(all[i]);
+                            arr->array_length_ = i + 1;
+                        }
+                    }
+                }
+                return EvalResult::ok(Value::object(ObjectPtr(arr)));
+            });
+            gc_heap_.Register(fn.get());
+            vm_reflect_obj->set_property("ownKeys", Value::object(ObjectPtr(fn)));
+        }
+        // Reflect.deleteProperty(obj, key)
+        {
+            auto fn = RcPtr<JSFunction>::make(); fn->set_name(std::string("deleteProperty"));
+            fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+                if (args.size() < 2 || !args[0].is_object()) return EvalResult::ok(Value::boolean(false));
+                std::string key = VM::to_string_val(args[1]);
+                auto* raw = args[0].as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    return EvalResult::ok(Value::boolean(obj->delete_property(key)));
+                }
+                return EvalResult::ok(Value::boolean(true));
+            });
+            gc_heap_.Register(fn.get());
+            vm_reflect_obj->set_property("deleteProperty", Value::object(ObjectPtr(fn)));
+        }
+        // Reflect.isExtensible(obj)
+        {
+            auto fn = RcPtr<JSFunction>::make(); fn->set_name(std::string("isExtensible"));
+            fn->set_native_fn([](Value, std::vector<Value> args, bool) -> EvalResult {
+                if (args.empty() || !args[0].is_object()) return EvalResult::ok(Value::boolean(false));
+                auto* raw = args[0].as_object_raw();
+                if (raw->object_kind() == ObjectKind::kOrdinary || raw->object_kind() == ObjectKind::kArray) {
+                    auto* obj = static_cast<JSObject*>(raw);
+                    return EvalResult::ok(Value::boolean(obj->extensible()));
+                }
+                return EvalResult::ok(Value::boolean(true));
+            });
+            gc_heap_.Register(fn.get());
+            vm_reflect_obj->set_property("isExtensible", Value::object(ObjectPtr(fn)));
+        }
+        // Reflect.getPrototypeOf = Object.getPrototypeOf (reuse from object_constructor_)
+        {
+            Value gpo = object_constructor_->get_property("getPrototypeOf");
+            if (!gpo.is_undefined()) vm_reflect_obj->set_property("getPrototypeOf", gpo);
+        }
+        // Reflect.setPrototypeOf = Object.setPrototypeOf
+        {
+            Value spo = object_constructor_->get_property("setPrototypeOf");
+            if (!spo.is_undefined()) vm_reflect_obj->set_property("setPrototypeOf", spo);
+        }
+        // Reflect.preventExtensions = Object.preventExtensions
+        {
+            Value pe = object_constructor_->get_property("preventExtensions");
+            if (!pe.is_undefined()) vm_reflect_obj->set_property("preventExtensions", pe);
+        }
+        // Reflect.getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor
+        {
+            Value gopd = object_constructor_->get_property("getOwnPropertyDescriptor");
+            if (!gopd.is_undefined()) vm_reflect_obj->set_property("getOwnPropertyDescriptor", gopd);
+        }
+        // Reflect.defineProperty = Object.defineProperty
+        {
+            Value dp = object_constructor_->get_property("defineProperty");
+            if (!dp.is_undefined()) vm_reflect_obj->set_property("defineProperty", dp);
+        }
+        global_env_->define_initialized("Reflect");
+        global_env_->set("Reflect", Value::object(ObjectPtr(vm_reflect_obj)));
+    }
+
     // ---- globalThis ----
     {
         auto gt_obj = RcPtr<JSObject>::make();

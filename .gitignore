@@ -5,3 +5,5 @@ CMakeUserPresets.json
 .cache
 compile_commands.json
 *.profraw
+binary_cache/
+perf.data
