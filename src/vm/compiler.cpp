@@ -702,7 +702,8 @@ void Compiler::compile_stmt_last(const StmtNode& stmt) {
     }
 }
 
-// Returns true if expr is an anonymous function/arrow/class that can have its name inferred
+// Returns true if expr is an anonymous function/arrow that can have its name inferred
+// Note: ClassExpression is excluded here due to complex "static name" method interaction
 static bool is_anonymous_func_expr(const ExprNode& expr) {
     if (std::holds_alternative<FunctionExpression>(expr.v)) {
         return !std::get<FunctionExpression>(expr.v).name.has_value();
@@ -712,7 +713,16 @@ static bool is_anonymous_func_expr(const ExprNode& expr) {
         return !std::get<AsyncFunctionExpression>(expr.v).name.has_value();
     }
     if (std::holds_alternative<ClassExpression>(expr.v)) {
-        return !std::get<ClassExpression>(expr.v).name.has_value();
+        const auto& ce = std::get<ClassExpression>(expr.v);
+        if (ce.name.has_value()) return false;
+        // If class has static 'name' property/method, it overrides .name; skip inference
+        for (const auto& m : ce.methods) {
+            if (m.is_static && !m.computed && m.key == "name") return false;
+        }
+        for (const auto& f : ce.fields) {
+            if (f.is_static && !f.computed && f.key == "name") return false;
+        }
+        return true;
     }
     return false;
 }
