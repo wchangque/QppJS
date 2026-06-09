@@ -8056,6 +8056,11 @@ StmtResult Interpreter::bind_pattern(const PatternNode& pattern, Value rhs,
                     auto dv = eval_expr(**prop.default_value);
                     if (!dv.is_ok()) return StmtResult::err(dv.error());
                     val = dv.value();
+                    // Function name inference: anonymous fn → infer from binding name
+                    if (std::holds_alternative<IdentifierPattern>(prop.value_pattern->v)) {
+                        const auto& ip = std::get<IdentifierPattern>(prop.value_pattern->v);
+                        infer_function_name_if_anon(val, ip.name);
+                    }
                 }
                 // Recurse
                 auto r = bind_pattern(*prop.value_pattern, std::move(val), kind, is_assign);
@@ -8124,6 +8129,11 @@ StmtResult Interpreter::bind_pattern(const PatternNode& pattern, Value rhs,
                     auto dv = eval_expr(**elem.default_value);
                     if (!dv.is_ok()) return StmtResult::err(dv.error());
                     val = dv.value();
+                    // Function name inference: anonymous fn → infer from binding name
+                    if (std::holds_alternative<IdentifierPattern>(elem.pattern->v)) {
+                        const auto& ip = std::get<IdentifierPattern>(elem.pattern->v);
+                        infer_function_name_if_anon(val, ip.name);
+                    }
                 }
                 auto r = bind_pattern(*elem.pattern, std::move(val), kind, is_assign);
                 if (!r.is_ok()) return r;

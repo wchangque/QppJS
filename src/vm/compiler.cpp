@@ -847,6 +847,17 @@ void Compiler::compile_bind_pattern(const PatternNode& pat, VarKind kind, bool i
                     size_t skip_default = emit_jump(Opcode::kJumpIfFalse);
                     emit(Opcode::kPop);
                     compile_expr(**prop.default_value);
+                    // Function name inference: if default is anonymous fn and binding is identifier
+                    if (is_anonymous_func_expr(**prop.default_value) &&
+                        std::holds_alternative<IdentifierPattern>(prop.value_pattern->v)) {
+                        const auto& ip = std::get<IdentifierPattern>(prop.value_pattern->v);
+                        emit(Opcode::kDup);
+                        uint16_t ci = add_constant(Value::string(ip.name));
+                        emit(Opcode::kLoadString); emit_u16(ci);
+                        uint16_t ni = add_name("name");
+                        emit(Opcode::kSetProp); emit_u16(ni);
+                        emit(Opcode::kPop);
+                    }
                     patch_jump(skip_default);
                 }
                 compile_bind_pattern(*prop.value_pattern, kind, is_assign);
@@ -902,6 +913,17 @@ void Compiler::compile_bind_pattern(const PatternNode& pat, VarKind kind, bool i
                     size_t skip_default = emit_jump(Opcode::kJumpIfFalse);
                     emit(Opcode::kPop);
                     compile_expr(**elem.default_value);
+                    // Function name inference: anonymous fn default → infer from binding identifier
+                    if (is_anonymous_func_expr(**elem.default_value) &&
+                        std::holds_alternative<IdentifierPattern>(elem.pattern->v)) {
+                        const auto& ip = std::get<IdentifierPattern>(elem.pattern->v);
+                        emit(Opcode::kDup);
+                        uint16_t ci = add_constant(Value::string(ip.name));
+                        emit(Opcode::kLoadString); emit_u16(ci);
+                        uint16_t ni = add_name("name");
+                        emit(Opcode::kSetProp); emit_u16(ni);
+                        emit(Opcode::kPop);
+                    }
                     patch_jump(skip_default);
                 }
                 // bind consumes value, stack: [iter]
