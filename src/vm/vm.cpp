@@ -5633,6 +5633,74 @@ void VM::init_global_env() {
         if (string_prototype_) string_prototype_->define_builtin_property("localeCompare", Value::object(ObjectPtr(vm_lc_fn)));
     }
 
+    // ---- Annex B HTML string wrapping methods ----
+    {
+        auto vm_make_tag = [this](const char* open, const char* close, const char* name_str) {
+            auto fn = RcPtr<JSFunction>::make();
+            fn->set_name(std::string(name_str));
+            std::string open_s = open;
+            std::string close_s = close;
+            fn->set_native_fn([this, open_s, close_s](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+                if (this_val.is_null() || this_val.is_undefined()) {
+                    native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                        "Cannot call method on null or undefined");
+                    return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+                }
+                std::string str;
+                if (this_val.is_string()) {
+                    str = this_val.sv();
+                } else if (this_val.is_object() && this_val.as_object_raw() &&
+                           this_val.as_object_raw()->object_kind() == ObjectKind::kStringObject) {
+                    str = static_cast<JSObject*>(this_val.as_object_raw())->wrapped_value().sv();
+                } else {
+                    str = to_string_val(this_val);
+                }
+                return EvalResult::ok(Value::string(open_s + str + close_s));
+            });
+            gc_heap_.Register(fn.get());
+            return fn;
+        };
+        auto vm_make_attr = [this](const char* tag, const char* attr, const char* name_str) {
+            auto fn = RcPtr<JSFunction>::make();
+            fn->set_name(std::string(name_str));
+            std::string tag_s = tag;
+            std::string attr_s = attr;
+            fn->set_native_fn([this, tag_s, attr_s](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                if (this_val.is_null() || this_val.is_undefined()) {
+                    native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                        "Cannot call method on null or undefined");
+                    return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+                }
+                std::string str = this_val.is_string() ? std::string(this_val.sv()) : to_string_val(this_val);
+                std::string val = args.empty() ? "undefined" : to_string_val(args[0]);
+                std::string escaped;
+                for (char c : val) {
+                    if (c == '"') escaped += "&quot;";
+                    else escaped += c;
+                }
+                return EvalResult::ok(Value::string(
+                    "<" + tag_s + " " + attr_s + "=\"" + escaped + "\">" + str + "</" + tag_s + ">"));
+            });
+            gc_heap_.Register(fn.get());
+            return fn;
+        };
+        if (string_prototype_) {
+            string_prototype_->define_builtin_property("big",       Value::object(ObjectPtr(vm_make_tag("<big>",    "</big>",    "big"))));
+            string_prototype_->define_builtin_property("blink",     Value::object(ObjectPtr(vm_make_tag("<blink>",  "</blink>",  "blink"))));
+            string_prototype_->define_builtin_property("bold",      Value::object(ObjectPtr(vm_make_tag("<b>",      "</b>",      "bold"))));
+            string_prototype_->define_builtin_property("fixed",     Value::object(ObjectPtr(vm_make_tag("<tt>",     "</tt>",     "fixed"))));
+            string_prototype_->define_builtin_property("italics",   Value::object(ObjectPtr(vm_make_tag("<i>",      "</i>",      "italics"))));
+            string_prototype_->define_builtin_property("small",     Value::object(ObjectPtr(vm_make_tag("<small>",  "</small>",  "small"))));
+            string_prototype_->define_builtin_property("strike",    Value::object(ObjectPtr(vm_make_tag("<strike>", "</strike>", "strike"))));
+            string_prototype_->define_builtin_property("sub",       Value::object(ObjectPtr(vm_make_tag("<sub>",    "</sub>",    "sub"))));
+            string_prototype_->define_builtin_property("sup",       Value::object(ObjectPtr(vm_make_tag("<sup>",    "</sup>",    "sup"))));
+            string_prototype_->define_builtin_property("anchor",    Value::object(ObjectPtr(vm_make_attr("a",    "name",  "anchor"))));
+            string_prototype_->define_builtin_property("link",      Value::object(ObjectPtr(vm_make_attr("a",    "href",  "link"))));
+            string_prototype_->define_builtin_property("fontcolor", Value::object(ObjectPtr(vm_make_attr("font", "color", "fontcolor"))));
+            string_prototype_->define_builtin_property("fontsize",  Value::object(ObjectPtr(vm_make_attr("font", "size",  "fontsize"))));
+        }
+    }
+
     // ---- Symbol ----
 
     symbol_prototype_ = RcPtr<JSObject>::make();

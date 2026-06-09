@@ -5599,6 +5599,93 @@ void Interpreter::init_runtime() {
         if (string_prototype_) string_prototype_->define_builtin_property("localeCompare", Value::object(ObjectPtr(fn)));
     }
 
+    // ---- Annex B HTML string wrapping methods ----
+    // Helper macro-like lambda builder for simple tag methods
+    {
+        // Build a helper: wraps string in a tag pair
+        auto make_tag_fn = [this](const char* open, const char* close) {
+            auto fn = RcPtr<JSFunction>::make();
+            std::string open_s = open;
+            std::string close_s = close;
+            fn->set_native_fn([this, open_s, close_s](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+                std::string str;
+                if (this_val.is_string()) {
+                    str = this_val.as_string();
+                } else if (this_val.is_object()) {
+                    RcObject* raw = this_val.as_object_raw();
+                    if (raw && raw->object_kind() == ObjectKind::kStringObject) {
+                        str = static_cast<JSObject*>(raw)->wrapped_value().as_string();
+                    } else {
+                        str = to_string_val(this_val);
+                    }
+                } else if (this_val.is_null() || this_val.is_undefined()) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                        "Cannot call method on null or undefined");
+                    return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                } else {
+                    str = to_string_val(this_val);
+                }
+                return EvalResult::ok(Value::string(open_s + str + close_s));
+            });
+            return fn;
+        };
+        auto make_attr_fn = [this](const char* tag, const char* attr) {
+            auto fn = RcPtr<JSFunction>::make();
+            std::string tag_s = tag;
+            std::string attr_s = attr;
+            fn->set_native_fn([this, tag_s, attr_s](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+                std::string str;
+                if (this_val.is_string()) {
+                    str = this_val.as_string();
+                } else if (this_val.is_null() || this_val.is_undefined()) {
+                    pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                        "Cannot call method on null or undefined");
+                    return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+                } else {
+                    str = to_string_val(this_val);
+                }
+                std::string val = args.empty() ? "undefined" : to_string_val(args[0]);
+                // Escape double quotes in attribute value
+                std::string escaped;
+                for (char c : val) {
+                    if (c == '"') escaped += "&quot;";
+                    else escaped += c;
+                }
+                return EvalResult::ok(Value::string(
+                    "<" + tag_s + " " + attr_s + "=\"" + escaped + "\">" + str + "</" + tag_s + ">"));
+            });
+            return fn;
+        };
+        if (string_prototype_) {
+            auto big_fn     = make_tag_fn("<big>",    "</big>");    big_fn->set_name("big");
+            auto blink_fn   = make_tag_fn("<blink>",  "</blink>");  blink_fn->set_name("blink");
+            auto bold_fn    = make_tag_fn("<b>",      "</b>");      bold_fn->set_name("bold");
+            auto fixed_fn   = make_tag_fn("<tt>",     "</tt>");     fixed_fn->set_name("fixed");
+            auto italics_fn = make_tag_fn("<i>",      "</i>");      italics_fn->set_name("italics");
+            auto small_fn   = make_tag_fn("<small>",  "</small>");  small_fn->set_name("small");
+            auto strike_fn  = make_tag_fn("<strike>", "</strike>"); strike_fn->set_name("strike");
+            auto sub_fn     = make_tag_fn("<sub>",    "</sub>");    sub_fn->set_name("sub");
+            auto sup_fn     = make_tag_fn("<sup>",    "</sup>");    sup_fn->set_name("sup");
+            auto anchor_fn  = make_attr_fn("a",    "name");    anchor_fn->set_name("anchor");
+            auto link_fn    = make_attr_fn("a",    "href");    link_fn->set_name("link");
+            auto fontcolor_fn = make_attr_fn("font", "color"); fontcolor_fn->set_name("fontcolor");
+            auto fontsize_fn  = make_attr_fn("font", "size");  fontsize_fn->set_name("fontsize");
+            string_prototype_->define_builtin_property("big",      Value::object(ObjectPtr(big_fn)));
+            string_prototype_->define_builtin_property("blink",    Value::object(ObjectPtr(blink_fn)));
+            string_prototype_->define_builtin_property("bold",     Value::object(ObjectPtr(bold_fn)));
+            string_prototype_->define_builtin_property("fixed",    Value::object(ObjectPtr(fixed_fn)));
+            string_prototype_->define_builtin_property("italics",  Value::object(ObjectPtr(italics_fn)));
+            string_prototype_->define_builtin_property("small",    Value::object(ObjectPtr(small_fn)));
+            string_prototype_->define_builtin_property("strike",   Value::object(ObjectPtr(strike_fn)));
+            string_prototype_->define_builtin_property("sub",      Value::object(ObjectPtr(sub_fn)));
+            string_prototype_->define_builtin_property("sup",      Value::object(ObjectPtr(sup_fn)));
+            string_prototype_->define_builtin_property("anchor",   Value::object(ObjectPtr(anchor_fn)));
+            string_prototype_->define_builtin_property("link",     Value::object(ObjectPtr(link_fn)));
+            string_prototype_->define_builtin_property("fontcolor", Value::object(ObjectPtr(fontcolor_fn)));
+            string_prototype_->define_builtin_property("fontsize",  Value::object(ObjectPtr(fontsize_fn)));
+        }
+    }
+
     // ---- Symbol ----
 
     symbol_prototype_ = RcPtr<JSObject>::make();
