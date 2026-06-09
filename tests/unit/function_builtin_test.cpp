@@ -616,12 +616,17 @@ TEST(VMFunctionBuiltin, FB_E08_bind_zero_param_length) {
 }
 
 TEST(VMFunctionBuiltin, FB_E09_bind_anonymous_name) {
+    // ES2015+: var f = function() {} infers name "f" → bind name is "bound f"
     auto v = vm_ok(R"(
         var f = function() {};
         f.bind(null).name;
     )");
     EXPECT_TRUE(v.is_string());
-    EXPECT_EQ(v.as_string(), "bound ");
+    EXPECT_EQ(v.as_string(), "bound f");
+    // Truly anonymous function (not bound to variable) still has empty name
+    auto v2 = vm_ok("(function() {}).bind(null).name;");
+    EXPECT_TRUE(v2.is_string());
+    EXPECT_EQ(v2.as_string(), "bound ");
 }
 
 TEST(VMFunctionBuiltin, FB_E10_apply_on_non_function_throws) {

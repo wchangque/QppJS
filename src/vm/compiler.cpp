@@ -702,11 +702,42 @@ void Compiler::compile_stmt_last(const StmtNode& stmt) {
     }
 }
 
+// Returns true if expr is an anonymous function/arrow/class that can have its name inferred
+static bool is_anonymous_func_expr(const ExprNode& expr) {
+    if (std::holds_alternative<FunctionExpression>(expr.v)) {
+        return !std::get<FunctionExpression>(expr.v).name.has_value();
+    }
+    if (std::holds_alternative<ArrowFunctionExpression>(expr.v)) return true;
+    if (std::holds_alternative<AsyncFunctionExpression>(expr.v)) {
+        return !std::get<AsyncFunctionExpression>(expr.v).name.has_value();
+    }
+    if (std::holds_alternative<ClassExpression>(expr.v)) {
+        return !std::get<ClassExpression>(expr.v).name.has_value();
+    }
+    return false;
+}
+
 void Compiler::compile_var_decl(const VariableDeclaration& decl) {
+    // Helper: emit function name inference if init is anonymous function
+    auto emit_name_inference = [&](const ExprNode& init_expr) {
+        if (is_anonymous_func_expr(init_expr)) {
+            // Stack: [..., fn] → Dup → [..., fn, fn] → LoadString name_str → kSetProp "name"
+            // → [..., fn, name_str_back] → kPop → [..., fn]
+            emit(Opcode::kDup);
+            uint16_t const_idx = add_constant(Value::string(decl.name));
+            emit(Opcode::kLoadString);
+            emit_u16(const_idx);
+            uint16_t prop_idx = add_name("name");
+            emit(Opcode::kSetProp);
+            emit_u16(prop_idx);
+            emit(Opcode::kPop);
+        }
+    };
     if (decl.kind == VarKind::Var) {
         // var: binding already defined by DefVar at entry; just assign if initializer
         if (decl.init.has_value()) {
             compile_expr(decl.init.value());
+            emit_name_inference(decl.init.value());
             uint16_t idx = add_name(decl.name);
             emit(Opcode::kSetVar);
             emit_u16(idx);
@@ -724,6 +755,7 @@ void Compiler::compile_var_decl(const VariableDeclaration& decl) {
         }
         if (decl.init.has_value()) {
             compile_expr(decl.init.value());
+            emit_name_inference(decl.init.value());
         } else {
             emit(Opcode::kLoadUndefined);
         }
