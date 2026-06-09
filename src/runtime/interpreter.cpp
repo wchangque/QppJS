@@ -6584,6 +6584,71 @@ void Interpreter::init_runtime() {
         global_env_->set("WeakRef", Value::object(ObjectPtr(wr_ctor)));
     }
 
+    // ---- FinalizationRegistry ----
+    // Simplified: no actual cleanup callbacks (GC-dependent), but API-correct
+    {
+        auto fr_proto = RcPtr<JSObject>::make();
+        fr_proto->set_proto(object_prototype_);
+        gc_heap_.Register(fr_proto.get());
+        // register(target, heldValue[, unregisterToken])
+        auto fr_register = RcPtr<JSFunction>::make();
+        fr_register->set_name(std::string("register"));
+        fr_register->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            if (!this_val.is_object() || !this_val.as_object_raw() ||
+                this_val.as_object_raw()->object_kind() != ObjectKind::kOrdinary) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "FinalizationRegistry.prototype.register called on wrong type");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            if (args.empty() || (!args[0].is_object() && !args[0].is_symbol())) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "register: target must be an object or symbol");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            return EvalResult::ok(Value::undefined());  // no-op (no GC callbacks)
+        });
+        gc_heap_.Register(fr_register.get());
+        fr_proto->define_builtin_property("register", Value::object(ObjectPtr(fr_register)));
+        // unregister(token)
+        auto fr_unregister = RcPtr<JSFunction>::make();
+        fr_unregister->set_name(std::string("unregister"));
+        fr_unregister->set_native_fn([](Value /*this_val*/, std::vector<Value> /*args*/, bool) -> EvalResult {
+            return EvalResult::ok(Value::boolean(false));  // no-op
+        });
+        gc_heap_.Register(fr_unregister.get());
+        fr_proto->define_builtin_property("unregister", Value::object(ObjectPtr(fr_unregister)));
+        fr_proto->set_property_by_symbol(symbol_table_.well_known_to_string_tag,
+            Value::string("FinalizationRegistry"));
+
+        auto fr_ctor = RcPtr<JSFunction>::make();
+        fr_ctor->set_name(std::string("FinalizationRegistry"));
+        fr_ctor->set_property("length", Value::number(1.0));
+        fr_ctor->set_prototype_obj(fr_proto);
+        fr_proto->set_constructor_property(fr_ctor.get());
+        fr_ctor->set_native_fn([this, fr_proto](Value /*this_val*/, std::vector<Value> args, bool is_new) -> EvalResult {
+            if (!is_new) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "FinalizationRegistry constructor requires 'new'");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            if (args.empty() || !args[0].is_object() ||
+                args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "FinalizationRegistry: callback must be callable");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            auto reg_obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(reg_obj.get());
+            reg_obj->set_proto(fr_proto);
+            reg_obj->set_property("__fr_callback__", args[0]);
+            return EvalResult::ok(Value::object(ObjectPtr(reg_obj)));
+        });
+        gc_heap_.Register(fr_ctor.get());
+        fr_proto->define_builtin_property("constructor", Value::object(ObjectPtr(fr_ctor)));
+        global_env_->define_initialized("FinalizationRegistry");
+        global_env_->set("FinalizationRegistry", Value::object(ObjectPtr(fr_ctor)));
+    }
+
     // ---- globalThis ----
     {
         auto gt_obj = RcPtr<JSObject>::make();

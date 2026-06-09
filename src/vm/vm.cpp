@@ -6712,6 +6712,67 @@ void VM::init_global_env() {
         global_env_->set("WeakRef", Value::object(ObjectPtr(vm_wr_ctor)));
     }
 
+    // ---- FinalizationRegistry ----
+    {
+        auto vm_fr_proto = RcPtr<JSObject>::make();
+        vm_fr_proto->set_proto(object_prototype_);
+        gc_heap_.Register(vm_fr_proto.get());
+        auto vm_fr_register = RcPtr<JSFunction>::make();
+        vm_fr_register->set_name(std::string("register"));
+        vm_fr_register->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            if (!this_val.is_object() || !this_val.as_object_raw() ||
+                this_val.as_object_raw()->object_kind() != ObjectKind::kOrdinary) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "FinalizationRegistry.prototype.register called on wrong type");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            if (args.empty() || (!args[0].is_object() && !args[0].is_symbol())) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "register: target must be an object or symbol");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            return EvalResult::ok(Value::undefined());
+        });
+        gc_heap_.Register(vm_fr_register.get());
+        vm_fr_proto->define_builtin_property("register", Value::object(ObjectPtr(vm_fr_register)));
+        auto vm_fr_unregister = RcPtr<JSFunction>::make();
+        vm_fr_unregister->set_name(std::string("unregister"));
+        vm_fr_unregister->set_native_fn([](Value, std::vector<Value>, bool) -> EvalResult {
+            return EvalResult::ok(Value::boolean(false));
+        });
+        gc_heap_.Register(vm_fr_unregister.get());
+        vm_fr_proto->define_builtin_property("unregister", Value::object(ObjectPtr(vm_fr_unregister)));
+        vm_fr_proto->set_property_by_symbol(symbol_table_.well_known_to_string_tag,
+            Value::string("FinalizationRegistry"));
+        auto vm_fr_ctor = RcPtr<JSFunction>::make();
+        vm_fr_ctor->set_name(std::string("FinalizationRegistry"));
+        vm_fr_ctor->set_property("length", Value::number(1.0));
+        vm_fr_ctor->set_prototype_obj(vm_fr_proto);
+        vm_fr_proto->set_constructor_property(vm_fr_ctor.get());
+        vm_fr_ctor->set_native_fn([this, vm_fr_proto](Value, std::vector<Value> args, bool is_new) -> EvalResult {
+            if (!is_new) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "FinalizationRegistry constructor requires 'new'");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            if (args.empty() || !args[0].is_object() ||
+                args[0].as_object_raw()->object_kind() != ObjectKind::kFunction) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "FinalizationRegistry: callback must be callable");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            auto reg_obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(reg_obj.get());
+            reg_obj->set_proto(vm_fr_proto);
+            reg_obj->set_property("__fr_callback__", args[0]);
+            return EvalResult::ok(Value::object(ObjectPtr(reg_obj)));
+        });
+        gc_heap_.Register(vm_fr_ctor.get());
+        vm_fr_proto->define_builtin_property("constructor", Value::object(ObjectPtr(vm_fr_ctor)));
+        global_env_->define_initialized("FinalizationRegistry");
+        global_env_->set("FinalizationRegistry", Value::object(ObjectPtr(vm_fr_ctor)));
+    }
+
     // ---- globalThis ----
     {
         auto gt_obj = RcPtr<JSObject>::make();
