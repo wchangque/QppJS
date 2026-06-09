@@ -6662,6 +6662,56 @@ void VM::init_global_env() {
         global_env_->initialize("WeakSet", Value::object(ObjectPtr(ws_ctor)));
     }
 
+    // ---- WeakRef ----
+    {
+        auto wr_proto = RcPtr<JSObject>::make();
+        wr_proto->set_proto(object_prototype_);
+        gc_heap_.Register(wr_proto.get());
+
+        auto vm_deref_fn = RcPtr<JSFunction>::make();
+        vm_deref_fn->set_name(std::string("deref"));
+        vm_deref_fn->set_native_fn([this](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
+            if (!this_val.is_object() || !this_val.as_object_raw() ||
+                this_val.as_object_raw()->object_kind() != ObjectKind::kOrdinary) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "WeakRef.prototype.deref called on non-WeakRef");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            auto* obj = static_cast<JSObject*>(this_val.as_object_raw());
+            return EvalResult::ok(obj->get_property("__weakref_target__"));
+        });
+        gc_heap_.Register(vm_deref_fn.get());
+        wr_proto->define_builtin_property("deref", Value::object(ObjectPtr(vm_deref_fn)));
+        wr_proto->set_property_by_symbol(symbol_table_.well_known_to_string_tag, Value::string("WeakRef"));
+
+        auto vm_wr_ctor = RcPtr<JSFunction>::make();
+        vm_wr_ctor->set_name(std::string("WeakRef"));
+        vm_wr_ctor->set_property("length", Value::number(1.0));
+        vm_wr_ctor->set_prototype_obj(wr_proto);
+        wr_proto->set_constructor_property(vm_wr_ctor.get());
+        vm_wr_ctor->set_native_fn([this, wr_proto](Value /*this_val*/, std::vector<Value> args, bool is_new) -> EvalResult {
+            if (!is_new) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "WeakRef constructor requires 'new'");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            if (args.empty() || (!args[0].is_object() && !args[0].is_symbol())) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "WeakRef target must be an object or symbol");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            auto ref_obj = RcPtr<JSObject>::make();
+            gc_heap_.Register(ref_obj.get());
+            ref_obj->set_proto(wr_proto);
+            ref_obj->set_property("__weakref_target__", args[0]);
+            return EvalResult::ok(Value::object(ObjectPtr(ref_obj)));
+        });
+        gc_heap_.Register(vm_wr_ctor.get());
+        wr_proto->define_builtin_property("constructor", Value::object(ObjectPtr(vm_wr_ctor)));
+        global_env_->define_initialized("WeakRef");
+        global_env_->set("WeakRef", Value::object(ObjectPtr(vm_wr_ctor)));
+    }
+
     // ---- globalThis ----
     {
         auto gt_obj = RcPtr<JSObject>::make();
