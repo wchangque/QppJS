@@ -3860,6 +3860,51 @@ void VM::init_global_env() {
     gc_heap_.Register(vm_str_substring_fn.get());
     string_prototype_->define_builtin_property("substring", Value::object(ObjectPtr(vm_str_substring_fn)));
 
+    // Annex B: substr(start, length) - negative start allowed
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("substr"));
+        fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            if (this_val.is_null() || this_val.is_undefined()) {
+                native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "String.prototype.substr called on null or undefined");
+                return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
+            }
+            std::string str;
+            if (this_val.is_string()) {
+                str = this_val.sv();
+            } else if (this_val.is_object() && this_val.as_object_raw() &&
+                       this_val.as_object_raw()->object_kind() == ObjectKind::kStringObject) {
+                str = static_cast<JSObject*>(this_val.as_object_raw())->wrapped_value().sv();
+            } else {
+                str = to_string_val(this_val);
+            }
+            JSString tmp_str(str);
+            int32_t str_len = utf8_cp_len_vm(&tmp_str);
+            int32_t start = 0;
+            if (!args.empty() && !args[0].is_undefined()) {
+                double n = to_number(args[0]).is_ok() ? to_number(args[0]).value().as_number()
+                                                      : std::numeric_limits<double>::quiet_NaN();
+                if (!std::isnan(n)) {
+                    start = static_cast<int32_t>(std::trunc(n));
+                    if (start < 0) start = std::max(0, str_len + start);
+                    if (start > str_len) start = str_len;
+                }
+            }
+            int32_t length = str_len - start;
+            if (args.size() >= 2 && !args[1].is_undefined()) {
+                auto ln = to_number(args[1]);
+                double n = ln.is_ok() ? ln.value().as_number() : std::numeric_limits<double>::quiet_NaN();
+                if (std::isnan(n) || n <= 0.0) return EvalResult::ok(Value::string(""));
+                length = std::min(static_cast<int32_t>(std::trunc(n)), str_len - start);
+            }
+            if (length <= 0) return EvalResult::ok(Value::string(""));
+            return EvalResult::ok(Value::string(utf8_substr_vm(tmp_str.sv(), start, start + length)));
+        });
+        gc_heap_.Register(fn.get());
+        string_prototype_->define_builtin_property("substr", Value::object(ObjectPtr(fn)));
+    }
+
     // split(separator, limit)
     auto vm_str_split_fn = RcPtr<JSFunction>::make();
     vm_str_split_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {

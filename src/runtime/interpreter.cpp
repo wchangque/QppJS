@@ -3767,6 +3767,41 @@ void Interpreter::init_runtime() {
     gc_heap_.Register(str_substring_fn.get());
     string_prototype_->define_builtin_property("substring", Value::object(ObjectPtr(str_substring_fn)));
 
+    // Annex B: substr(start, length) - negative start allowed
+    {
+        auto fn = RcPtr<JSFunction>::make();
+        fn->set_name(std::string("substr"));
+        fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
+            if (this_val.is_null() || this_val.is_undefined()) {
+                pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+                    "String.prototype.substr called on null or undefined");
+                return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
+            }
+            Value effective_this = string_this_value(this_val);
+            JSString* js_str = effective_this.js_string_raw();
+            int32_t str_len = utf8_cp_len(js_str);
+            int32_t start = 0;
+            if (!args.empty() && !args[0].is_undefined()) {
+                double n = to_number_double(args[0]);
+                if (!std::isnan(n)) {
+                    start = static_cast<int32_t>(std::trunc(n));
+                    if (start < 0) start = std::max(0, str_len + start);
+                    if (start > str_len) start = str_len;
+                }
+            }
+            int32_t length = str_len - start;
+            if (args.size() >= 2 && !args[1].is_undefined()) {
+                double n = to_number_double(args[1]);
+                if (std::isnan(n) || n <= 0.0) return EvalResult::ok(Value::string(""));
+                length = std::min(static_cast<int32_t>(std::trunc(n)), str_len - start);
+            }
+            if (length <= 0) return EvalResult::ok(Value::string(""));
+            return EvalResult::ok(Value::string(utf8_substr(js_str->sv(), start, start + length)));
+        });
+        gc_heap_.Register(fn.get());
+        string_prototype_->define_builtin_property("substr", Value::object(ObjectPtr(fn)));
+    }
+
     // split(separator, limit)
     auto str_split_fn = RcPtr<JSFunction>::make();
     str_split_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
