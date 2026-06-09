@@ -6939,6 +6939,7 @@ void VM::init_global_env() {
         gc_heap_.Register(fn_ctor.get());
         // Function.prototype = function_prototype_
         if (function_prototype_) {
+            fn_ctor->set_prototype_obj(function_prototype_);  // for instanceof checks
             fn_ctor->set_property("prototype", Value::object(ObjectPtr(function_prototype_)));
             function_prototype_->define_builtin_property("constructor", Value::object(ObjectPtr(fn_ctor)));
         }
@@ -10893,6 +10894,16 @@ EvalResult VM::run(size_t exit_depth) {
             bool found = false;
             while (cur_raw) {
                 ObjectKind k = cur_raw->object_kind();
+                if (k == ObjectKind::kFunction) {
+                    // kFunction: 隐式 proto 是 function_prototype_
+                    if (function_prototype_ && function_prototype_.get() == ctor_proto.get()) {
+                        found = true;
+                        break;
+                    }
+                    if (!function_prototype_) break;
+                    cur_raw = function_prototype_.get();
+                    continue;
+                }
                 if (k != ObjectKind::kOrdinary && k != ObjectKind::kArray &&
                     k != ObjectKind::kRegExp && k != ObjectKind::kStringObject &&
                     k != ObjectKind::kBooleanObject && k != ObjectKind::kGenerator &&

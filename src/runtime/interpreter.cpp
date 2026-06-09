@@ -6776,6 +6776,7 @@ void Interpreter::init_runtime() {
         gc_heap_.Register(fn_ctor.get());
         // Function.prototype = function_prototype_
         if (function_prototype_) {
+            fn_ctor->set_prototype_obj(function_prototype_);  // for instanceof checks
             fn_ctor->set_property("prototype", Value::object(ObjectPtr(function_prototype_)));
             function_prototype_->define_builtin_property("constructor", Value::object(ObjectPtr(fn_ctor)));
         }
