@@ -637,7 +637,7 @@ void Interpreter::init_runtime() {
     global_env_->initialize("console", Value::object(ObjectPtr(console_obj)));
 
     // Build Array.prototype
-    array_prototype_ = RcPtr<JSObject>::make();
+    array_prototype_ = RcPtr<JSObject>::make(ObjectKind::kArray);
     array_prototype_->set_proto(object_prototype_);
 
     // Array.prototype.push
