@@ -9211,7 +9211,9 @@ EvalResult VM::run(size_t exit_depth) {
             if (raw_set->object_kind() != ObjectKind::kOrdinary && raw_set->object_kind() != ObjectKind::kArray &&
                 raw_set->object_kind() != ObjectKind::kGenerator &&
                 raw_set->object_kind() != ObjectKind::kMap && raw_set->object_kind() != ObjectKind::kSet &&
-                raw_set->object_kind() != ObjectKind::kWeakMap && raw_set->object_kind() != ObjectKind::kWeakSet) {
+                raw_set->object_kind() != ObjectKind::kWeakMap && raw_set->object_kind() != ObjectKind::kWeakSet &&
+                raw_set->object_kind() != ObjectKind::kStringObject &&
+                raw_set->object_kind() != ObjectKind::kBooleanObject) {
                 frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
                     "Cannot set property '" + name + "' on non-JSObject");
                 continue;
@@ -11547,7 +11549,9 @@ EvalResult VM::run(size_t exit_depth) {
             }
             RcObject* raw_dp = obj_val.as_object_raw();
             if (!raw_dp || (raw_dp->object_kind() != ObjectKind::kOrdinary &&
-                            raw_dp->object_kind() != ObjectKind::kArray)) {
+                            raw_dp->object_kind() != ObjectKind::kArray &&
+                            raw_dp->object_kind() != ObjectKind::kStringObject &&
+                            raw_dp->object_kind() != ObjectKind::kBooleanObject)) {
                 stack.push_back(Value::boolean(true));
                 break;
             }
