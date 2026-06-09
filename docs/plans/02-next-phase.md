@@ -54,6 +54,7 @@
 34. ~~**Object.prototype 等高频缺失方法补充（无 AST/Parser 变更）** — 已完成（2026-06-03，14 个新测试（MF-13～MF-18 × Interp+VM），4856/4856 通过（coverage），0 LSan 泄漏）~~（含 Object.prototype.propertyIsEnumerable、Function.prototype.toString、String.prototype.normalize、Number.prototype.toLocaleString）
 35. ~~**do-while 循环 + 可选 catch 绑定（ES2019）+ 数字分隔符（ES2021）** — 已完成（2026-06-08，36 个新测试（DW-01～DW-08 + OCB-01～OCB-04 + NS-01～NS-06 × Interp+VM），4924/4924 通过（coverage），0 LSan 泄漏）~~
 36. ~~**函数参数解构（Destructuring Function Parameters）** — 已完成（2026-06-08，30 个新测试（DP-01～DP-15 × Interp+VM），4954/4954 通过（coverage），0 LSan 泄漏）~~
+37. ~~**test262 综合提升（函数名推断 / instanceof Function / WeakRef / FinalizationRegistry / AnnexB String HTML 方法 / 内置原型方法 enumerable=false 等）** — 已完成（2026-06-09，4954/4954 通过（coverage），0 LSan 泄漏；language/statements 53.8%，language/expressions 55.0%，整体约 35-36%）~~
 
 ## 3. 进入前提
 

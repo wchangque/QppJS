@@ -8,9 +8,9 @@
 |------|----|
 | 当前阶段 | test262 通过率提升 |
 | 测试计数 | 4954/4954 通过（coverage），0 LSan 泄漏 |
-| 最近更新 | 2026-06-08 |
-| 下一步 | 下一批 test262 候选目标（函数参数解构已完成，可考虑 WeakRef / Proxy 等） |
-| test262 | bracket accessor 修复后 class/accessor-name-inst 90.9%（原 13.6%） |
+| 最近更新 | 2026-06-09 |
+| 下一步 | 下一批 test262 候选目标（Proxy / Reflect 完整支持 / 更多内置方法修复） |
+| test262 | 整体约 35-36%（从 24% 基线大幅上升）；language/statements 53.8%，language/expressions 55.0% |
 
 ## 已知遗留问题
 
@@ -22,6 +22,8 @@
 - ~~**NM49**：已在 2026-05-13 修复——Math.max/min 的 `std::fmax`/`std::fmin` 无法正确区分 +0/-0，改为手动比较~~
 
 ## 最近完成
+
+- [x] **test262 通过率综合提升（函数名推断 / instanceof Function / WeakRef / AnnexB String HTML 方法 / 内置原型方法 enumerable=false 等）**（2026-06-09）：函数名推断（var/let/const 赋值、解构默认值 ObjectPattern/ArrayPattern，VM+Interpreter 对称）；`instanceof Function` 修复（Function 构造器 set_prototype_obj + kInstanceof 原型链遍历新增 kFunction 路径）；WeakRef + FinalizationRegistry 简化实现（强引用存储，通过主要 API 测试，0%→41.4% / 0%→36.2%）；AnnexB String HTML 方法（big/bold/blink/fixed/italics/small/strike/sub/sup/anchor/link/fontcolor/fontsize + String.prototype.substr，annexB/built-ins/String 1.8%→46.8%）；kSetProp/kSetElem/kDeleteProp/kDeleteElem kStringObject 支持（String.prototype 方法 verifyProperty 正确检测 writable/configurable）；`array_prototype_` 改为 kArray（Array.isArray(Array.prototype) → true）；EvalError + URIError 新增；内置原型方法 enumerable=false（242 处 set_property → define_builtin_property）；StringObject/BooleanObject 数值转换修复；大整数 number-to-string（1e20 → "100000000000000000000"）；Object.getOwnPropertyDescriptor/getPrototypeOf ES2015+ 原始值支持；do-while / 可选 catch 绑定 / 数字分隔符。4954/4954 通过（coverage），0 LSan 泄漏。
 
 - [x] **函数参数解构（Destructuring Function Parameters）**（2026-06-08）：`ParamDef` 结构体新增 `pattern_binding` 字段（`shared_ptr<PatternNode>`）；`parse_function_params()` 支持 `[`/`{` 开头的解构参数（调用 `parse_binding_pattern()`，支持整体默认值）；箭头函数参数解析支持 `([a,b]) =>` 和 `({a,b}) =>` 形式（`convert_expr_to_pattern` 转换）；Interpreter `call_function` 参数绑定支持解构参数（`collect_pattern_names` 预声明 + `bind_pattern`），`make_async_function_value` 和 `make_async_generator_value` 对称实现；Compiler `compile_function` prologue 新增 `emit_defs_for_pattern`（预声明解构变量）+ `compile_bind_pattern`（生成解构字节码），`hoist_vars_scan_pattern` 扫描解构参数变量名加入 var_decls；`length_count` 计算在解构参数处截断（Interp+VM 对称）；新增 `tests/unit/dstr_params_test.cpp`（DP-01～DP-15 × Interp+VM = 30 个测试）。4954/4954 通过（coverage），0 LSan 泄漏。
 

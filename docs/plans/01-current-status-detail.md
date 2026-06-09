@@ -4,6 +4,40 @@
 
 ## 1. 已完成任务
 
+- [x] **test262 通过率综合提升（函数名推断 / instanceof Function / WeakRef / AnnexB String HTML 方法 / 内置原型方法 enumerable=false 等）**（2026-06-09）：
+  - **背景**：在函数参数解构完成之后，针对 test262 各子目录失败的高频原因，实施了一批综合修复，整体通过率从约 24% 提升至约 35-36%。
+  - **函数名推断（Function Name Inference）**：
+    - `compile_var_decl`（VM）：var/let/const x = fn() {} 时自动将函数名推断为变量名（`fn->set_name(var_name)`）。
+    - `bind_pattern` ObjectPattern + ArrayPattern（Interpreter）：解构默认值 `{x = fn(){}}` / `[x = fn(){}]` 中，若默认值为 FunctionExpression/ArrowFunctionExpression 且 name 为空，推断函数名为绑定变量名。
+    - `compile_bind_pattern` 对应两处（VM）：同上，在 emit 解构字节码后对匿名函数值设置 `.name`。
+    - test262 改善：language/expressions/generators 40.7%→64.9%（+64 测试）；language/statements/class/dstr 40.2%→43.6%（+48 测试）；language/expressions/arrow-function/dstr 41.3%→48.9%（+12 测试）。
+  - **`instanceof Function` 修复**：
+    - Function 构造器调用 `set_prototype_obj(function_prototype_)`，使 `Function.prototype` 正确挂载。
+    - `kInstanceof` 原型链遍历新增 kFunction 特殊路径：当 RHS 为 Function 构造器时，对 kFunction 类型对象直接返回 true（`f instanceof Function` 从 false→true）。
+    - Interpreter `eval_binary(Instanceof)` 对称实现。
+  - **WeakRef + FinalizationRegistry 实现**：
+    - 新增 `WeakRef` 全局构造函数（简化版，内部强引用存储，`deref()` 返回目标对象）。
+    - 新增 `FinalizationRegistry` 全局构造函数（`register(target, value)` / `unregister(token)` / `cleanupSome()` 基础 API）。
+    - built-ins/WeakRef 0%→41.4%；built-ins/FinalizationRegistry 0%→36.2%。
+  - **AnnexB String HTML 方法 + String.prototype.substr**：
+    - `string_prototype_` 新增 13 个 AnnexB HTML 包装方法：`big`/`bold`/`blink`/`fixed`/`italics`/`small`/`strike`/`sub`/`sup`/`anchor`/`link`/`fontcolor`/`fontsize`（各返回对应 HTML 标签包装字符串）。
+    - 新增 `String.prototype.substr(start, length)`（非标准但广泛支持，负 start 从末尾算，length 省略取到末尾）。
+    - Interpreter + VM 对称实现；annexB/built-ins/String 1.8%→46.8%。
+  - **kSetProp/kSetElem/kDeleteProp/kDeleteElem kStringObject 支持**：
+    - VM 侧这四个 opcode 对 kStringObject 类型对象走正确的 define_property 路径，使 `verifyProperty` 对 String.prototype 方法的 writable/configurable 检测正确工作。
+    - Interpreter 侧 `eval_member_assign` / `eval_unary(Delete)` 对称修复。
+  - **`array_prototype_` 改为 kArray**：
+    - `interpreter.cpp` + `vm.cpp` 将 `array_prototype_` 的 ObjectKind 从 kOrdinary 改为 kArray，使 `Array.isArray(Array.prototype)` 返回 true（规范要求）。
+  - **EvalError + URIError**：
+    - 新增两个全局错误类型（继承 Error，构造函数 + prototype 完整注册）；Interpreter + VM 对称。
+  - **内置原型方法 enumerable=false**：
+    - 将 interpreter.cpp + vm.cpp 中 242 处 `prototype_->set_property(name, fn)` 改为 `define_builtin_property(name, fn)`（flags=0x00，non-enumerable/non-writable/non-configurable），使 `for...in` 不枚举内置方法，`Object.keys(Array.prototype)` 返回 `[]` 等规范行为正确。
+  - **其他修复**：
+    - StringObject/BooleanObject 数值转换：`to_number_double` 对 kStringObject/kBooleanObject 提取 `wrapped_value_` 后再转换。
+    - 大整数 number-to-string：修复 `(1e20).toString()` 返回 `"1e+20"` 而非 `"100000000000000000000"` 的问题（使用 `snprintf` 格式化整数范围内的 double）。
+    - `Object.getOwnPropertyDescriptor` / `Object.getPrototypeOf` ES2015+ 原始值支持：对 number/string/boolean 原始值不抛 TypeError，而是包装后查询（Interpreter + VM 对称）。
+  - **结果**：4954/4954 通过（coverage），0 LSan 泄漏。language/statements 38%→53.8%；language/expressions 32.4%→55.0%；整体约 35-36%（从 24% 基线大幅上升）。
+
 - [x] **函数参数解构（Destructuring Function Parameters）**（2026-06-08）：
   - **背景**：`parse_function_params()` 原仅接受 Ident token，导致 `function foo([a,b])` / `function foo({a,b})` 等形式无法解析，8788 个 dstr 相关 test262 测试全部失败。
   - **AST 修改**：`ParamDef` 结构体新增 `shared_ptr<PatternNode> pattern_binding` 字段（`shared_ptr` 保证可复制，`PatternNode` 含 `unique_ptr` 字段）；`name` 为空时表示解构参数；`default_init` 同时支持简单参数和解构参数的整体默认值。
