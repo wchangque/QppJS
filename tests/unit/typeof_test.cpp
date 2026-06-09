@@ -374,12 +374,10 @@ TEST(TypeofInterp, TY20_NumberWrapper) {
     EXPECT_EQ(interp_str("typeof new Number(0)"), "object");
 }
 
-// VM kNewCall native constructor 直接推返回值（不创建 this-obj），
-// 因此 Number constructor 返回 primitive，typeof 得 "number"。
-// Interpreter eval_new_expr 总是创建 this-obj，constructor 返回 primitive 时返回 this-obj，
-// 因此 Interpreter 侧得 "object"。两侧行为不同，此处记录 VM 当前实现行为。
+// ES2015+: new Number() returns kNumberObject wrapper, typeof → "object" (Interp+VM 对称)
 TEST(TypeofVM, TY20_NumberWrapper) {
-    EXPECT_EQ(vm_str("typeof new Number(1)"), "number");
+    EXPECT_EQ(vm_str("typeof new Number(1)"), "object");
+    EXPECT_EQ(vm_str("typeof new Number(0)"), "object");
 }
 
 // ============================================================

@@ -98,6 +98,12 @@ EvalResult VM::to_number(const Value& v) {
                     return EvalResult::ok(Value::number(wrapped.as_bool() ? 1.0 : 0.0));
                 }
             }
+            // kNumberObject: valueOf 返回包装的数字
+            if (raw_obj->object_kind() == ObjectKind::kNumberObject) {
+                auto* js_obj = static_cast<JSObject*>(raw_obj);
+                Value wrapped = js_obj->wrapped_value();
+                if (wrapped.is_number()) return EvalResult::ok(wrapped);
+            }
         }
         return EvalResult::ok(Value::number(std::numeric_limits<double>::quiet_NaN()));
     }
@@ -153,6 +159,10 @@ std::string VM::to_string_val(const Value& v) {
         RcObject* obj = v.as_object_raw();
         if (obj && obj->object_kind() == ObjectKind::kFunction) {
             return "function";
+        }
+        if (obj && obj->object_kind() == ObjectKind::kNumberObject) {
+            // Number wrapper: convert wrapped value to string
+            return number_to_string(static_cast<JSObject*>(obj)->wrapped_value().as_number());
         }
         return "[object Object]";
     }
@@ -501,6 +511,7 @@ void VM::init_global_env() {
                         else if (kind == ObjectKind::kWeakSet) tag = "WeakSet";
                         else if (kind == ObjectKind::kStringObject) tag = "String";
                         else if (kind == ObjectKind::kBooleanObject) tag = "Boolean";
+                        else if (kind == ObjectKind::kNumberObject) tag = "Number";
                         else tag = "Object";
                     }
                 } else {
@@ -4263,10 +4274,18 @@ void VM::init_global_env() {
 
     number_constructor_ = RcPtr<JSFunction>::make();
     number_constructor_->set_name(std::string("Number"));
-    number_constructor_->set_native_fn([](Value /*this_val*/, std::vector<Value> args,
-                                          bool /*is_new*/) -> EvalResult {
-        double n = args.empty() ? 0.0 : to_number_double_vm(args[0]);
-        return EvalResult::ok(Value::number(n));
+    number_constructor_->set_native_fn([this](Value /*this_val*/, std::vector<Value> args,
+                                              bool is_new) -> EvalResult {
+        double n = args.empty() ? 0.0 : to_number(args[0]).is_ok() ? to_number(args[0]).value().as_number() : 0.0;
+        if (!is_new) {
+            return EvalResult::ok(Value::number(n));
+        }
+        // new Number(n) → Number wrapper object (kNumberObject)
+        auto obj = RcPtr<JSObject>::make(ObjectKind::kNumberObject);
+        gc_heap_.Register(obj.get());
+        if (number_prototype_) obj->set_proto(number_prototype_);
+        obj->set_wrapped_value(Value::number(n));
+        return EvalResult::ok(Value::object(ObjectPtr(obj)));
     });
 
     // Number.isNaN (no ToNumber conversion)
@@ -4337,6 +4356,12 @@ void VM::init_global_env() {
     auto vm_num_valueof_fn = RcPtr<JSFunction>::make();
     vm_num_valueof_fn->set_native_fn([this](Value this_val, std::vector<Value> /*args*/, bool) -> EvalResult {
         if (this_val.is_number()) return EvalResult::ok(this_val);
+        // kNumberObject: return the wrapped number value
+        if (this_val.is_object() && this_val.as_object_raw() &&
+            this_val.as_object_raw()->object_kind() == ObjectKind::kNumberObject) {
+            auto* obj = static_cast<JSObject*>(this_val.as_object_raw());
+            return EvalResult::ok(obj->wrapped_value());
+        }
         native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
             "Number.prototype.valueOf requires a number");
         return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
@@ -4347,12 +4372,17 @@ void VM::init_global_env() {
     // Number.prototype.toString([radix])
     auto vm_num_tostring_fn = RcPtr<JSFunction>::make();
     vm_num_tostring_fn->set_native_fn([this](Value this_val, std::vector<Value> args, bool) -> EvalResult {
-        if (!this_val.is_number()) {
+        double val;
+        if (this_val.is_number()) {
+            val = this_val.as_number();
+        } else if (this_val.is_object() && this_val.as_object_raw() &&
+                   this_val.as_object_raw()->object_kind() == ObjectKind::kNumberObject) {
+            val = static_cast<JSObject*>(this_val.as_object_raw())->wrapped_value().as_number();
+        } else {
             native_pending_throw_ = make_error_value(NativeErrorType::kTypeError,
                 "Number.prototype.toString requires a number");
             return EvalResult::err(Error(ErrorKind::Runtime, "__qppjs_pending_throw__"));
         }
-        double val = this_val.as_number();
         int radix = 10;
         if (!args.empty() && !args[0].is_undefined()) {
             double r = to_number_double_vm(args[0]);
@@ -4366,7 +4396,7 @@ void VM::init_global_env() {
         if (std::isnan(val)) return EvalResult::ok(Value::string("NaN"));
         if (std::isinf(val)) return EvalResult::ok(Value::string(val > 0 ? "Infinity" : "-Infinity"));
         if (radix == 10) {
-            return EvalResult::ok(Value::string(to_string_val(this_val)));
+            return EvalResult::ok(Value::string(number_to_string(val)));
         }
         bool negative = val < 0;
         double abs_val = std::fabs(val);
@@ -9358,6 +9388,11 @@ EvalResult VM::run(size_t exit_depth) {
                 stack.push_back(obj->get_property(name));
                 break;
             }
+            if (raw_obj->object_kind() == ObjectKind::kNumberObject) {
+                auto* obj = static_cast<JSObject*>(raw_obj);
+                stack.push_back(obj->get_property(name));
+                break;
+            }
             if (raw_obj->object_kind() != ObjectKind::kOrdinary && raw_obj->object_kind() != ObjectKind::kArray &&
                 raw_obj->object_kind() != ObjectKind::kGenerator &&
                 raw_obj->object_kind() != ObjectKind::kMap && raw_obj->object_kind() != ObjectKind::kSet &&
@@ -9455,7 +9490,7 @@ EvalResult VM::run(size_t exit_depth) {
                 raw_set->object_kind() != ObjectKind::kMap && raw_set->object_kind() != ObjectKind::kSet &&
                 raw_set->object_kind() != ObjectKind::kWeakMap && raw_set->object_kind() != ObjectKind::kWeakSet &&
                 raw_set->object_kind() != ObjectKind::kStringObject &&
-                raw_set->object_kind() != ObjectKind::kBooleanObject) {
+                raw_set->object_kind() != ObjectKind::kBooleanObject && raw_set->object_kind() != ObjectKind::kNumberObject) {
                 frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
                     "Cannot set property '" + name + "' on non-JSObject");
                 continue;
@@ -9824,6 +9859,11 @@ EvalResult VM::run(size_t exit_depth) {
                 stack.push_back(obj->get_property(to_string_val(key_val)));
                 break;
             }
+            if (raw_elem->object_kind() == ObjectKind::kNumberObject) {
+                auto* obj = static_cast<JSObject*>(raw_elem);
+                stack.push_back(obj->get_property(to_string_val(key_val)));
+                break;
+            }
             if (raw_elem->object_kind() == ObjectKind::kFunction) {
                 // Function with string key: check own properties (static accessor/method support)
                 auto* fn_elem = static_cast<JSFunction*>(raw_elem);
@@ -9974,7 +10014,7 @@ EvalResult VM::run(size_t exit_depth) {
                 raw_setelem->object_kind() != ObjectKind::kMap && raw_setelem->object_kind() != ObjectKind::kSet &&
                 raw_setelem->object_kind() != ObjectKind::kWeakMap && raw_setelem->object_kind() != ObjectKind::kWeakSet &&
                 raw_setelem->object_kind() != ObjectKind::kStringObject &&
-                raw_setelem->object_kind() != ObjectKind::kBooleanObject) {
+                raw_setelem->object_kind() != ObjectKind::kBooleanObject && raw_setelem->object_kind() != ObjectKind::kNumberObject) {
                 frame.pending_throw = make_error_value(NativeErrorType::kTypeError,
                     "Cannot set element on non-JSObject");
                 continue;
@@ -11036,7 +11076,8 @@ EvalResult VM::run(size_t exit_depth) {
                 }
                 if (k != ObjectKind::kOrdinary && k != ObjectKind::kArray &&
                     k != ObjectKind::kRegExp && k != ObjectKind::kStringObject &&
-                    k != ObjectKind::kBooleanObject && k != ObjectKind::kGenerator &&
+                    k != ObjectKind::kBooleanObject && k != ObjectKind::kNumberObject &&
+                    k != ObjectKind::kGenerator &&
                     k != ObjectKind::kMap && k != ObjectKind::kSet &&
                     k != ObjectKind::kWeakMap && k != ObjectKind::kWeakSet) break;
                 auto* cur_obj = static_cast<JSObject*>(cur_raw);

@@ -13,7 +13,7 @@ class GcHeap;
 
 enum class ObjectKind {
     kOrdinary, kFunction, kArray, kEnvironment, kModule, kPromise, kRegExp,
-    kStringObject, kBooleanObject, kForInIterator,
+    kStringObject, kBooleanObject, kNumberObject, kForInIterator,
     kForOfIterator, kArrayIterator, kStringIterator,
     kGenerator,
     kMap, kSet, kWeakMap, kWeakSet,

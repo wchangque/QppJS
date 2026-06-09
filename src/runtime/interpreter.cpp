@@ -61,7 +61,7 @@ static double to_number_double(const Value& v) {
         return r;
     }
     case ValueKind::Object: {
-        // ToPrimitive: kStringObject/kBooleanObject 快路径
+        // ToPrimitive: kStringObject/kBooleanObject/kNumberObject 快路径
         RcObject* raw = v.as_object_raw();
         if (raw != nullptr) {
             if (raw->object_kind() == ObjectKind::kStringObject) {
@@ -73,6 +73,11 @@ static double to_number_double(const Value& v) {
                 auto* obj = static_cast<JSObject*>(raw);
                 Value wrapped = obj->wrapped_value();
                 if (wrapped.is_bool()) return wrapped.as_bool() ? 1.0 : 0.0;
+            }
+            if (raw->object_kind() == ObjectKind::kNumberObject) {
+                auto* obj = static_cast<JSObject*>(raw);
+                Value wrapped = obj->wrapped_value();
+                if (wrapped.is_number()) return wrapped.as_number();
             }
         }
         return std::numeric_limits<double>::quiet_NaN();
@@ -4164,10 +4169,18 @@ void Interpreter::init_runtime() {
 
     number_constructor_ = RcPtr<JSFunction>::make();
     number_constructor_->set_name(std::string("Number"));
-    number_constructor_->set_native_fn([](Value /*this_val*/, std::vector<Value> args,
-                                          bool /*is_new*/) -> EvalResult {
+    number_constructor_->set_native_fn([this](Value /*this_val*/, std::vector<Value> args,
+                                              bool is_new) -> EvalResult {
         double n = args.empty() ? 0.0 : to_number_double(args[0]);
-        return EvalResult::ok(Value::number(n));
+        if (!is_new) {
+            return EvalResult::ok(Value::number(n));
+        }
+        // new Number(n) → Number wrapper object (kNumberObject)
+        auto obj = RcPtr<JSObject>::make(ObjectKind::kNumberObject);
+        gc_heap_.Register(obj.get());
+        if (number_prototype_) obj->set_proto(number_prototype_);
+        obj->set_wrapped_value(Value::number(n));
+        return EvalResult::ok(Value::object(ObjectPtr(obj)));
     });
 
     // Number.isNaN (no ToNumber conversion)
@@ -4238,16 +4251,13 @@ void Interpreter::init_runtime() {
         if (this_val.is_number()) return EvalResult::ok(this_val);
         if (this_val.is_object()) {
             RcObject* raw = this_val.as_object_raw();
-            if (raw->object_kind() == ObjectKind::kOrdinary) {
-                // Number wrapper objects not yet implemented; fall through
+            if (raw && raw->object_kind() == ObjectKind::kNumberObject) {
+                return EvalResult::ok(static_cast<JSObject*>(raw)->wrapped_value());
             }
         }
-        if (!this_val.is_number()) {
-            pending_throw_ = make_error_value(NativeErrorType::kTypeError,
-                "Number.prototype.valueOf requires a number");
-            return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
-        }
-        return EvalResult::ok(this_val);
+        pending_throw_ = make_error_value(NativeErrorType::kTypeError,
+            "Number.prototype.valueOf requires a number");
+        return EvalResult::err(Error(ErrorKind::Runtime, kPendingThrowSentinel));
     });
     gc_heap_.Register(num_valueof_fn.get());
     number_prototype_->define_builtin_property("valueOf", Value::object(ObjectPtr(num_valueof_fn)));
@@ -7452,6 +7462,11 @@ std::string Interpreter::to_string_val(const Value& v) {
         RcObject* obj = v.as_object_raw();
         if (obj && obj->object_kind() == ObjectKind::kFunction) {
             return "function";
+        }
+        if (obj && obj->object_kind() == ObjectKind::kNumberObject) {
+            // Number wrapper: ToPrimitive → toString
+            Value wrapped = static_cast<JSObject*>(obj)->wrapped_value();
+            if (wrapped.is_number()) return to_string_val(wrapped);
         }
         return "[object Object]";
     }
